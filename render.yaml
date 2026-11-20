@@ -1,0 +1,28 @@
+# A development URL, not the demo. Render's free web services sleep after
+# 15 minutes idle and take 30-60 seconds to wake, which is a bad minute
+# to spend standing in a customer's office. Use Cloud Run for anything
+# you are going to show someone.
+services:
+  - type: web
+    name: landed
+    runtime: docker
+    plan: free
+    # Closest Render offers to the Supabase project in Sydney. Check the
+    # current region list in the dashboard; Render's has changed before.
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # sync: false means Render prompts for the value and keeps it out
+      # of this file. The service role key bypasses every policy in
+      # supabase/migrations -- it belongs in the dashboard, never here.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      # The free instance has 512 MB and 0.1 CPU; one worker is all that fits.
+      - key: WEB_CONCURRENCY
+        value: "1"
