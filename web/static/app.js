@@ -92,7 +92,13 @@ const qty = (n) =>
 const months = (n) =>
   n === null || n === undefined ? '—' : n >= 100 ? '99+' : n.toFixed(1);
 
-const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+/* English plurals that the +s rule gets wrong. Short on purpose: this
+   is a list of the words this interface actually uses, not an attempt
+   at the language. "3 branchs" on the stock screen is the kind of
+   mistake that makes a buyer wonder what else was not checked. */
+const PLURALS = { branch: 'branches', box: 'boxes', batch: 'batches' };
+const plural = (n, word) =>
+  `${n} ${n === 1 ? word : PLURALS[word] || `${word}s`}`;
 
 /* ------------------------------------------------------------------ nav */
 
@@ -370,21 +376,34 @@ function renderShipments() {
 
 /* ----------------------------------------------------------- table parts */
 
+/* The same table, readable on a phone without scrolling sideways.
+
+   Every column label is copied onto its own cell as a data attribute.
+   At full width that is unused; below the breakpoint the stylesheet
+   stops laying the rows out as a grid and shows each cell as a labelled
+   line, so a row becomes a small record instead of the seventh column
+   of something you have to drag into view.
+
+   The alternative -- the one that was here -- was a minimum width and a
+   horizontal scrollbar. Nothing is cut off, so it looks like it works,
+   and in practice nobody drags a table sideways to find the number they
+   came for. */
 function table(cols, bodyRows) {
   const t = el('table');
   const thead = el('thead');
   const tr = el('tr');
-  cols.forEach(([label, cls]) => {
-    const th = el('th', cls, label);
-    tr.append(th);
-  });
+  cols.forEach(([label, cls]) => tr.append(el('th', cls, label)));
   thead.append(tr);
   t.append(thead);
 
   const tb = el('tbody');
   bodyRows.forEach((cells) => {
     const r = el('tr');
-    cells.forEach((c) => r.append(c));
+    cells.forEach((c, i) => {
+      const label = cols[i] ? cols[i][0] : '';
+      if (label) c.dataset.label = label;
+      r.append(c);
+    });
     tb.append(r);
   });
   t.append(tb);

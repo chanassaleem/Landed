@@ -1,0 +1,164 @@
+"""Signing in, and holding the session afterwards.
+
+The browser never sees an access token. It posts an email and a password
+to this app, this app exchanges them with Supabase Auth, and the tokens
+come back here and stay here -- written into cookies the browser will
+send but no script can read.
+
+The usual arrangement is the opposite: the Supabase client runs in the
+page, keeps the session in localStorage, and attaches the token to each
+request. It is less code. It also means any script that ends up running
+on the page -- an injected one, a compromised dependency, a bad
+extension -- can read a working token for a business's inventory and
+cash position and send it anywhere. An httpOnly cookie cannot be read
+by script at all, so the same bug yields nothing.
+
+The cost of the cookie is cross-site request forgery: a cookie is sent
+by the browser whether or not the page that triggered the request is
+ours. SameSite=Lax removes the cross-site POST, which is the shape that
+matters here, and every state-changing route is a POST for that reason.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+import httpx
+
+ACCESS = "landed_at"
+REFRESH = "landed_rt"
+
+# A refresh costs a round trip, so it is not done on every request; it is
+# done when the token is close enough to expiry that the next one might
+# land after it. Sixty seconds is comfortably more than a slow request.
+REFRESH_WITHIN = 60
+
+
+class SignInFailed(Exception):
+    """Credentials rejected, or Supabase said no.
+
+    Deliberately one exception for every cause. 'No such account' and
+    'wrong password' as separate messages let anyone test whether an
+    email has an account here, one request at a time.
+    """
+
+
+@dataclass(frozen=True)
+class Tokens:
+    access: str
+    refresh: str
+    expires_in: int
+
+
+class Auth:
+    """Talks to the project's Auth server. Holds no secrets of its own.
+
+    Only the anon key is used. It is public by design: every request it
+    makes is still subject to row-level security, which is the whole
+    reason the schema puts its trust in policies rather than in the
+    application remembering to filter.
+    """
+
+    def __init__(self, project_url: str, anon_key: str, http=None):
+        self.url = (project_url or "").rstrip("/")
+        self.anon = anon_key or ""
+        self._http = http
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.url and self.anon)
+
+    def _client(self):
+        return self._http or httpx.Client(timeout=12.0)
+
+    def _headers(self) -> dict:
+        return {"apikey": self.anon, "Content-Type": "application/json"}
+
+    def _tokens(self, data: dict) -> Tokens:
+        at = data.get("access_token")
+        if not at:
+            # Sign-up with email confirmation on returns a user and no
+            # session. That is success, not failure, and the caller has
+            # to tell the person to go and check their email rather than
+            # show them a wrong password message.
+            raise SignInFailed("no session returned")
+        return Tokens(at, data.get("refresh_token", ""),
+                      int(data.get("expires_in") or 3600))
+
+    def sign_in(self, email: str, password: str) -> Tokens:
+        r = self._client().post(
+            f"{self.url}/auth/v1/token?grant_type=password",
+            headers=self._headers(),
+            json={"email": email, "password": password},
+        )
+        if r.status_code != 200:
+            raise SignInFailed("rejected")
+        return self._tokens(r.json())
+
+    def sign_up(self, email: str, password: str) -> Tokens | None:
+        r = self._client().post(
+            f"{self.url}/auth/v1/signup",
+            headers=self._headers(),
+            json={"email": email, "password": password},
+        )
+        if r.status_code not in (200, 201):
+            raise SignInFailed("rejected")
+        try:
+            return self._tokens(r.json())
+        except SignInFailed:
+            return None          # created, but needs email confirmation
+
+    def refresh(self, refresh_token: str) -> Tokens:
+        r = self._client().post(
+            f"{self.url}/auth/v1/token?grant_type=refresh_token",
+            headers=self._headers(),
+            json={"refresh_token": refresh_token},
+        )
+        if r.status_code != 200:
+            raise SignInFailed("refresh rejected")
+        return self._tokens(r.json())
+
+    def sign_out(self, access_token: str) -> None:
+        """Best effort. The cookies are cleared either way.
+
+        If this call fails the local session is still gone, which is what
+        the person asked for; the token then expires on its own. Leaving
+        the cookies in place because a network call failed would mean a
+        sign-out button that sometimes does not sign you out.
+        """
+        try:
+            self._client().post(
+                f"{self.url}/auth/v1/logout",
+                headers={**self._headers(),
+                         "Authorization": f"Bearer {access_token}"},
+            )
+        except Exception:
+            pass
+
+
+def secure_cookies() -> bool:
+    """Whether to mark cookies Secure.
+
+    On in production, off on localhost -- a Secure cookie is not sent
+    over plain http, so leaving it on would make local development look
+    like a broken login.
+    """
+    return os.environ.get("LANDED_ENV", "").lower() in ("production", "prod")
+
+
+def set_session(response, tokens: Tokens) -> None:
+    common = dict(httponly=True, secure=secure_cookies(), samesite="lax",
+                  path="/")
+    response.set_cookie(ACCESS, tokens.access, max_age=tokens.expires_in,
+                        **common)
+    if tokens.refresh:
+        # Thirty days: long enough that a person is not signed out every
+        # week, short enough that an abandoned laptop stops working.
+        response.set_cookie(REFRESH, tokens.refresh, max_age=30 * 24 * 3600,
+                            **common)
+
+
+def clear_session(response) -> None:
+    for name in (ACCESS, REFRESH):
+        response.delete_cookie(name, path="/")

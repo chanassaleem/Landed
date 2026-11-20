@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Sign in · Landed</title>
+<link rel="icon" href="/static/favicon.svg">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/static/fonts/ibm-plex-sans-latin-400-normal.woff2">
+<link rel="stylesheet" href="/static/app.css">
+<script>
+  try {
+    const saved = localStorage.getItem('landed.theme');
+    const dark = saved ? saved === 'dark'
+      : matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  } catch (e) {}
+</script>
+</head>
+<body class="gate-body">
+
+<main class="gate">
+  <!-- Two columns, and the right one is not decoration: it is the
+       product's own idea. Landed's whole claim is that your money is
+       sitting in six places between the supplier and the shelf and you
+       cannot see which. Someone arriving here for the first time has
+       never heard that, and the alternative -- a form alone in an empty
+       field -- makes them guess. -->
+  <div class="gate-grid">
+  <div class="gate-card">
+    <span class="wordmark gate-mark">
+      <svg width="22" height="16" viewBox="0 0 22 16" aria-hidden="true">
+        <line x1="2" y1="8" x2="20" y2="8" stroke="currentColor"
+              stroke-width="1.25" opacity=".3"/>
+        <circle cx="2"  cy="8" r="1.75" fill="none" stroke="currentColor"
+                stroke-width="1.25" opacity=".45"/>
+        <circle cx="8"  cy="8" r="1.75" fill="none" stroke="currentColor"
+                stroke-width="1.25" opacity=".6"/>
+        <circle cx="14" cy="8" r="1.75" fill="none" stroke="currentColor"
+                stroke-width="1.25" opacity=".8"/>
+        <circle cx="20" cy="8" r="2.25" fill="currentColor"/>
+      </svg>
+      Landed
+    </span>
+
+    <h1 id="gate-title">Sign in</h1>
+    <p class="gate-sub" id="gate-sub">Where your money is, between the
+      supplier and the shelf.</p>
+
+    <form id="gate-form" novalidate>
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="email"
+             autocapitalize="off" spellcheck="false" required>
+
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password"
+             autocomplete="current-password" required>
+      <p class="hint" id="pw-hint" hidden>At least 10 characters.</p>
+
+      <p class="gate-error" id="gate-error" role="alert" hidden></p>
+
+      <button class="primary" type="submit" id="gate-go">Sign in</button>
+    </form>
+
+    <p class="gate-swap">
+      <span id="swap-text">New here?</span>
+      <button type="button" id="swap" class="linkish">Create an account</button>
+    </p>
+  </div>
+
+  <aside class="gate-side" aria-label="What Landed shows you">
+    <p class="gate-side-lead">Your money is in six places at once.</p>
+    <ol class="stations">
+      <li class="st s-order"><span class="pip"></span>
+        <b>On order</b><i>placed with the supplier, not shipped</i></li>
+      <li class="st s-water"><span class="pip"></span>
+        <b>On the water</b><i>shipped, still at sea</i></li>
+      <li class="st s-port"><span class="pip"></span>
+        <b>At the port</b><i>arrived, not cleared</i></li>
+      <li class="st s-shelf"><span class="pip"></span>
+        <b>On the shelf</b><i>where it should be</i></li>
+      <li class="st s-idle"><span class="pip"></span>
+        <b>Standing still</b><i>more than you will sell</i></li>
+      <li class="st s-out"><span class="pip"></span>
+        <b>Running out</b><i>gone before the next one lands</i></li>
+    </ol>
+    <p class="gate-side-foot">Landed puts all six on one line, in rupees,
+      and tells you which to act on this morning.</p>
+  </aside>
+  </div>
+
+  <p class="gate-foot">Your data stays in your own Supabase project.</p>
+</main>
+
+<script src="/static/sign-in.js"></script>
+</body>
+</html>
