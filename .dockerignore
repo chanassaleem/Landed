@@ -1,0 +1,10 @@
+.git
+.github
+tests
+supabase
+**/__pycache__
+*.pyc
+.env
+.env.*
+*.xlsx
+*.duckdb

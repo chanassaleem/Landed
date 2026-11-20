@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Secrets. The service role key bypasses every policy in supabase/, so it
+# never belongs in the repository.
+.env
+.env.*
+!.env.example
+
+*.duckdb
+*.xlsx
+!tools/**/*.xlsx
+.DS_Store

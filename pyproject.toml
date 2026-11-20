@@ -1,0 +1,13 @@
+[project]
+name = "sop-engine"
+version = "0.3.0"
+description = "S&OP calculation engine for medical device distributors"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

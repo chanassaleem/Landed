@@ -1,0 +1,45 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # A real Postgres, because the policies in supabase/migrations cannot
+    # be checked any other way. Reading the SQL is not evidence.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: landed
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - run: pip install -r requirements-dev.txt
+
+      - name: Engine and schema guards
+        run: python -m pytest tests/ -q
+        env:
+          LANDED_TEST_DSN: postgres://postgres:postgres@localhost:5432/landed
+
+      - name: The policies must actually hold
+        run: python -m pytest tests/test_rls.py -q --no-header
+        env:
+          LANDED_TEST_DSN: postgres://postgres:postgres@localhost:5432/landed

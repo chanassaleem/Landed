@@ -1,0 +1,11 @@
+item_key,description,category,on_hand,open_po,unit_cost,lead_time_days,lead_time_days_std,is_clinical_critical,expiry_date
+HEM-RGT-01,Hematology reagent pack,Hematology,120,0,45000,75,18,yes,2027-04-30
+HEM-CTL-02,Hematology control set,Hematology,25,20,18000,75,18,,2026-12-15
+TEG-CUP-03,Coag test cartridge,Coagulation,300,150,6500,90,21,yes,
+TEG-RGT-04,Coag reagent kit,Coagulation,40,35,22000,90,21,,2027-02-28
+BGA-CRT-05,Blood gas cartridge,Blood gas,900,0,9000,60,14,yes,2026-12-31
+BGA-ELC-06,Electrode set,Blood gas,14,6,70000,60,14,,
+PFT-FLT-07,Spirometry filter box,Pulmonary,500,0,3500,45,10,,
+DX-STR-08,Urine strip bottle,Diagnostics,60,0,2800,45,10,,2027-06-30
+SPR-PMP-09,"Pump spare, peristaltic",Spares,3,0,120000,100,30,,
+SPR-LMP-10,Lamp assembly,Spares,18,0,55000,100,30,,
