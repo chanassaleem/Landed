@@ -12,12 +12,22 @@ create table if not exists auth.users (
 
 -- Supabase reads the signed JWT; here the test sets request.jwt.claims
 -- directly, which is the same mechanism underneath.
+-- The nullif goes around the RAW setting, before the cast, which is how
+-- Supabase itself writes it. The reason is not obvious: when a SET LOCAL
+-- transaction ends, the setting does not become unset, it becomes the
+-- empty string -- and ''::jsonb raises "invalid input syntax for type
+-- json". So on a POOLED connection, the first unauthenticated query
+-- after any authenticated one fails, which looks like a random
+-- intermittent error and is really this.
 create or replace function auth.uid()
 returns uuid
 language sql
 stable
 as $$
-  select nullif(current_setting('request.jwt.claims', true)::jsonb ->> 'sub', '')::uuid
+  select nullif(
+    nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'sub',
+    ''
+  )::uuid
 $$;
 
 create or replace function auth.jwt()
@@ -25,7 +35,10 @@ returns jsonb
 language sql
 stable
 as $$
-  select coalesce(current_setting('request.jwt.claims', true)::jsonb, '{}'::jsonb)
+  select coalesce(
+    nullif(current_setting('request.jwt.claims', true), '')::jsonb,
+    '{}'::jsonb
+  )
 $$;
 
 do $$ begin

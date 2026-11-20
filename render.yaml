@@ -17,6 +17,15 @@ services:
       # sync: false means Render prompts for the value and keeps it out
       # of this file. The service role key bypasses every policy in
       # supabase/migrations -- it belongs in the dashboard, never here.
+      #
+      # DATABASE_URL must be the SESSION POOLER string from Supabase
+      # (Connect -> Session pooler, port 5432). The direct connection
+      # string resolves to IPv6 only unless the project pays for the IPv4
+      # add-on, and Render is IPv4-only, so the direct string fails with
+      # a name-resolution error that looks nothing like its cause.
+      # /health/supabase warns if it spots the wrong one.
+      - key: DATABASE_URL
+        sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY

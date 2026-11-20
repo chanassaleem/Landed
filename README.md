@@ -119,6 +119,48 @@ Render's free tier also works, but its web services sleep after 15
 minutes and take 30–60 seconds to wake, which is a bad minute to spend
 standing in a customer's office.
 
+## Connecting it to Supabase
+
+Everything the app reads goes through `engine/db/supabase.py`, and it
+will only hand out a scoped session. `as_user(id)` sets the role and the
+claims the policies read; `as_service()` does not, and says so in its
+name. A plain `psycopg.connect` with the database password is a
+superuser connection that bypasses every policy in `supabase/migrations`
+while reading exactly like the safe version, which is why there is a
+module instead of a connection string in a route.
+
+Set one environment variable on the host:
+
+| Variable | Value |
+| --- | --- |
+| `DATABASE_URL` | the **Session pooler** string from Supabase → Connect |
+
+Use the Session pooler, not the direct connection. The direct string
+resolves to IPv6 only unless the project pays for the IPv4 add-on, and
+most hosts are IPv4-only; the failure is a name-resolution error that
+looks nothing like its cause. `/health/supabase` warns if it sees the
+wrong one.
+
+Then ask the running service whether it worked:
+
+```bash
+curl -s https://<your-app>/health/supabase | jq
+{
+  "ok": true,
+  "reachable": true,
+  "rls_holding": true,
+  "latency_ms": 214,
+  "detail": "Connected, and a user with no membership sees nothing."
+}
+```
+
+`rls_holding` is the half worth having. A Postgres with row-level
+security switched off answers every ordinary health check perfectly
+while serving every tenant's rows to anyone who asks, so the probe reads
+a protected table as a user who belongs to no organisation and expects
+to be told nothing. The endpoint returns 503 when either half fails, so
+a platform health check and a person reading the JSON agree.
+
 ## Status
 
 Phase 1 of five. The spine is in: tenancy, roles, branch scoping, module

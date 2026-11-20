@@ -141,6 +141,38 @@ def health() -> dict:
     return {"status": "ok", "version": __version__}
 
 
+@app.get("/health/supabase")
+def health_supabase(response: Response) -> dict:
+    """Is the database reachable, and are its policies actually on?
+
+    The second half is the one worth having. A Postgres with row-level
+    security switched off answers every ordinary health check perfectly
+    while serving every tenant's rows to anyone who asks, so this probe
+    reads a protected table as a user who belongs to no organisation and
+    expects to be told nothing.
+
+    Returns 503 when either half fails, so a platform health check and a
+    person reading the JSON reach the same conclusion.
+    """
+    from engine.db.supabase import NotConfigured, database
+
+    try:
+        db = database()
+    except NotConfigured as exc:
+        response.status_code = 503
+        return {"ok": False, "configured": False, "detail": str(exc)}
+
+    report = db.check().as_dict()
+    report["configured"] = True
+    # Things that will work but are probably a mistake -- the direct
+    # connection string on an IPv4-only host, chiefly.
+    if db.config.warnings:
+        report["warnings"] = db.config.warnings
+    if not report["ok"]:
+        response.status_code = 503
+    return report
+
+
 @app.get("/api/meta")
 def meta() -> dict:
     """What the shell needs to render navigation honestly.
