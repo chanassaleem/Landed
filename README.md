@@ -95,12 +95,25 @@ browser bundle.
 Cloud Run, because it scales to zero and an idle API then costs nothing:
 
 ```bash
-gcloud run deploy landed --source . --region asia-south1 --allow-unauthenticated
+gcloud run deploy landed --source . --region australia-southeast1 \
+    --allow-unauthenticated
 ```
 
-`asia-south1` is Mumbai — closest to Pakistan of the regions on offer.
-Put the Supabase project in the nearest region too; latency on every
-query depends on it.
+**Put Cloud Run in the same region as the Supabase project.** That is the
+decision that matters, more than which region either of them is in. The
+app makes many queries per page and the user makes one request per page,
+so the chatty half should happen inside one datacentre and the slow half
+should happen once. The project currently lives in Sydney, hence
+`australia-southeast1`.
+
+If the browser ever starts calling Supabase directly through
+`supabase-js`, that reasoning inverts and the database's distance from
+the customer becomes the thing that hurts. Mumbai (`asia-south1`) is the
+closest region to Pakistan if it comes to that — but a Supabase project
+cannot change region in place. You create a new project and migrate,
+which also changes the database host, the project URL, the API keys and
+the auth callback URLs. Cheap while the database is empty; a cutover
+once a customer's ledger is in it.
 
 Render's free tier also works, but its web services sleep after 15
 minutes and take 30–60 seconds to wake, which is a bad minute to spend
