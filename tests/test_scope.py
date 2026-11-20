@@ -9,14 +9,11 @@ people quote, so it was the worse half of the lie.
 from datetime import date
 
 import pytest
-from fastapi.testclient import TestClient
 
 from engine import parse, report, samples
 from engine import scope as sc
 from engine.schema import Thresholds
-from web.app import app
 
-client = TestClient(app)
 AS_OF = date(2026, 11, 20)
 
 
@@ -152,28 +149,3 @@ def test_the_selector_still_offers_the_rest_of_the_business(facts):
 
 
 # ------------------------------------------------------------- over the api
-
-def test_the_endpoint_accepts_a_scope():
-    r = client.post("/api/analyse", data={"as_of": "2026-11-20", "entity": "DX"})
-    assert r.status_code == 200
-    d = r.json()
-    assert d["scope"]["entity"] == "DX"
-    assert d["scope"]["active"] is True
-    assert all(row["entity_id"] == "DX" for row in d["stock"]["rows"])
-
-
-def test_a_scope_matching_nothing_is_refused_with_the_reason():
-    r = client.post("/api/analyse",
-                    data={"as_of": "2026-11-20", "entity": "NOT-A-COMPANY"})
-    assert r.status_code == 400
-    assert "NOT-A-COMPANY" in r.json()["error"]
-
-
-def test_an_unscoped_run_is_unchanged_by_all_of_this():
-    a = client.post("/api/analyse", data={"as_of": "2026-11-20"}).json()
-    b = client.post("/api/analyse",
-                    data={"as_of": "2026-11-20", "entity": "all",
-                          "location": "all"}).json()
-    assert a["scope"]["active"] is False
-    assert len(a["stock"]["rows"]) == len(b["stock"]["rows"])
-    assert a["headline"] == b["headline"]

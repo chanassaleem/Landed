@@ -561,16 +561,24 @@ def test_a_reordered_sheet_still_reads(book, tmp_path):
     assert records and not rejected
 
 
-def test_the_endpoint_takes_the_workbook(book):
-    from fastapi.testclient import TestClient
-    from web.app import app
+def test_the_whole_workbook_reads_back_as_the_datasets_it_holds(book):
+    """The import path, tested at the reader rather than over HTTP.
 
-    client = TestClient(app)
+    The upload endpoint went with the old demo shell; the capability did
+    not, and it is how a business with a year of history gets that
+    history in without typing it twice. When the new app grows an upload
+    screen it will call exactly this.
+    """
+    from engine.workbook import read
+
     with open(book, "rb") as fh:
-        r = client.post("/api/analyse", files={"workbook": ("model.xlsx", fh)})
-    assert r.status_code == 200, r.text[:300]
-    d = r.json()
-    assert d["source"] == "workbook"
-    assert d["loaded"]["inventory"] == 36
-    assert d["loaded"]["demand"] == 432
-    assert "workbook_notes" not in d
+        out = read(fh.read())
+
+    assert out["notes"] == [], out["notes"]
+    texts = out["texts"]
+    assert len(texts["inventory"].splitlines()) == 37     # 36 rows + header
+    assert len(texts["demand"].splitlines()) == 433
+    # Every dataset the parser knows has come back, so a sheet cannot be
+    # silently dropped on the way in.
+    from engine import samples
+    assert set(texts) == set(samples.ORDER)

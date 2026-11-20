@@ -1,0 +1,806 @@
+/* Landed
+   ----------------------------------------------------------------------
+   An importer's money is never still. It is on order, on water, at the
+   port, or sitting on a shelf not moving. Every decision in this product
+   is about where money is in that journey, so the interface is built
+   around position rather than around totals.
+
+   Two rules hold everywhere below.
+
+   Colour means a state. Monochrome does all the structural work --
+   hierarchy comes from weight, spacing and one-pixel rules. There are
+   exactly four chromatic tokens and each names a thing the business
+   cares about. Nothing is coloured to look nice.
+
+   Density is the feature. Operators are not browsing; they are reading
+   forty rows looking for the two that need them today. Base type is
+   13px, rows are 34px, and figures are tabular so columns of money line
+   up on the decimal whatever the digits.
+   ------------------------------------------------------------------- */
+
+@font-face {
+  font-family: 'Plex';
+  src: url('/static/fonts/ibm-plex-sans-latin-400-normal.woff2') format('woff2');
+  font-weight: 400; font-display: swap; font-style: normal;
+}
+@font-face {
+  font-family: 'Plex';
+  src: url('/static/fonts/ibm-plex-sans-latin-500-normal.woff2') format('woff2');
+  font-weight: 500; font-display: swap; font-style: normal;
+}
+@font-face {
+  font-family: 'Plex';
+  src: url('/static/fonts/ibm-plex-sans-latin-600-normal.woff2') format('woff2');
+  font-weight: 600; font-display: swap; font-style: normal;
+}
+@font-face {
+  font-family: 'PlexMono';
+  src: url('/static/fonts/ibm-plex-mono-latin-400-normal.woff2') format('woff2');
+  font-weight: 400; font-display: swap; font-style: normal;
+}
+@font-face {
+  font-family: 'PlexMono';
+  src: url('/static/fonts/ibm-plex-mono-latin-500-normal.woff2') format('woff2');
+  font-weight: 500; font-display: swap; font-style: normal;
+}
+
+:root {
+  --sans: 'Plex', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mono: 'PlexMono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* Ink, with a blue cast. A neutral near-black reads as cheap on a
+     screen; the cast is what makes the greys above it look considered
+     rather than dirty. */
+  --ink:        #0E1116;
+  --ink-2:      #1B2028;
+  --ink-3:      #2A313C;
+
+  --paper:      #FBFBFC;
+  --surface:    #FFFFFF;
+  --sunk:       #F4F5F7;
+
+  --text:       #11151B;
+  --text-2:     #596273;
+  --text-3:     #8A93A3;
+
+  --rule:       #E3E6EB;
+  --rule-2:     #EDEFF2;
+
+  /* The four. Each one names a state of money, and they are the only
+     chromatic values in the product. */
+  --transit:    #1C7A8C;   /* moving, nothing to decide */
+  --attention:  #9A6514;   /* decide this week */
+  --urgent:     #B4342A;   /* decide today */
+  --idle:       #5B4B96;   /* standing still, costing carry */
+
+  --transit-bg:   #E6F2F4;
+  --attention-bg: #FBF0DC;
+  --urgent-bg:    #FBE9E7;
+  --idle-bg:      #EEEBF7;
+
+  --focus:      #1C7A8C;
+
+  --row:        34px;
+  --bar:        48px;
+  --r:          4px;
+  --r-lg:       8px;
+
+  --t-fast:     120ms cubic-bezier(.2, .7, .3, 1);
+  --t:          220ms cubic-bezier(.2, .7, .3, 1);
+}
+
+[data-theme='dark'] {
+  --paper:      #0E1116;
+  --surface:    #141922;
+  --sunk:       #1A202A;
+
+  --text:       #EDF0F4;
+  --text-2:     #98A2B3;
+  --text-3:     #6B7585;
+
+  --rule:       #242B36;
+  --rule-2:     #1C222B;
+
+  /* Lifted and desaturated for a dark field. The light-mode values go
+     muddy on ink; these are chosen against the dark background rather
+     than computed from the light ones. */
+  --transit:    #4FB3C4;
+  --attention:  #D9A441;
+  --urgent:     #E8695C;
+  --idle:       #9185D6;
+
+  --transit-bg:   #15323A;
+  --attention-bg: #352B16;
+  --urgent-bg:    #3A1F1C;
+  --idle-bg:      #26224A;
+
+  --focus:      #4FB3C4;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--paper);
+  color: var(--text);
+  font: 400 13px/1.45 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'tnum' 1, 'cv05' 1;
+  overflow: hidden;
+}
+
+/* Money, quantities, codes. Tabular everywhere so a column of figures
+   reads as a column and not as ragged text. */
+.num, .mono, td.num, th.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'zero' 1;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+::selection { background: var(--transit-bg); color: var(--text); }
+
+/* --------------------------------------------------------------- shell */
+
+.app {
+  display: grid;
+  grid-template-rows: var(--bar) auto 1fr;
+  height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--surface);
+}
+
+.wordmark {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: -0.01em;
+  user-select: none;
+}
+
+/* The mark is the journey in miniature: four stations, the last one
+   filled. It is the same idea as the money line below it. */
+.wordmark svg { display: block; }
+
+.grow { flex: 1 1 auto; }
+
+.cmdk {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 260px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--paper);
+  color: var(--text-3);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color var(--t-fast), color var(--t-fast);
+}
+.cmdk:hover { border-color: var(--text-3); color: var(--text-2); }
+.cmdk kbd {
+  margin-left: auto;
+  font: 500 10.5px/1 var(--mono);
+  color: var(--text-3);
+  background: var(--sunk);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 3px 5px;
+}
+
+.picker {
+  height: 30px;
+  padding: 0 26px 0 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--surface) no-repeat right 8px center/9px
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238A93A3' stroke-width='1.5'/%3E%3C/svg%3E");
+  color: var(--text);
+  font: 500 12.5px var(--sans);
+  cursor: pointer;
+  appearance: none;
+}
+.picker:hover { border-color: var(--text-3); }
+
+.iconbtn {
+  display: grid;
+  place-items: center;
+  width: 30px; height: 30px;
+  border: 1px solid transparent;
+  border-radius: var(--r);
+  background: none;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.iconbtn:hover { background: var(--sunk); color: var(--text); }
+
+/* ------------------------------------------------------------------ nav */
+
+.nav {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--surface);
+}
+
+.nav a {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 0 11px;
+  height: 38px;
+  color: var(--text-2);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: color var(--t-fast);
+}
+.nav a:hover { color: var(--text); }
+.nav a[aria-current='page'] { color: var(--text); }
+
+/* The indicator slides between destinations rather than blinking on and
+   off, so the eye keeps track of where it came from. */
+.nav .marker {
+  position: absolute;
+  bottom: -1px;
+  height: 2px;
+  background: var(--text);
+  transition: transform var(--t), width var(--t);
+  pointer-events: none;
+}
+
+.nav .count {
+  margin-left: 6px;
+  font: 500 10.5px/1 var(--mono);
+  color: var(--text-3);
+}
+.nav a[data-alarm='1'] .count { color: var(--urgent); }
+
+/* ----------------------------------------------------------- money line
+   The hero. Where every rupee is, as one band. Each segment is sized by
+   the money in it and filters everything below when clicked, so the most
+   prominent thing on the screen is also the main control. */
+
+.line {
+  padding: 15px 16px 13px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--surface);
+}
+
+.line-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 11px;
+}
+.line-head h1 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+  letter-spacing: 0;
+}
+.line-head .total {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 19px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+.line-head .asof { margin-left: auto; font-size: 12px; color: var(--text-3); }
+
+.band {
+  display: flex;
+  gap: 3px;
+  height: 52px;
+}
+
+/* A segment is a tinted block under a solid rule in its own colour.
+
+   A flat pale wash is unreadable and a flat saturated fill makes six
+   loud blocks competing for the eye while killing the contrast of any
+   text set on them. The rule carries the colour at full strength where
+   a 3px line can afford it; the body stays quiet enough to set the
+   figure in ordinary ink on top. */
+.seg {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  min-width: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: var(--sunk);
+  cursor: pointer;
+  overflow: hidden;
+  text-align: left;
+  transition: width var(--t), opacity var(--t-fast);
+}
+.seg::after {                      /* the tint */
+  content: '';
+  position: absolute;
+  inset: 3px 0 0 0;
+  background: currentColor;
+  opacity: .14;
+}
+.seg::before {                     /* the rule */
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: currentColor;
+}
+.seg:hover::after { opacity: .22; }
+.seg[aria-pressed='true']::after { opacity: .28; }
+.band[data-filtered='1'] .seg:not([aria-pressed='true']) { opacity: .38; }
+
+.seg-in {
+  position: relative;              /* above the tint */
+  display: block;
+  padding: 0 9px 7px;
+  min-width: 0;
+}
+.seg-v {
+  display: block;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  /* --text, not --ink: --ink is a fixed near-black and stayed near-black
+     in the dark theme, where it put the band's figures a shade away from
+     their own background. --text flips with the theme. */
+  color: var(--text);
+  line-height: 1.25;
+}
+.seg-l {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.seg.s-order   { color: var(--text-3); }
+.seg.s-water   { color: var(--transit); }
+.seg.s-port    { color: var(--attention); }
+.seg.s-shelf   { color: var(--text-2); }
+.seg.s-idle    { color: var(--idle); }
+.seg.s-out     { color: var(--urgent); }
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 18px;
+  margin-top: 9px;
+}
+.legend button {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.legend button:hover { color: var(--text); }
+.legend .dot {
+  width: 7px; height: 7px;
+  border-radius: 2px;
+  background: currentColor;
+  align-self: center;
+}
+.legend .v {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  color: var(--text);
+}
+.legend .l-order { color: var(--text-3); }
+.legend .l-water { color: var(--transit); }
+.legend .l-port  { color: var(--attention); }
+.legend .l-shelf { color: var(--text-2); }
+.legend .l-idle  { color: var(--idle); }
+.legend .l-out   { color: var(--urgent); }
+
+/* -------------------------------------------------------------- content */
+
+.main {
+  overflow: auto;
+  padding: 0 0 56px;
+}
+
+.view { display: none; }
+.view.on { display: block; }
+
+.wrap { padding: 16px; max-width: 1480px; }
+
+.section { margin-bottom: 22px; }
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 9px;
+}
+.section-head h2 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+.section-head p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.section-head .right { margin-left: auto; }
+
+/* --------------------------------------------------------------- tables
+   Tables are tables. Not cards pretending to be rows: a card grid loses
+   the one thing a table gives you, which is a column you can run your
+   eye down. */
+
+.panel {
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+table { width: 100%; border-collapse: collapse; }
+
+thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0 12px;
+  height: 30px;
+  background: var(--sunk);
+  border-bottom: 1px solid var(--rule);
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+thead th.num { text-align: right; }
+
+tbody td {
+  padding: 0 12px;
+  height: var(--row);
+  border-bottom: 1px solid var(--rule-2);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr { transition: background var(--t-fast); }
+tbody tr:hover { background: var(--sunk); }
+
+td.num { text-align: right; font-size: 12.5px; }
+td.lead { font-weight: 500; }
+td.dim { color: var(--text-2); }
+
+/* A state is a word plus a colour, never a colour alone -- the colour is
+   the fast path for people who can see it, the word is what everyone
+   reads. */
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.state::before {
+  content: '';
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+.st-out   { color: var(--urgent); }
+.st-order { color: var(--attention); }
+.st-idle  { color: var(--idle); }
+.st-ok    { color: var(--text-3); }
+.st-water { color: var(--transit); }
+
+/* A quantity against the level it should be. The bar is the comparison;
+   the number is the fact. */
+.gauge {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  justify-content: flex-end;
+}
+.gauge .track {
+  position: relative;
+  width: 94px; height: 6px;
+  border-radius: 3px;
+  background: var(--rule);
+  flex: none;
+  /* No overflow:hidden. It used to clip the target tick -- the one mark
+     that gives the bar a meaning -- so the bar showed a length with
+     nothing to measure it against. */
+}
+.gauge .fill {
+  display: block;
+  height: 100%;
+  min-width: 3px;                  /* a real but tiny cover is still visible */
+  border-radius: 3px;
+  background: currentColor;
+  transition: width var(--t);
+}
+.gauge .mark {
+  position: absolute;
+  top: -3px; bottom: -3px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--text-2);
+  opacity: .55;
+}
+
+/* ---------------------------------------------------------------- cards
+   Used once, for the three decisions on Today. Deliberately not the
+   layout for everything else. */
+
+/* Three columns divided by rules, not three boxes.
+
+   Boxing each one in its own bordered, rounded, shadowed card is the
+   house style of every dashboard built this decade, and it adds three
+   outlines and twelve corners to say something the gaps already say.
+   A rule between columns says the same with one line, and the colour
+   that matters -- which kind of decision this is -- is spent on the
+   short bar above the heading rather than on a border around
+   everything. */
+.decks {
+  display: grid;
+  gap: 0 26px;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+}
+
+.deck {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 0 0 2px;
+}
+.deck + .deck {
+  padding-left: 26px;
+  margin-left: -26px;
+  border-left: 1px solid var(--rule);
+}
+.deck h3::before {
+  content: '';
+  display: block;
+  width: 22px; height: 3px;
+  margin-bottom: 9px;
+  border-radius: 2px;
+  background: var(--tone);
+}
+.deck h3 { display: block; }
+.deck h3 {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.deck .big {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 25px;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  color: var(--text);
+  line-height: 1.1;
+}
+.deck p { margin: 0; font-size: 12.5px; color: var(--text-2); max-width: 46ch; }
+.deck .act {
+  align-self: flex-start;
+  margin-top: 3px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: currentColor;
+  font: 500 12.5px var(--sans);
+  cursor: pointer;
+  border-bottom: 1px solid currentColor;
+  line-height: 1.5;
+}
+/* Tone travels as a custom property rather than as `color`.
+
+   As `color` it was inherited by the heading and then overwritten by
+   the heading's own colour rule, so the accent bar -- the one thing
+   saying what kind of decision this is -- silently came out grey. A
+   custom property is not something a later colour rule can take back. */
+/* One class per tone the API can emit, and no others. The extras that
+   were here matched nothing, while `water` -- which the API does emit --
+   was missing, so that decision drew its accent in the fallback grey. */
+.deck { --tone: var(--text-2); }
+.d-urgent { --tone: var(--urgent); }
+.d-idle   { --tone: var(--idle); }
+.d-water  { --tone: var(--transit); }
+.deck h3::before { background: var(--tone); }
+.deck .act { color: var(--tone); border-bottom-color: var(--tone); }
+
+/* ---------------------------------------------------------------- misc */
+
+.btn {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--surface);
+  color: var(--text);
+  font: 500 12.5px var(--sans);
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+.btn:hover { background: var(--sunk); border-color: var(--text-3); }
+.btn.primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #fff;
+}
+[data-theme='dark'] .btn.primary { background: var(--text); color: var(--ink); }
+.btn.primary:hover { filter: brightness(1.25); }
+
+.empty {
+  display: grid;
+  place-items: center;
+  gap: 5px;
+  padding: 54px 16px;
+  text-align: center;
+  color: var(--text-2);
+}
+.empty strong { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.empty p { margin: 0; max-width: 42ch; font-size: 12.5px; }
+
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 7px 16px;
+  border-top: 1px solid var(--rule);
+  background: var(--surface);
+  color: var(--text-3);
+  font-size: 11.5px;
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+}
+.foot .mono { color: var(--text-2); }
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 16px 16px 0;
+  padding: 9px 12px;
+  border: 1px solid var(--rule);
+  border-left: 2px solid var(--attention);
+  border-radius: var(--r);
+  background: var(--surface);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.banner b { color: var(--text); font-weight: 600; }
+
+/* ------------------------------------------------------- command palette */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(14, 17, 22, .4);
+  display: grid;
+  place-items: start center;
+  padding-top: 12vh;
+  z-index: 50;
+}
+.scrim[hidden] { display: none; }
+
+.palette {
+  width: min(560px, 92vw);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: 0 18px 50px rgba(14, 17, 22, .22);
+  overflow: hidden;
+}
+.palette input {
+  width: 100%;
+  height: 44px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  background: none;
+  color: var(--text);
+  font: 400 14px var(--sans);
+  outline: none;
+}
+.palette ul { margin: 0; padding: 5px; list-style: none; max-height: 48vh; overflow: auto; }
+.palette li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--r);
+  cursor: pointer;
+  font-size: 13px;
+}
+.palette li[aria-selected='true'] { background: var(--sunk); }
+.palette li .hint { margin-left: auto; font-size: 11.5px; color: var(--text-3); }
+
+/* ------------------------------------------------------------ responsive */
+
+@media (max-width: 860px) {
+  .cmdk { display: none; }
+  .nav { overflow-x: auto; scrollbar-width: none; }
+  .nav::-webkit-scrollbar { display: none; }
+  .line-head .asof { display: none; }
+  .legend { gap: 2px 13px; }
+  .wrap { padding: 12px; }
+  /* A table that scrolls sideways beats a table squeezed until its
+     columns are three characters wide. */
+  .panel { overflow-x: auto; }
+  table { min-width: 680px; }
+
+  /* One column, so the dividing rule between decisions has nothing to
+     divide; left in, it hangs down the side of the page as decoration
+     and the negative margin drags the text out of alignment. */
+  .deck + .deck {
+    padding-left: 0;
+    margin-left: 0;
+    border-left: 0;
+    margin-top: 20px;
+  }
+
+  /* The banner's lead-in is a flex item, so on a narrow screen it was
+     squeezed to its own column and broke across two lines beside a full
+     paragraph. It is one sentence; it should set as one sentence. */
+  .banner { display: block; }
+  .banner b { margin-right: .35em; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: 1ms !important; animation-duration: 1ms !important; }
+}
+
+
+/* ------------------------------------------------- table column widths
+   Left to itself the browser shares width evenly and the item name --
+   the only column anyone scans down -- ends up the same width as a
+   three-letter branch code. The name takes the slack; everything else
+   is sized to what it holds. */
+.panel table { table-layout: auto; }
+.panel th:first-child, .panel td:first-child { width: 100%; }
+.panel th:not(:first-child), .panel td:not(:first-child) { white-space: nowrap; }
+.panel td.idle:not(.zero) { color: var(--idle); }
