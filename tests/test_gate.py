@@ -781,3 +781,94 @@ def test_operations_need_a_session(client, monkeypatch):
                        ("/api/transfer", {"sku": "X", "from": "KHI",
                                           "to": "LHR", "qty": 1})):
         assert client.post(path, json=body).status_code == 401
+
+
+# -------------------------------------------------------- country packs
+
+def test_a_country_pack_is_merged_not_imposed(signed_in, monkeypatch):
+    """Applying a pack overwrites only what the pack covers. Anything
+    already tuned by hand survives, because a default is a starting
+    point and not a subscription."""
+    written = {}
+
+    class Conn:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, sql, args=None):
+            if "update" in sql:
+                written["settings"] = args[0]
+                written["currency"] = args[1]
+            class R:
+                def fetchone(self_):
+                    # Already has a hand-tuned excess limit and a key
+                    # no pack knows about.
+                    return ({"excess_cover_months": 14, "mine": "keep"},)
+            return R()
+
+    class DB:
+        def as_user(self, _uid): return Conn()
+
+    import json
+
+    import engine.db.supabase as sup
+    client, _ = signed_in
+    monkeypatch.setattr(sup, "database", lambda: DB())
+
+    r = client.post("/api/settings/country", json={"country": "AE"})
+    assert r.status_code == 200
+    got = json.loads(written["settings"])
+    assert written["currency"] == "AED"
+    assert got["scale"] == "western"
+    assert got["mine"] == "keep", "a setting the pack does not cover was lost"
+    # The pack does cover this one, so it is overwritten -- and the
+    # person can change it straight back.
+    assert got["excess_cover_months"] == 6.0
+
+
+def test_an_unknown_country_is_refused_by_name(signed_in):
+    client, _ = signed_in
+    r = client.post("/api/settings/country", json={"country": "ZZ"})
+    assert r.status_code == 400
+    assert "ZZ" in r.json()["error"]
+
+
+def test_the_country_list_is_public_and_complete(client):
+    from engine.country import PACKS
+
+    d = client.get("/api/countries").json()
+    assert len(d["countries"]) == len(PACKS)
+    assert all(c["currency"] and c["name"] for c in d["countries"])
+
+
+def test_currency_and_scale_can_be_set_on_their_own(signed_in, monkeypatch):
+    written = {}
+
+    class Conn:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, sql, args=None):
+            written["args"] = args
+            class R:
+                def fetchone(self_): return None
+            return R()
+
+    class DB:
+        def as_user(self, _uid): return Conn()
+
+    import json
+
+    import engine.db.supabase as sup
+    client, _ = signed_in
+    monkeypatch.setattr(sup, "database", lambda: DB())
+    r = client.post("/api/settings", json={
+        "settings": {"currency": "aed", "scale": "western"}})
+    assert r.status_code == 200
+    assert r.json()["settings"]["currency"] == "AED"
+    assert r.json()["settings"]["scale"] == "western"
+
+
+def test_a_currency_that_is_not_three_letters_is_refused(signed_in):
+    client, _ = signed_in
+    r = client.post("/api/settings", json={"settings": {"currency": "RUPEES"}})
+    assert r.status_code == 400
+    assert "currency" in " ".join(r.json()["problems"])

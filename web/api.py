@@ -56,7 +56,8 @@ def _sample_records() -> dict:
 
 def state_payload(as_of: date | None = None, items=None, demand=None,
                   source: str = "Sample data", currency: str = "PKR",
-                  thresholds: Thresholds | None = None) -> dict[str, Any]:
+                  thresholds: Thresholds | None = None,
+                  scale: str = "indian") -> dict[str, Any]:
     """The whole screen in one response.
 
     One request rather than six, because every screen is a different cut
@@ -131,6 +132,7 @@ def state_payload(as_of: date | None = None, items=None, demand=None,
     return {
         "asof": as_of.isoformat(),
         "currency": currency,
+        "scale": scale,
         "source": source,
         "branches": branches,
         "line": line,
@@ -285,7 +287,8 @@ def _decisions(stock: list[dict], shipments: list[dict], line: dict) -> list[dic
     return out[:3]
 
 
-def empty_payload(as_of: date, currency: str = "PKR") -> dict[str, Any]:
+def empty_payload(as_of: date, currency: str = "PKR",
+                  scale: str = "indian") -> dict[str, Any]:
     """A new organisation, with nothing in it yet.
 
     Deliberately the same shape as a full one, so the screen does not
@@ -297,6 +300,7 @@ def empty_payload(as_of: date, currency: str = "PKR") -> dict[str, Any]:
     return {
         "asof": as_of.isoformat(),
         "currency": currency,
+        "scale": scale,
         "source": "No data yet",
         "branches": ["ALL"],
         "line": {k: 0 for k in

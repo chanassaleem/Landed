@@ -32,14 +32,31 @@ const S = {
    makes a reorder decision on the rupee, and eleven digits in a table
    cell is just noise to scroll past. */
 
+/* How large numbers are grouped and named, which is a fact about the
+   reader and not about the number.
+   
+   Half the world groups in thousands and half in lakh and crore, and
+   a figure shown the wrong way is not slightly awkward, it is
+   unreadable: 1,20,00,000 and 12,000,000 are the same number and only
+   one of them is legible to a given person. This was hard-coded to
+   lakh and crore, which made the whole product Pakistani whatever the
+   currency label said. */
+const SCALES = {
+  western: [[1e9, 'bn', 2], [1e6, 'm', 2], [1e3, 'k', 0]],
+  indian: [[1e7, 'cr', 2], [1e5, 'L', 1], [1e3, 'k', 0]],
+};
+
+const scale = () => SCALES[(S.data && S.data.scale) || 'indian']
+                 || SCALES.indian;
+
 const money = (n) => {
   if (n === null || n === undefined) return '—';
   const a = Math.abs(n);
-  const s = n < 0 ? '−' : '';
-  if (a >= 1e7) return `${s}${(a / 1e7).toFixed(2)}cr`;
-  if (a >= 1e5) return `${s}${(a / 1e5).toFixed(1)}L`;
-  if (a >= 1e3) return `${s}${Math.round(a / 1e3)}k`;
-  return `${s}${Math.round(a)}`;
+  const sign = n < 0 ? '−' : '';
+  for (const [div, suffix, dp] of scale()) {
+    if (a >= div) return `${sign}${(a / div).toFixed(dp)}${suffix}`;
+  }
+  return `${sign}${Math.round(a)}`;
 };
 
 /* One unit for a whole set of figures.
@@ -50,14 +67,15 @@ const money = (n) => {
    arithmetic has stopped reading. So a set of figures meant to be
    compared -- the money line, a column -- is scaled once, off the
    largest of them, and every figure in it carries the same unit. */
-const UNITS = [
-  { div: 1e7, suffix: 'cr', dp: 2 },
-  { div: 1e5, suffix: 'L',  dp: 1 },
-  { div: 1e3, suffix: 'k',  dp: 0 },
-  { div: 1,   suffix: '',   dp: 0 },
-];
+function units() {
+  return [
+    ...scale().map(([div, suffix, dp]) => ({ div, suffix, dp })),
+    { div: 1, suffix: '', dp: 0 },
+  ];
+}
 
 function unit(values) {
+  const UNITS = units();
   const vals = values.map((v) => Math.abs(v || 0)).filter((v) => v > 0);
   if (!vals.length) return UNITS[3];
   const max = Math.max(...vals);
@@ -1510,6 +1528,79 @@ async function renderSettings() {
   if (d.error) { host.append(empty('No organisation yet', d.error)); return; }
 
   const form = el('form', 'settings-form');
+  form.append(el('p', 'drop-sub',
+    'Nothing here is fixed. A country pack fills these in with values '
+    + 'that suit where you trade; every one of them stays yours to '
+    + 'change afterwards.'));
+
+  /* The country pack first, because it sets sensible values for
+     everything below it. A starting point, not a rule: every figure
+     it writes stays editable, and applying one does not touch
+     anything already tuned by hand. */
+  const place = el('div', 'detail-block');
+  place.append(el('h3', null, 'Where you trade'));
+  const sel = el('select');
+  sel.id = 'set-country';
+  const selLab = el('label', null, 'Country');
+  selLab.htmlFor = 'set-country';
+  place.append(selLab);
+  place.append(sel);
+  const packNote = el('p', 'drop-sub', '');
+  place.append(packNote);
+  const applyBtn = el('button', 'btn', 'Apply these defaults');
+  applyBtn.type = 'button';
+  applyBtn.style.marginTop = '8px';
+  place.append(applyBtn);
+  form.append(place);
+
+  try {
+    const cr = await fetch('/api/countries');
+    const { data: cd } = await readResponse(cr, 'Countries');
+    (cd.countries || []).forEach((c) => {
+      const o = el('option', null,
+        `${c.name} — ${c.currency_name} (${c.currency})`);
+      o.value = c.code;
+      o.dataset.notes = c.notes || '';
+      o.dataset.scale = c.scale;
+      sel.append(o);
+    });
+    sel.value = (d.settings || {}).country || d.country || 'PK';
+    const describe = () => {
+      const o = sel.selectedOptions[0];
+      if (!o) return;
+      packNote.textContent =
+        `Numbers grouped the ${o.dataset.scale === 'indian'
+          ? 'South Asian way (lakh, crore)'
+          : 'western way (thousands, millions)'}. `
+        + (o.dataset.notes || '')
+        + ' Applying this overwrites only what it covers; anything you '
+        + 'have already changed by hand stays.';
+    };
+    describe();
+    sel.addEventListener('change', describe);
+  } catch (e) {
+    packNote.textContent = 'The country list could not be read.';
+  }
+
+  applyBtn.addEventListener('click', async () => {
+    applyBtn.disabled = true;
+    applyBtn.textContent = 'Applying…';
+    try {
+      const r = await fetch('/api/settings/country', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ country: sel.value }),
+      });
+      const { data } = await readResponse(r, 'Applying');
+      if (!data.ok) throw new Error(data.error || 'refused');
+      await boot();
+      go('settings');
+    } catch (ex) {
+      packNote.textContent = ex.message;
+      applyBtn.disabled = false;
+      applyBtn.textContent = 'Apply these defaults';
+    }
+  });
 
   const who = el('div', 'detail-block');
   who.append(el('h3', null, 'This business'));
@@ -1520,6 +1611,15 @@ async function renderSettings() {
   const nameLab = el('label', null, 'Name');
   nameLab.htmlFor = 'set-name';
   who.append(nameLab); who.append(name);
+  const ccy = el('input');
+  ccy.type = 'text';
+  ccy.id = 'set-currency';
+  ccy.maxLength = 3;
+  ccy.value = (d.settings || {}).currency || d.currency || '';
+  ccy.style.textTransform = 'uppercase';
+  const ccyLab = el('label', null, 'Currency');
+  ccyLab.htmlFor = 'set-currency';
+  who.append(ccyLab); who.append(ccy);
   who.append(el('p', 'drop-sub',
     `Signed in as ${d.email}. ${d.branches.length} branches: `
     + `${d.branches.map((b) => b.code).join(', ')}.`));
@@ -1559,6 +1659,7 @@ async function renderSettings() {
     err.hidden = true;
     const settings = {};
     Object.entries(inputs).forEach(([k, i]) => { settings[k] = i.value; });
+    if (ccy.value.trim()) settings.currency = ccy.value.trim().toUpperCase();
     try {
       const r = await fetch('/api/settings', {
         method: 'POST',

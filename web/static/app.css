@@ -1571,3 +1571,14 @@ td.warn { color: var(--attention); }
   border-left: 1px solid var(--rule);
 }
 .deck-row .big { font-size: 21px; }
+
+
+.settings-form select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--surface);
+  color: var(--text);
+  font: 400 13.5px var(--sans);
+}

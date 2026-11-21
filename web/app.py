@@ -604,7 +604,14 @@ SETTABLE = {
     "target_cover_months": (0.25, 36.0),
     "excess_cover_months": (0.5, 60.0),
     "cost_of_capital_annual": (0.0, 1.0),
-    "cash_buffer": (0.0, 1e12),
+    "cash_buffer": (0.0, 1e15),
+}
+
+# Not numbers, so not range-checked: each is one of a known set.
+SETTABLE_TEXT = {
+    "currency": lambda v: (len(v) == 3 and v.isalpha(), v.upper()),
+    "scale": lambda v: (v in ("indian", "western"), v.lower()),
+    "country": lambda v: (len(v) == 2 and v.isalpha(), v.upper()),
 }
 
 
@@ -631,6 +638,54 @@ def thresholds_for(settings: dict):
         clean.pop("excess_cover_months", None)
         clean.pop("target_cover_months", None)
     return Thresholds(**clean)
+
+
+@app.post("/api/settings/country")
+async def apply_country(request: Request,
+                        claims: Claims = Depends(require)) -> JSONResponse:
+    """Apply a country pack.
+
+    A starting point, written in rather than referenced. Changing a
+    pack in the code afterwards must never silently change a figure on
+    somebody's screen -- they took a default, they did not subscribe
+    to one. Every value it writes stays editable.
+    """
+    import json as _json
+
+    from engine.country import PACKS, as_settings
+    from engine.db.supabase import database
+
+    body = await request.json()
+    code = str(body.get("country", "")).upper()
+    if code not in PACKS:
+        return JSONResponse({"ok": False, "error": f"No pack for {code!r}."},
+                            400)
+
+    fresh = as_settings(code)
+    with database().as_user(claims.user_id) as conn:
+        row = conn.execute(
+            "select settings from public.organisations "
+            "order by created_at limit 1").fetchone()
+        if not row:
+            return JSONResponse({"ok": False, "error": "no organisation"}, 409)
+        # Merged, not replaced. Anything already tuned by hand survives
+        # applying a pack; only what the pack covers is overwritten.
+        merged = dict(row[0] or {})
+        merged.update(fresh)
+        conn.execute(
+            "update public.organisations set settings = %s, currency = %s, "
+            "country = %s where id = (select id from public.organisations "
+            "order by created_at limit 1)",
+            (_json.dumps(merged), fresh["currency"], code))
+    return JSONResponse({"ok": True, "applied": fresh})
+
+
+@app.get("/api/countries")
+def countries() -> JSONResponse:
+    """Every pack, for the dropdown. Public: it is a list of countries."""
+    from engine.country import listing
+
+    return JSONResponse({"countries": listing()})
 
 
 @app.get("/api/settings")
@@ -680,6 +735,15 @@ async def write_settings(request: Request,
             rejected.append(f"{key} has to be between {lo:g} and {hi:g}")
             continue
         keep[key] = v
+
+    for key, check in SETTABLE_TEXT.items():
+        if key not in incoming or not incoming[key]:
+            continue
+        ok, cleaned = check(str(incoming[key]).strip())
+        if not ok:
+            rejected.append(f"{key} is not one this app knows")
+            continue
+        keep[key] = cleaned
 
     target = keep.get("target_cover_months", 3.0)
     excess = keep.get("excess_cover_months", 6.0)
@@ -823,7 +887,8 @@ def state(request: Request) -> dict:
             row = conn.execute(
                 "select settings from public.organisations "
                 "order by created_at limit 1").fetchone()
-            th = thresholds_for(row[0] if row else {})
+            settings = row[0] if row else {}
+            th = thresholds_for(settings)
     except NotConfigured:
         return api.state_payload()
     except Exception:
@@ -835,12 +900,15 @@ def state(request: Request) -> dict:
                 "branches": ["ALL"], "line": {}, "currency": "PKR",
                 "asof": _date.today().isoformat()}
 
+    money_scale = (settings or {}).get("scale", "indian")
+    currency = (settings or {}).get("currency") or snap.currency
     if snap.is_empty:
-        return api.empty_payload(_date.today(), snap.currency)
+        return api.empty_payload(_date.today(), currency, money_scale)
 
     return api.state_payload(as_of=_date.today(), items=snap.items,
                              demand=snap.demand, source="Your data",
-                             currency=snap.currency, thresholds=th)
+                             currency=currency, thresholds=th,
+                             scale=money_scale)
 
 
 @app.get("/api/workbook.xlsx")
