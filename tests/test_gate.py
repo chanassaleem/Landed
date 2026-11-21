@@ -362,3 +362,93 @@ def test_a_link_with_no_token_is_not_a_crash(client, monkeypatch):
     r = client.get("/auth/confirm", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/sign-in?problem=link"
+
+
+# ------------------------------------------------ the default-template door
+
+def test_the_session_endpoint_refuses_a_token_it_cannot_verify(
+    client, monkeypatch
+):
+    """This endpoint is public and takes a token from whoever posts one.
+
+    If it trusted what it was given, anybody could hand it a string
+    naming any user and be issued a working session cookie for them.
+    The signature check is the entire security of this route.
+    """
+    monkeypatch.setattr(webapp, "auth", lambda: FakeAuth())
+    r = client.post("/auth/session",
+                    json={"access_token": "made.up.token",
+                          "refresh_token": "also-made-up"})
+    assert r.status_code == 401
+    assert not any(c.startswith(f"{session.ACCESS}=")
+                   for c in r.headers.get_list("set-cookie"))
+
+
+def test_a_verified_token_becomes_an_httponly_cookie(client, monkeypatch):
+    import engine.supabase_auth as sa
+
+    monkeypatch.setattr(webapp, "auth", lambda: FakeAuth())
+    monkeypatch.setattr(webapp, "verifier", lambda: type("V", (), {
+        "verify": staticmethod(lambda t: sa.Claims(
+            user_id="55555555-5555-5555-5555-555555555555",
+            email="d@example.com", expires_at=int(time.time()) + 3600))
+    })())
+    r = client.post("/auth/session",
+                    json={"access_token": "real", "refresh_token": "r"})
+    assert r.status_code == 200
+    cookies = r.headers.get_list("set-cookie")
+    assert any(c.startswith(f"{session.ACCESS}=") and "HttpOnly" in c
+               for c in cookies)
+
+
+def test_sign_up_sends_the_redirect_as_a_query_parameter(client, monkeypatch):
+    """GoTrue ignores redirect_to in the JSON body and falls back to the
+    Site URL -- which defaults to localhost, so the only symptom is a
+    confirmation email pointing at a machine that is not running."""
+    seen = {}
+
+    class Watch(FakeAuth):
+        def sign_up(self, email, password, redirect_to=""):
+            seen["redirect_to"] = redirect_to
+            return None
+
+    monkeypatch.setattr(webapp, "auth", lambda: Watch())
+    monkeypatch.setenv("LANDED_BASE_URL", "https://landed.example.com")
+    r = client.post("/auth/sign-up",
+                    json={"email": "a@b.com", "password": "x" * 12})
+    assert r.json()["confirm"] is True
+    assert seen["redirect_to"] == "https://landed.example.com/auth/landing"
+
+
+def test_the_redirect_url_carries_no_query_string_of_its_own(
+    client, monkeypatch
+):
+    """GoTrue truncates a redirect_to at its first query parameter by
+    the time it reaches the email, so the URL has to be a bare path."""
+    seen = {}
+
+    class Watch(FakeAuth):
+        def sign_up(self, email, password, redirect_to=""):
+            seen["redirect_to"] = redirect_to
+            return None
+
+    monkeypatch.setattr(webapp, "auth", lambda: Watch())
+    client.post("/auth/sign-up", json={"email": "a@b.com", "password": "x" * 12})
+    assert "?" not in seen["redirect_to"]
+
+
+def test_the_base_url_is_https_behind_a_proxy(monkeypatch):
+    """Render terminates TLS, so the request arrives as http. A
+    redirect_to that does not match the allow-list exactly is discarded
+    without a word, and http:// against an https:// entry does not
+    match."""
+    monkeypatch.delenv("LANDED_BASE_URL", raising=False)
+    monkeypatch.setenv("RENDER_EXTERNAL_URL", "https://landed.onrender.com")
+    c = TestClient(webapp.app)
+
+    class Req:
+        base_url = "http://landed.onrender.com/"
+
+    assert webapp.base_url(Req()) == "https://landed.onrender.com"
+    monkeypatch.delenv("RENDER_EXTERNAL_URL", raising=False)
+    assert webapp.base_url(Req()) == "https://landed.onrender.com"

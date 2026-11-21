@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<!-- The URL that reaches this page carries a session in its fragment.
+     Referrers are suppressed so it cannot travel any further. -->
+<meta name="referrer" content="no-referrer">
+<title>Signing you in · Landed</title>
+<link rel="icon" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/app.css">
+<script>
+  try {
+    const saved = localStorage.getItem('landed.theme');
+    const dark = saved ? saved === 'dark'
+      : matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  } catch (e) {}
+</script>
+</head>
+<body class="gate-body">
+<main class="gate">
+  <div class="gate-grid">
+    <div class="gate-card">
+      <h1 id="h">Signing you in</h1>
+      <p class="gate-sub" id="p">One moment.</p>
+      <p class="gate-sub" id="link" hidden>
+        <a class="linkish" href="/sign-in">Go to sign in</a>
+      </p>
+    </div>
+  </div>
+</main>
+<script src="/static/landing.js"></script>
+</body>
+</html>

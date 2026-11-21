@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from urllib.parse import quote
 
 import httpx
 
@@ -117,9 +118,28 @@ class Auth:
             raise SignInFailed("rejected")
         return self._tokens(r.json())
 
-    def sign_up(self, email: str, password: str) -> Tokens | None:
+    def sign_up(self, email: str, password: str,
+                redirect_to: str = "") -> Tokens | None:
+        """Create the account, and say where its confirmation link lands.
+
+        `redirect_to` goes in the query string, not the body. GoTrue
+        ignores it in the body and silently falls back to the project's
+        Site URL, which defaults to localhost -- so the symptom is a
+        confirmation email pointing at a machine that is not running,
+        with nothing anywhere reporting a mistake.
+
+        It is also ignored unless the exact URL is allow-listed under
+        Authentication -> URL Configuration -> Redirect URLs, with the
+        same silent fallback. Both halves have to be right.
+        """
+        url = f"{self.url}/auth/v1/signup"
+        if redirect_to:
+            # Deliberately a bare path with no query string of its own:
+            # a redirect_to carrying its own parameters gets truncated
+            # at the first one by the time it reaches the email.
+            url += f"?redirect_to={quote(redirect_to, safe='')}"
         r = self._client().post(
-            f"{self.url}/auth/v1/signup",
+            url,
             headers=self._headers(),
             json={"email": email, "password": password},
         )

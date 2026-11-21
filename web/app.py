@@ -56,6 +56,28 @@ def verifier() -> Verifier:
     return _verifier
 
 
+def base_url(request: Request) -> str:
+    """The address this deployment is reachable at, from outside.
+
+    Needed because a confirmation link has to be built before the
+    browser that will follow it exists. Taken from configuration first,
+    then Render's own variable, and only then from the request -- which
+    behind a proxy reports http even when the world speaks to it over
+    https, and a redirect_to that does not match the allow-list exactly
+    is discarded without a word.
+    """
+    import os
+
+    for name in ("LANDED_BASE_URL", "RENDER_EXTERNAL_URL"):
+        if os.environ.get(name):
+            return os.environ[name].rstrip("/")
+    url = str(request.base_url).rstrip("/")
+    if url.startswith("http://") and "localhost" not in url \
+            and "127.0.0.1" not in url:
+        url = "https://" + url[len("http://"):]
+    return url
+
+
 def who(request: Request) -> Claims | None:
     """The signed-in user, or None. Never raises.
 
@@ -214,7 +236,8 @@ async def sign_up(request: Request) -> JSONResponse:
         return JSONResponse(
             {"error": "Use at least 10 characters."}, 400)
     try:
-        tokens = a.sign_up(str(body.get("email", "")).strip(), password)
+        tokens = a.sign_up(str(body.get("email", "")).strip(), password,
+                           redirect_to=f"{base_url(request)}/auth/landing")
     except session.SignInFailed:
         return JSONResponse({"error": "That did not work. Try another email."},
                             400)
@@ -256,6 +279,46 @@ def confirm(request: Request) -> Response:
 
     r = RedirectResponse("/", status_code=303)
     session.set_session(r, tokens)
+    return r
+
+
+@app.get("/auth/landing", response_class=HTMLResponse)
+def landing() -> FileResponse:
+    """Where Supabase's own confirmation link comes back to.
+
+    The built-in email template cannot be edited without custom SMTP,
+    so the link goes to Supabase, which verifies the token and then
+    redirects here with the session in the URL fragment. This page
+    hands those tokens to the server and removes them from the address
+    bar. It is the lesser of the two routes -- /auth/confirm never puts
+    a token in a URL at all -- and it is the one that works on a
+    project using the default template.
+    """
+    return FileResponse(STATIC / "landing.html")
+
+
+@app.post("/auth/session")
+async def adopt_session(request: Request) -> JSONResponse:
+    """Take tokens from the landing page and turn them into a cookie.
+
+    Every token is verified before anything is set. This endpoint is
+    public and accepts a token from whoever posts one, so trusting it
+    would mean anybody could hand it a string and be issued a session
+    cookie for whichever user they named. The signature is the only
+    thing that makes the claim worth anything, and it is checked here
+    exactly as it is checked on every other request.
+    """
+    body = await request.json()
+    access = str(body.get("access_token", ""))
+    refresh = str(body.get("refresh_token", ""))
+    try:
+        claims = verifier().verify(access)
+    except AuthError:
+        return JSONResponse({"error": "that link did not work"}, 401)
+
+    r = JSONResponse({"ok": True})
+    session.set_session(
+        r, session.Tokens(access, refresh, max(claims.seconds_left, 60)))
     return r
 
 

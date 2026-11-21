@@ -185,23 +185,42 @@ sign-in is off. `/health/auth` names what is missing.
 - Site URL: the deployed address, e.g. `https://landed-wvsm.onrender.com`.
   It defaults to `http://localhost:3000`, so until it is changed every
   confirmation email points at a machine that is not running.
-- Redirect URLs: add `https://<your-host>/auth/confirm`.
+- Redirect URLs: add `https://<your-host>/auth/landing` **and**
+  `https://<your-host>/auth/confirm`. GoTrue discards a `redirect_to`
+  that is not on this list and silently uses the Site URL instead.
 
-**Authentication → Email Templates → Confirm signup**, change the link to:
+There are two doors for a confirmation link, and which one you get
+depends on whether you can edit the email template.
+
+**The default template (no custom SMTP).** Supabase will not let you
+edit the subject or body until custom SMTP is configured, so the link
+stays `{{ .ConfirmationURL }}`: it verifies at Supabase and then
+redirects back with the session in the URL fragment. The app handles
+this at `/auth/landing`, which reads the fragment, strips it from the
+address bar, and posts the tokens to `/auth/session` -- which verifies
+the signature before issuing a cookie, because that endpoint is public
+and accepting a token on trust would hand anyone a session for any
+user they named.
+
+Nothing in the dashboard needs changing for this beyond the two URL
+settings above: the app sends `redirect_to` on sign-up itself. It sends
+it as a **query parameter**, because GoTrue ignores it in the body and
+falls back to the Site URL without saying so.
+
+**A custom template (once SMTP is set up).** Better, and worth moving
+to. Change **Authentication → Email Templates → Confirm signup** to:
 
     <a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=signup">
       Confirm your email address
     </a>
 
-Not the default `{{ .ConfirmationURL }}`. That one confirms at Supabase
-and then redirects back with the session in the URL -- in the fragment,
-or as a code to exchange -- and a session in a URL is kept: browser
-history, the referrer header, a screenshot in a bug report. The code
-form also only works in the browser that signed up, so signing up on a
-laptop and opening the email on a phone fails.
+`/auth/confirm` redeems that hash server-side, so no token is ever in
+a URL at all -- not in browser history, not in a referrer header, not
+in a screenshot pasted into a bug report. It also works when the email
+is opened in a different browser from the one that signed up, which
+the code-exchange form does not.
 
-`{{ .TokenHash }}` is redeemed by `/auth/confirm` on the server. The
-browser gets a cookie it cannot read and a plain path.
+Both routes exist and both are tested. The first is what works today.
 
 To skip confirmation entirely while testing, turn off **Confirm email**
 under Authentication → Providers → Email. Sign-up then returns a session
