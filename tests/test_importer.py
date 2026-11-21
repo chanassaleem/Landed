@@ -251,3 +251,64 @@ def test_nothing_is_written_when_the_plan_has_problems(book, org):
         apply(cur, p)
     cur.execute("select count(*) from public.items")
     assert cur.fetchone()[0] == 0
+
+
+def test_the_commit_does_not_send_a_statement_per_row(book, org):
+    """The failure that reached production.
+
+    One statement at a time this sent 5,218 of them. Over a unix socket
+    in this test that is a couple of seconds, so every test passed;
+    across the network to a hosted database it is two to five minutes,
+    and the platform cuts the request and returns 502 with no body.
+
+    Counting round trips rather than timing them, because the clock
+    here is the wrong clock -- it is the network that makes this fail,
+    and the test machine has none.
+    """
+    conn, cur, _ = org
+    p = plan(book)
+    rows = len(p.stock) * 2 + len(p.history) + len(p.orders)
+    assert rows > 4000, "the sample is too small to be a fair test"
+
+    class Counting:
+        def __init__(self, real):
+            self._real = real
+            self.executes = 0
+            self.batches = 0
+
+        def execute(self, *a, **k):
+            self.executes += 1
+            return self._real.execute(*a, **k)
+
+        def executemany(self, *a, **k):
+            self.batches += 1
+            return self._real.executemany(*a, **k)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    spy = Counting(cur)
+    apply(spy, p)
+
+    # Branches, suppliers, items and PO headers are one each and need
+    # their ids back. Everything else is batched.
+    assert spy.executes < 200, (
+        f"{spy.executes} individual statements for {rows} rows -- this is "
+        f"the shape that times out against a real database")
+    assert spy.batches >= 3, "the bulk tables are not being batched"
+
+
+def test_every_row_still_arrives_when_batched(book, org):
+    """Speed is worthless if it drops rows. Counted against the plan."""
+    conn, cur, _ = org
+    p = plan(book)
+    apply(cur, p)
+
+    cur.execute("select count(*) from public.demand_history")
+    assert cur.fetchone()[0] == len(p.history)
+    cur.execute("select count(*) from public.stock_movement")
+    assert cur.fetchone()[0] == sum(1 for s in p.stock if s["qty"])
+    cur.execute("select count(*) from public.item_locations")
+    assert cur.fetchone()[0] == len(p.stock)
+    cur.execute("select count(*) from public.po_lines")
+    assert cur.fetchone()[0] == len(p.orders)

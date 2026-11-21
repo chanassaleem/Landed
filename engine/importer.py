@@ -464,141 +464,159 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
     nothing behind. A partly-written import is worse than a refused
     one: the retry then collides with what the first attempt made, and
     somebody reconciles two half-states by hand.
+
+    The bulk tables go through executemany, which psycopg pipelines
+    into a few round trips rather than one per row. That is not a
+    micro-optimisation. A statement at a time, this sent 5,218 of them;
+    over a unix socket in a test that is two seconds, and across the
+    network to a hosted database it is two to five minutes -- long
+    enough that the platform cuts the request and returns a 502 with no
+    body, which is exactly how this first failed in production.
     """
     if not p.ok:
         raise BadWorkbook("This plan has problems that must be fixed first.")
 
-    # Every insert below reads `select id from public.organisations limit 1`
-    # to find the caller's organisation. With no organisation that
-    # returns no rows, the insert writes nothing, and the fetchone()
-    # after it hands back None -- which surfaced to the first real user
-    # as "TypeError" and nothing else. Checked once, here, and said in
-    # words.
-    row = conn.execute("select count(*) from public.organisations").fetchone()
-    if not row or not row[0]:
+    # A connection or a cursor, because both arrive here: the route
+    # passes the connection it got from as_user, the tests pass the
+    # cursor they are already holding. Resolving it once beats every
+    # call site having to know, and the difference between the two is
+    # how the first version of this passed its tests and failed in
+    # production.
+    run = conn.cursor() if hasattr(conn, "cursor") else conn
+
+    # Which organisation, asked once. Under row-level security this
+    # returns the caller's own; with none it returns nothing, and every
+    # insert below would write nowhere and hand back None.
+    row = run.execute(
+        "select id from public.organisations order by created_at limit 1"
+    ).fetchone()
+    if not row:
         raise NoOrganisation(
             "This account has no organisation yet, so there is nowhere to "
             "put the import. Name your business first.")
+    org = row[0]
 
     as_of = as_of or date.today()
     made = {k: 0 for k in
             ("branches", "suppliers", "items", "movements", "history",
              "orders", "shipments")}
 
-    # Branches
+    # ---- the small tables, which need their ids back
+
     loc = {}
     for b in p.branches:
-        row = conn.execute(
+        got = run.execute(
             "insert into public.locations (org_id, code, name, city, "
-            "is_warehouse) select id, %s, %s, %s, %s from public.organisations "
-            "limit 1 on conflict (org_id, code) do update set name = "
-            "excluded.name returning id",
-            (b["code"], b["name"], b["city"] or None, b["warehouse"]),
+            "is_warehouse) values (%s, %s, %s, %s, %s) "
+            "on conflict (org_id, code) do update set name = excluded.name "
+            "returning id",
+            (org, b["code"], b["name"], b["city"] or None, b["warehouse"]),
         ).fetchone()
-        loc[b["code"]] = row[0]
+        loc[b["code"]] = got[0]
         made["branches"] += 1
 
-    # Suppliers, named on their own sheet or only on Items
     names = {s["name"] for s in p.suppliers}
     names |= {i["supplier"] for i in p.items if i["supplier"]}
     sup = {}
     for name in sorted(n for n in names if n):
         spec = next((s for s in p.suppliers if s["name"] == name), None)
-        # Suppliers are unique on (org_id, code), not on name -- a
-        # business can have two contacts at one company. The sheet asks
-        # only for a name, so the code is derived from it and stays
-        # stable across imports, which is what makes the upsert work.
-        row = conn.execute(
+        got = run.execute(
             "insert into public.suppliers (org_id, code, name, country, "
-            "currency) select id, %s, %s, %s, %s from public.organisations "
-            "limit 1 on conflict (org_id, code) do update set "
-            "name = excluded.name returning id",
-            (supplier_code(name), name, (spec or {}).get("country") or None,
-             (spec or {}).get("currency") or "PKR"),
+            "currency) values (%s, %s, %s, %s, %s) "
+            "on conflict (org_id, code) do update set name = excluded.name "
+            "returning id",
+            (org, supplier_code(name), name,
+             (spec or {}).get("country") or None,
+             _three((spec or {}).get("currency") or "")),
         ).fetchone()
-        sup[name] = row[0]
+        sup[name] = got[0]
         made["suppliers"] += 1
 
-    # Items
     item = {}
     for i in p.items:
-        row = conn.execute(
+        got = run.execute(
             "insert into public.items (org_id, sku, description, category, "
             "uom, supplier_id, lead_time_days, lead_time_days_std, "
-            "is_clinical_critical) select id, %s, %s, %s, %s, %s, %s, %s, %s "
-            "from public.organisations limit 1 "
+            "is_clinical_critical) values (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
             "on conflict (org_id, sku) do update set "
             "description = excluded.description, category = excluded.category, "
             "lead_time_days = excluded.lead_time_days, "
             "lead_time_days_std = excluded.lead_time_days_std, "
             "is_clinical_critical = excluded.is_clinical_critical "
             "returning id",
-            (i["sku"], i["description"], i["category"], i["uom"],
+            (org, i["sku"], i["description"], i["category"], i["uom"],
              sup.get(i["supplier"]), i["lead"], i["lead_std"], i["critical"]),
         ).fetchone()
-        item[i["sku"]] = row[0]
+        item[i["sku"]] = got[0]
         made["items"] += 1
 
-    # Stock, as an opening movement rather than a balance. The ledger is
-    # the only place a quantity lives; a balance written beside it is a
-    # second number that can disagree with the first.
+    # ---- the bulk tables, batched
+
+    places, movements = [], []
     for s in p.stock:
         iid, lid = item.get(s["sku"]), loc.get(s["branch"])
         if not iid or not lid:
             continue
-        conn.execute(
-            "insert into public.item_locations (org_id, item_id, location_id, "
-            "expiry_date) select org_id, %s, %s, %s from public.items "
-            "where id = %s on conflict (item_id, location_id) do update set "
-            "expiry_date = excluded.expiry_date",
-            (iid, lid, s["expiry"], iid))
+        places.append((org, iid, lid, s["expiry"]))
         if s["qty"]:
-            conn.execute(
-                "insert into public.stock_movement (org_id, item_id, "
-                "location_id, qty, unit_cost, reason, occurred_at, client_ref) "
-                "select org_id, %s, %s, %s, %s, 'opening', %s, %s "
-                "from public.items where id = %s",
-                (iid, lid, s["qty"], s["cost"] or None, as_of,
-                 f"import:opening:{s['sku']}:{s['branch']}", iid))
-            made["movements"] += 1
+            movements.append((
+                org, iid, lid, s["qty"], s["cost"] or None, as_of,
+                f"import:opening:{s['sku']}:{s['branch']}"))
 
-    # History
-    for hrow in p.history:
-        iid, lid = item.get(hrow["sku"]), loc.get(hrow["branch"])
-        if not iid or not lid or not PERIOD.match(hrow["period"]):
-            continue
-        conn.execute(
-            "insert into public.demand_history (org_id, location_id, item_id, "
-            "period, quantity, source) select org_id, %s, %s, %s, %s, 'import' "
-            "from public.items where id = %s "
+    if places:
+        run.executemany(
+            "insert into public.item_locations (org_id, item_id, "
+            "location_id, expiry_date) values (%s, %s, %s, %s) "
+            "on conflict (item_id, location_id) do update set "
+            "expiry_date = excluded.expiry_date", places)
+
+    if movements:
+        # Stock arrives as a ledger entry, not a balance. A stored
+        # balance is a second number that can disagree with the
+        # movements behind it, and then nobody can say which is wrong.
+        run.executemany(
+            "insert into public.stock_movement (org_id, item_id, "
+            "location_id, qty, unit_cost, reason, occurred_at, client_ref) "
+            "values (%s, %s, %s, %s, %s, 'opening', %s, %s)", movements)
+        made["movements"] = len(movements)
+
+    history = []
+    for h in p.history:
+        iid, lid = item.get(h["sku"]), loc.get(h["branch"])
+        if iid and lid and PERIOD.match(h["period"]):
+            history.append((org, lid, iid, h["period"], h["qty"]))
+    if history:
+        run.executemany(
+            "insert into public.demand_history (org_id, location_id, "
+            "item_id, period, quantity, source) "
+            "values (%s, %s, %s, %s, %s, 'import') "
             "on conflict (org_id, location_id, item_id, period) "
-            "do update set quantity = excluded.quantity",
-            (lid, iid, hrow["period"], hrow["qty"], iid))
-        made["history"] += 1
+            "do update set quantity = excluded.quantity", history)
+        made["history"] = len(history)
 
-    # Purchase orders, header once and a line per row
-    heads = {}
+    # ---- purchase orders: header once, a line per row
+
+    heads, lines = {}, []
     for o in p.orders:
         iid, lid = item.get(o["sku"]), loc.get(o["branch"])
         if not iid or not lid:
             continue
         if o["po"] not in heads:
-            row = conn.execute(
+            got = run.execute(
                 "insert into public.purchase_orders (org_id, location_id, "
                 "supplier_id, po_number, currency, fx_rate, status, "
-                "ordered_at, expected_at) select org_id, %s, %s, %s, %s, %s, "
-                "%s, %s, %s from public.items where id = %s "
+                "ordered_at, expected_at) values (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "on conflict (org_id, po_number) do update set "
                 "status = excluded.status returning id",
-                (lid, sup.get(o["supplier"]), o["po"], o["currency"],
-                 o["fx"] or 1, o["status"], o["ordered"], o["expected"], iid),
+                (org, lid, sup.get(o["supplier"]), o["po"], o["currency"],
+                 o["fx"] or 1, o["status"], o["ordered"], o["expected"]),
             ).fetchone()
-            heads[o["po"]] = row[0]
+            heads[o["po"]] = got[0]
             made["orders"] += 1
-        conn.execute(
+        lines.append((org, heads[o["po"]], iid, o["qty"], o["price"]))
+    if lines:
+        run.executemany(
             "insert into public.po_lines (org_id, po_id, item_id, qty, "
-            "unit_price) select org_id, %s, %s, %s, %s from public.items "
-            "where id = %s",
-            (heads[o["po"]], iid, o["qty"], o["price"], iid))
+            "unit_price) values (%s, %s, %s, %s, %s)", lines)
 
     return made
