@@ -1061,3 +1061,10 @@ td.dim { color: var(--text-2); }
   line-height: 1.5;
   max-width: 32ch;
 }
+
+/* A banner that is reporting a problem rather than a caveat. */
+.banner.warn {
+  border-left-color: var(--attention);
+  background: color-mix(in srgb, var(--attention) 7%, transparent);
+}
+.banner.warn a { color: var(--attention); }

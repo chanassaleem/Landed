@@ -199,3 +199,52 @@ def test_sign_in_says_so_when_auth_is_not_configured(monkeypatch):
     r = c.post("/auth/sign-in", json={"email": "a@b.com", "password": "x" * 12})
     assert r.status_code == 503
     webapp._auth = None
+
+
+# ------------------------------------------------- saying so when it is off
+
+def test_health_auth_names_the_missing_variable(monkeypatch):
+    """The failure this reports is a silent one: with no anon key the
+    app does not break, it drops the gate and serves sample data, which
+    looks exactly like a build where login was never written."""
+    monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    webapp._auth = None
+    d = TestClient(webapp.app).get("/health/auth").json()
+    assert d["sign_in_enabled"] is False
+    assert d["missing"] == ["SUPABASE_ANON_KEY"]
+    assert "SUPABASE_ANON_KEY" in d["detail"]
+    webapp._auth = None
+
+
+def test_health_auth_never_reports_a_key_value(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "super-secret-anon-value")
+    webapp._auth = None
+    r = TestClient(webapp.app).get("/health/auth")
+    assert r.json()["sign_in_enabled"] is True
+    assert "super-secret-anon-value" not in r.text
+    webapp._auth = None
+
+
+def test_config_tells_the_page_whether_to_offer_a_login(monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
+    webapp._auth = None
+    c = TestClient(webapp.app)
+    assert c.get("/api/config").json()["auth_configured"] is False
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "anon")
+    assert c.get("/api/config").json()["auth_configured"] is True
+    webapp._auth = None
+
+
+def test_the_version_is_reported_so_a_stale_deploy_is_visible(monkeypatch):
+    """A deploy that fails leaves the previous image serving. Everything
+    answers normally and the new feature is simply absent, which reads
+    as a bug in the feature rather than a deploy that never landed.
+    """
+    r = TestClient(webapp.app).get("/health")
+    assert r.json()["version"] == webapp.__version__
+    assert TestClient(webapp.app).get("/health/auth").json()["version"] == \
+        webapp.__version__

@@ -129,6 +129,51 @@ def health_supabase(response: Response) -> dict:
     return report
 
 
+@app.get("/health/auth")
+def health_auth() -> dict:
+    """Is sign-in switched on, and if not, what exactly is missing?
+
+    This endpoint exists because of the shape of the failure it reports.
+    With no anon key the app does not break -- it quietly drops the gate
+    and serves sample data, which looks identical to a build where the
+    login was never written. Naming the missing variable turns twenty
+    minutes of wondering into one request.
+
+    It reports which variables are set, never their values.
+    """
+    import os
+
+    url = os.environ.get("SUPABASE_URL", "")
+    key = os.environ.get("SUPABASE_ANON_KEY", "")
+    missing = [n for n, v in (("SUPABASE_URL", url),
+                              ("SUPABASE_ANON_KEY", key)) if not v]
+    return {
+        "sign_in_enabled": not missing,
+        "missing": missing,
+        "project": url or None,
+        "detail": (
+            "Sign-in is on."
+            if not missing
+            else "Sign-in is off, so the app is open and showing sample "
+                 f"data. Set {' and '.join(missing)} in the environment "
+                 "and redeploy."
+        ),
+        "version": __version__,
+    }
+
+
+@app.get("/api/config")
+def config() -> dict:
+    """What the page needs to know before it renders. No secrets."""
+    import os
+
+    return {
+        "auth_configured": bool(os.environ.get("SUPABASE_URL")
+                                and os.environ.get("SUPABASE_ANON_KEY")),
+        "version": __version__,
+    }
+
+
 @app.post("/auth/sign-in")
 async def sign_in(request: Request) -> JSONResponse:
     body = await request.json()

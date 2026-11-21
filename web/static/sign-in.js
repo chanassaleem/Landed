@@ -87,5 +87,24 @@ $('gate-form').addEventListener('submit', async (e) => {
   }
 });
 
+/* If the server has no Supabase credentials there is nothing to sign
+   in to, and letting someone type a password first and then showing
+   them a 503 is a waste of their time and tells them nothing. */
+async function checkConfigured() {
+  try {
+    const r = await fetch('/api/config');
+    const d = await r.json();
+    if (d.auth_configured) return;
+    document.querySelector('.gate-card').innerHTML =
+      '<h1>Sign-in is not switched on</h1>' +
+      '<p class="gate-sub">This deployment has no Supabase credentials, ' +
+      'so there are no accounts yet. Set <code>SUPABASE_URL</code> and ' +
+      '<code>SUPABASE_ANON_KEY</code> in the environment and redeploy.</p>' +
+      '<p class="gate-sub"><a class="linkish" href="/">Open it with sample ' +
+      'data instead</a></p>';
+  } catch (e) { /* leave the form up; submitting will report the error */ }
+}
+
 paint();
 $('email').focus();
+checkConfigured();

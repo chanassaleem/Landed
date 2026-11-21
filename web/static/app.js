@@ -587,6 +587,24 @@ function theme() {
   });
 }
 
+/* The app is open to anyone when auth is off. That is useful for a
+   demo and dangerous as a default, so it is stated on the screen
+   rather than left to be discovered. */
+async function announceOpenAccess() {
+  try {
+    const r = await fetch('/api/config');
+    const d = await r.json();
+    if (d.auth_configured) return;
+    const b = document.getElementById('sample-banner');
+    if (!b) return;
+    b.innerHTML =
+      '<b>Sign-in is off.</b> <span>No Supabase credentials are set, so ' +
+      'this deployment is open to anyone with the link and is showing ' +
+      'sample data. <a href="/health/auth">What is missing</a></span>';
+    b.classList.add('warn');
+  } catch (e) {}
+}
+
 async function boot() {
   buildNav();
   theme();
@@ -604,6 +622,7 @@ async function boot() {
   $('foot-scope').textContent = 'All branches';
   $('foot-source').textContent = S.data.source;
   $('sample-banner').hidden = S.data.source !== 'Sample data';
+  announceOpenAccess();
 
   renderLine();
   renderAll();
