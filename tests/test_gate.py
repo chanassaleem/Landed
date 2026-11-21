@@ -452,3 +452,69 @@ def test_the_base_url_is_https_behind_a_proxy(monkeypatch):
     assert webapp.base_url(Req()) == "https://landed.onrender.com"
     monkeypatch.delenv("RENDER_EXTERNAL_URL", raising=False)
     assert webapp.base_url(Req()) == "https://landed.onrender.com"
+
+
+# ---------------------------------------------- whose figures are on screen
+
+def test_a_visitor_gets_the_sample_importer(client, monkeypatch):
+    monkeypatch.setattr(webapp, "auth", lambda: FakeAuth())
+    d = client.get("/api/state").json()
+    assert d["source"] == "Sample data"
+    assert d["stock"]
+
+
+def test_a_signed_in_person_never_gets_someone_elses_figures(
+    signed_in, monkeypatch
+):
+    """The failure this prevents is the quiet one.
+
+    Falling back to the sample importer when the database cannot be
+    reached shows a signed-in customer a fictional company's healthy
+    numbers, labelled as their dashboard, with nothing on screen saying
+    otherwise. An error they can see is strictly better than figures
+    they might believe.
+    """
+    client, _ = signed_in
+
+    class Boom:
+        def as_user(self, _uid):
+            raise RuntimeError("no database")
+
+    import engine.db.supabase as sup
+    monkeypatch.setattr(sup, "database", lambda: Boom())
+    d = client.get("/api/state").json()
+    assert d["source"] == "Error"
+    assert d["stock"] == []
+    assert "unreachable" in d["error"]
+
+
+def test_an_empty_organisation_says_so_and_says_what_to_do(
+    signed_in, monkeypatch
+):
+    from engine.db.snapshot import Snapshot
+
+    client, _ = signed_in
+
+    class Conn:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    class DB:
+        def as_user(self, _uid): return Conn()
+
+    import engine.db.supabase as sup
+    import engine.db.snapshot as snapmod
+    monkeypatch.setattr(sup, "database", lambda: DB())
+    monkeypatch.setattr(
+        snapmod, "read",
+        lambda conn, as_of, currency="PKR": Snapshot([], [], [], "PKR"))
+
+    d = client.get("/api/state").json()
+    assert d["source"] == "No data yet"
+    assert d["stock"] == []
+    assert sum(d["line"].values()) == 0
+    # It has the same shape as a full payload, so the screen needs no
+    # second code path and cannot drift from one.
+    assert set(d) >= {"line", "stock", "shipments", "decisions", "branches"}
+    assert len(d["decisions"]) == 1
+    assert d["decisions"][0]["action"]

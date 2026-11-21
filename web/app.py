@@ -394,14 +394,50 @@ async def create_organisation(request: Request,
 
 
 @app.get("/api/state")
-def state() -> dict:
+def state(request: Request) -> dict:
     """Everything the screen needs, in one response.
 
     One request rather than six, because every view is a different cut
     of the same question. Six requests would be six chances for the cuts
     to disagree with each other on screen.
+
+    Who is asking decides what comes back. A visitor gets the sample
+    importer, which is how the product can be looked at before anyone
+    has an account. Someone signed in gets their own rows -- including
+    when there are none, which is the whole point: showing a new
+    customer a fictional company's healthy numbers and calling it their
+    dashboard is the worst of the three outcomes, because it is the one
+    they might believe.
     """
-    return api.state_payload()
+    from datetime import date as _date
+
+    claims = who(request)
+    if claims is None:
+        return api.state_payload()
+
+    try:
+        from engine.db.snapshot import read
+        from engine.db.supabase import NotConfigured, database
+
+        with database().as_user(claims.user_id) as conn:
+            snap = read(conn, _date.today())
+    except NotConfigured:
+        return api.state_payload()
+    except Exception:
+        # A database that is down must say so rather than quietly
+        # falling back to the sample importer, which would show a
+        # signed-in person someone else's figures and no warning.
+        return {"error": "the database is unreachable", "source": "Error",
+                "stock": [], "shipments": [], "decisions": [],
+                "branches": ["ALL"], "line": {}, "currency": "PKR",
+                "asof": _date.today().isoformat()}
+
+    if snap.is_empty:
+        return api.empty_payload(_date.today(), snap.currency)
+
+    return api.state_payload(as_of=_date.today(), items=snap.items,
+                             demand=snap.demand, source="Your data",
+                             currency=snap.currency)
 
 
 @app.get("/api/workbook.xlsx")

@@ -54,19 +54,29 @@ def _sample_records() -> dict:
     }
 
 
-def state_payload(as_of: date | None = None) -> dict[str, Any]:
+def state_payload(as_of: date | None = None, items=None, demand=None,
+                  source: str = "Sample data",
+                  currency: str = "PKR") -> dict[str, Any]:
     """The whole screen in one response.
 
     One request rather than six, because every screen is a different cut
     of the same question and splitting it would mean six chances for the
     cuts to disagree with each other.
+
+    With no records it builds the sample importer, which is what a
+    signed-out visitor sees. A signed-in person's own rows arrive
+    through `items` and `demand`, and `source` says which, because a
+    screen that cannot tell you whether its figures are yours is worse
+    than an empty one.
     """
     as_of = as_of or samples.AS_OF
     th = Thresholds()
-    recs = _sample_records()
-    blocks = report.build_blocks(recs["inventory"], recs["demand"], th, as_of)
+    if items is None:
+        recs = _sample_records()
+        items, demand = recs["inventory"], recs["demand"]
+    blocks = report.build_blocks(items, demand or [], th, as_of)
 
-    by_item = {i.item_key: i for i in recs["inventory"]}
+    by_item = {i.item_key: i for i in items}
 
     stock: list[dict] = []
     for block in blocks:
@@ -112,8 +122,8 @@ def state_payload(as_of: date | None = None) -> dict[str, Any]:
 
     return {
         "asof": as_of.isoformat(),
-        "currency": "PKR",
-        "source": "Sample data",
+        "currency": currency,
+        "source": source,
         "branches": branches,
         "line": line,
         "decisions": _decisions(stock, shipments, line),
@@ -265,3 +275,36 @@ def _decisions(stock: list[dict], shipments: list[dict], line: dict) -> list[dic
         })
 
     return out[:3]
+
+
+def empty_payload(as_of: date, currency: str = "PKR") -> dict[str, Any]:
+    """A new organisation, with nothing in it yet.
+
+    Deliberately the same shape as a full one, so the screen does not
+    need a second code path and cannot drift from it. The difference is
+    in `source` and in the one decision, which is the only honest thing
+    to put in front of someone whose business is not in here yet: what
+    to do first.
+    """
+    return {
+        "asof": as_of.isoformat(),
+        "currency": currency,
+        "source": "No data yet",
+        "branches": ["ALL"],
+        "line": {k: 0 for k in
+                 ("on_order", "on_water", "at_port", "on_shelf", "idle",
+                  "running_out")},
+        "stock": [],
+        "shipments": [],
+        "decisions": [{
+            "tone": "water",
+            "segment": "on_shelf",
+            "title": "Nothing here yet",
+            "value": 0,
+            "body": "Add your branches and the lines you carry, then a "
+                    "receipt for what is on the shelf today. From there "
+                    "every figure on this screen is yours.",
+            "action": "Set up the first branch",
+            "goto": "stock",
+        }],
+    }
