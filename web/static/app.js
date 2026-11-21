@@ -904,6 +904,49 @@ async function boot() {
 
 let pendingFile = null;
 
+/* Read a response without assuming it is JSON.
+
+   Twice now a failure has reached the screen as "Unexpected end of
+   JSON input", which says only that the body was not JSON -- not what
+   the body was, not what the status was, not what to do. The cases
+   that actually happen here all produce it: a sleeping instance
+   answering with its host's waking-up page, a gateway returning 502
+   with an empty body, a redirect that swallowed the POST.
+   
+   So: look at the status and the content type first, and say
+   something the person can act on. */
+async function readResponse(r, what) {
+  const type = (r.headers.get('content-type') || '').toLowerCase();
+  const text = await r.text();
+
+  if (type.includes('application/json')) {
+    try {
+      return { ok: r.ok, data: JSON.parse(text) };
+    } catch (e) {
+      throw new Error(
+        `${what} came back as damaged JSON (HTTP ${r.status}).`);
+    }
+  }
+
+  if (!text.trim()) {
+    throw new Error(
+      `${what} came back empty (HTTP ${r.status}). On a free Render `
+      + 'instance this usually means the server was asleep and is '
+      + 'starting up. Wait about thirty seconds and try again.');
+  }
+  if (/<html|application loading|service waking/i.test(text)) {
+    throw new Error(
+      'The server is still starting up, so the host answered instead of '
+      + 'the app. Wait about thirty seconds and try again.');
+  }
+  if (r.status === 413) {
+    throw new Error('That file is too large to upload.');
+  }
+  throw new Error(
+    `${what} came back as ${type || 'an unknown type'} (HTTP ${r.status}): `
+    + text.trim().slice(0, 160));
+}
+
 function importReport(d) {
   const host = $('import-report');
   host.textContent = '';
@@ -958,6 +1001,24 @@ function importReport(d) {
   $('import-go').hidden = !d.ok;
 }
 
+/* A free instance sleeps after fifteen idle minutes and takes most of
+   a minute to come back. Uploading into that produces a reply from the
+   host rather than the app, which is not a thing to explain after the
+   fact when it can be waited for instead. */
+async function wakeServer(say) {
+  for (let i = 0; i < 20; i += 1) {
+    try {
+      const r = await fetch('/health', { cache: 'no-store' });
+      if (r.ok && (r.headers.get('content-type') || '').includes('json')) {
+        return true;
+      }
+    } catch (e) { /* not up yet */ }
+    if (i === 0) say('The server was asleep. Waking it up…');
+    await new Promise((done) => setTimeout(done, 3000));
+  }
+  return false;
+}
+
 async function previewFile(file) {
   if (!file) return;
   if (!/\.xlsx$/i.test(file.name)) {
@@ -968,13 +1029,27 @@ async function previewFile(file) {
     return;
   }
   pendingFile = file;
+
+  const waiting = (msg) => importReport({
+    ok: false, counts: {}, problem_count: 1,
+    problems: [{ sheet: 'server', row: null, fatal: false, message: msg }],
+  });
+  if (!(await wakeServer(waiting))) {
+    waiting('The server did not come back. Give it a minute and try again.');
+    return;
+  }
+
   const body = new FormData();
   body.append('file', file);
   try {
     const r = await fetch('/api/import/preview', { method: 'POST', body });
-    const d = await r.json();
-    if (!r.ok && d.error) throw new Error(d.error);
-    importReport(d);
+    if (r.status === 401) {
+      throw new Error('You are not signed in any more. Reload the page, '
+        + 'sign in, and try again.');
+    }
+    const { ok, data } = await readResponse(r, 'The check');
+    if (!ok && data.error) throw new Error(data.error);
+    importReport(data);
   } catch (e) {
     importReport({ ok: false, counts: {}, problem_count: 1, problems: [
       { sheet: 'workbook', row: null, fatal: true, message: e.message }] });
@@ -1026,7 +1101,15 @@ function wireImport() {
     body.append('file', pendingFile);
     try {
       const r = await fetch('/api/import/commit', { method: 'POST', body });
-      const d = await r.json();
+      if (r.status === 401) {
+        throw new Error('You are not signed in any more. Reload the page, '
+          + 'sign in, and try again.');
+      }
+      const { data: d } = await readResponse(r, 'The import');
+      if (d.needs_organisation) {
+        throw new Error(d.error + ' Reload the page and you will be asked '
+          + 'for it.');
+      }
       if (!d.ok) throw new Error(d.error || 'The import was refused.');
       const w = d.written || {};
       $('import-report').textContent = '';
