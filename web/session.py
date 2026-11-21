@@ -130,6 +130,32 @@ class Auth:
         except SignInFailed:
             return None          # created, but needs email confirmation
 
+    def verify_otp(self, token_hash: str, kind: str = "signup") -> Tokens:
+        """Redeem the token from a confirmation email, here on the server.
+
+        The default Supabase link goes to Supabase, which confirms the
+        account and then redirects to the site with the session in the
+        URL -- in the fragment, or as a code to exchange. Both put a
+        credential in a place that is kept: browser history, the
+        referrer header, a shoulder, a screenshot in a bug report.
+
+        A token_hash link avoids all of it. The email carries a one-use
+        hash, this exchanges it for a session out of band, and the
+        browser is sent on to a plain URL with a cookie it cannot read.
+        It also works when the email is opened in a different browser
+        from the one that signed up, which the code-exchange flow does
+        not: that one needs a verifier held by the original browser, so
+        signing up on a laptop and opening the email on a phone fails.
+        """
+        r = self._client().post(
+            f"{self.url}/auth/v1/verify",
+            headers=self._headers(),
+            json={"type": kind, "token_hash": token_hash},
+        )
+        if r.status_code != 200:
+            raise SignInFailed("link rejected")
+        return self._tokens(r.json())
+
     def refresh(self, refresh_token: str) -> Tokens:
         r = self._client().post(
             f"{self.url}/auth/v1/token?grant_type=refresh_token",

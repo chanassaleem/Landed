@@ -161,6 +161,52 @@ a protected table as a user who belongs to no organisation and expects
 to be told nothing. The endpoint returns 503 when either half fails, so
 a platform health check and a person reading the JSON agree.
 
+## Switching sign-in on
+
+Two environment variables, and two settings in the Supabase dashboard.
+None of it is guessable from the code, which is why it is written down.
+
+**Environment** (Render, or `.env` locally):
+
+    SUPABASE_URL=https://<project-ref>.supabase.co
+    SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+
+The publishable key replaced the anon key and carries the same low
+privileges, so the policies in `supabase/migrations` behave the same.
+`SUPABASE_ANON_KEY` still works for a project that has not migrated.
+The secret key is not used and should not be set: it runs as a role
+that bypasses every policy in the schema.
+
+With neither set, the app opens on sample data and says on screen that
+sign-in is off. `/health/auth` names what is missing.
+
+**Authentication → URL Configuration:**
+
+- Site URL: the deployed address, e.g. `https://landed-wvsm.onrender.com`.
+  It defaults to `http://localhost:3000`, so until it is changed every
+  confirmation email points at a machine that is not running.
+- Redirect URLs: add `https://<your-host>/auth/confirm`.
+
+**Authentication → Email Templates → Confirm signup**, change the link to:
+
+    <a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=signup">
+      Confirm your email address
+    </a>
+
+Not the default `{{ .ConfirmationURL }}`. That one confirms at Supabase
+and then redirects back with the session in the URL -- in the fragment,
+or as a code to exchange -- and a session in a URL is kept: browser
+history, the referrer header, a screenshot in a bug report. The code
+form also only works in the browser that signed up, so signing up on a
+laptop and opening the email on a phone fails.
+
+`{{ .TokenHash }}` is redeemed by `/auth/confirm` on the server. The
+browser gets a cookie it cannot read and a plain path.
+
+To skip confirmation entirely while testing, turn off **Confirm email**
+under Authentication → Providers → Email. Sign-up then returns a session
+immediately. Turn it back on before anyone else has an account.
+
 ## Status
 
 Phase 1 of five. The spine is in: tenancy, roles, branch scoping, module

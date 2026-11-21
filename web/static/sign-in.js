@@ -46,7 +46,9 @@ function fail(message) {
 
 $('swap').addEventListener('click', () => {
   mode = mode === 'in' ? 'up' : 'in';
-  paint();
+  paint();            // clears any reported problem, which is right:
+                      // switching mode is the person acting on it
+
   $('email').focus();
 });
 
@@ -105,6 +107,35 @@ async function checkConfigured() {
   } catch (e) { /* leave the form up; submitting will report the error */ }
 }
 
+/* A confirmation link that did not work sends the person here, and
+   arriving at a plain sign-in form with no explanation is how someone
+   decides the product is broken. Two sources: our own ?problem=, and
+   Supabase's own #error=... fragment, which is what the default email
+   link produces when it has already been used or has expired. */
+const PROBLEMS = {
+  expired: 'That confirmation link has expired or had already been '
+    + 'used. Links are good once. Sign up again with the same address '
+    + 'to get a new one.',
+  link: 'That link was incomplete. Open the most recent email and use '
+    + 'the link in it.',
+  access_denied: 'That confirmation link has expired or had already '
+    + 'been used. Sign up again with the same address to get a new one.',
+  otp_expired: 'That confirmation link has expired. Sign up again with '
+    + 'the same address to get a new one.',
+};
+
+function reportProblem() {
+  const q = new URLSearchParams(location.search);
+  const h = new URLSearchParams(location.hash.replace(/^#/, ''));
+  const code = q.get('problem') || h.get('error_code') || h.get('error');
+  if (!code) return;
+  fail(PROBLEMS[code] || 'That link did not work. Try signing up again.');
+  /* Clear it from the address bar so a reload does not re-report a
+     problem the person has already dealt with. */
+  history.replaceState(null, '', location.pathname);
+}
+
 paint();
+reportProblem();
 $('email').focus();
 checkConfigured();

@@ -287,3 +287,78 @@ def test_what_is_missing_names_the_current_key_first(monkeypatch):
     d = TestClient(webapp.app).get("/health/auth").json()
     assert d["missing"] == ["SUPABASE_PUBLISHABLE_KEY (or SUPABASE_ANON_KEY)"]
     webapp._auth = None
+
+
+# ------------------------------------------------- the confirmation link
+
+class ConfirmingAuth(FakeAuth):
+    """Accepts one token hash, as Supabase would accept one link once."""
+
+    def __init__(self, good="good-hash"):
+        super().__init__()
+        self.good, self.seen = good, []
+
+    def verify_otp(self, token_hash, kind="signup"):
+        self.seen.append((token_hash, kind))
+        if token_hash != self.good:
+            raise session.SignInFailed("link rejected")
+        return session.Tokens("confirmed-token", "confirmed-refresh", 3600)
+
+
+def test_a_good_confirmation_link_signs_the_person_straight_in(
+    client, monkeypatch
+):
+    """They have just proved they own the address. Asking for the
+    password again at that exact moment is a step for its own sake."""
+    fake = ConfirmingAuth()
+    monkeypatch.setattr(webapp, "auth", lambda: fake)
+    r = client.get("/auth/confirm?token_hash=good-hash&type=signup",
+                   follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/"
+    assert any(c.startswith(f"{session.ACCESS}=")
+               for c in r.headers.get_list("set-cookie"))
+    assert fake.seen == [("good-hash", "signup")]
+
+
+def test_no_token_ever_appears_in_a_url(client, monkeypatch):
+    """The whole reason for redeeming the link on the server.
+
+    A session in a URL is kept: browser history, the referrer header,
+    a screenshot in a bug report. The redirect after confirming must be
+    a plain path.
+    """
+    monkeypatch.setattr(webapp, "auth", lambda: ConfirmingAuth())
+    r = client.get("/auth/confirm?token_hash=good-hash&type=signup",
+                   follow_redirects=False)
+    assert r.headers["location"] == "/"
+    assert "token" not in r.headers["location"]
+    assert "confirmed-token" not in r.text
+
+
+def test_a_used_or_expired_link_says_which(client, monkeypatch):
+    monkeypatch.setattr(webapp, "auth", lambda: ConfirmingAuth())
+    r = client.get("/auth/confirm?token_hash=stale&type=signup",
+                   follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/sign-in?problem=expired"
+
+
+def test_an_unknown_link_type_is_not_passed_to_the_auth_server(
+    client, monkeypatch
+):
+    """The value goes straight on to Supabase, so it is allow-listed
+    rather than forwarded and reasoned about."""
+    fake = ConfirmingAuth()
+    monkeypatch.setattr(webapp, "auth", lambda: fake)
+    r = client.get("/auth/confirm?token_hash=good-hash&type=whatever",
+                   follow_redirects=False)
+    assert r.headers["location"] == "/sign-in?problem=link"
+    assert fake.seen == []
+
+
+def test_a_link_with_no_token_is_not_a_crash(client, monkeypatch):
+    monkeypatch.setattr(webapp, "auth", lambda: ConfirmingAuth())
+    r = client.get("/auth/confirm", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/sign-in?problem=link"

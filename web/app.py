@@ -225,6 +225,40 @@ async def sign_up(request: Request) -> JSONResponse:
     return r
 
 
+# The types Supabase sends on a confirmation link. Pinned rather than
+# passed through: this value goes straight to the Auth server, and an
+# allow-list is cheaper than reasoning about what else it would accept.
+CONFIRM_TYPES = {"signup", "email", "magiclink", "recovery", "invite",
+                 "email_change"}
+
+
+@app.get("/auth/confirm")
+def confirm(request: Request) -> Response:
+    """The link in a confirmation email lands here.
+
+    Redeemed server-side, so the session arrives as a cookie and no
+    token is ever in a URL. On success the person is simply signed in
+    and sent to the app -- there is no reason to make somebody who has
+    just proved they own the address type their password again.
+    """
+    token_hash = request.query_params.get("token_hash", "")
+    kind = request.query_params.get("type", "signup")
+    if not token_hash or kind not in CONFIRM_TYPES:
+        return RedirectResponse("/sign-in?problem=link", status_code=303)
+
+    try:
+        tokens = auth().verify_otp(token_hash, kind)
+    except session.SignInFailed:
+        # Almost always an expired or already-used link. Say which,
+        # rather than "invalid", because the two have different fixes
+        # and the person can act on one of them.
+        return RedirectResponse("/sign-in?problem=expired", status_code=303)
+
+    r = RedirectResponse("/", status_code=303)
+    session.set_session(r, tokens)
+    return r
+
+
 @app.post("/auth/sign-out")
 def sign_out(request: Request) -> JSONResponse:
     token = request.cookies.get(session.ACCESS)
