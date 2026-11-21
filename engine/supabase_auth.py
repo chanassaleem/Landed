@@ -86,8 +86,13 @@ class Verifier:
     without a deploy.
     """
 
-    def __init__(self, project_url: str, http=None, clock=time.time):
+    def __init__(self, project_url: str, api_key: str = "", http=None,
+                 clock=time.time):
         self.project_url = (project_url or "").rstrip("/")
+        # Needed only on the legacy-symmetric path, where the token has
+        # to be checked with the Auth server. It was being sent empty,
+        # which that endpoint rejects.
+        self.api_key = api_key or ""
         self._http = http                 # injected in tests
         self._clock = clock
         self._jwks = None
@@ -182,9 +187,14 @@ class Verifier:
             import httpx
 
             http = httpx.Client(timeout=8.0)
+        # The Authorization header carries the user's JWT and nothing
+        # else. A publishable or secret key cannot go there -- they are
+        # not JWTs -- so the project key travels in `apikey`, which is
+        # where it belongs under both the old and the new key scheme.
         r = http.get(
             f"{self.project_url}/auth/v1/user",
-            headers={"Authorization": f"Bearer {token}", "apikey": ""},
+            headers={"Authorization": f"Bearer {token}",
+                     "apikey": self.api_key},
         )
         if r.status_code != 200:
             raise AuthError("token rejected")

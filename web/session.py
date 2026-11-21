@@ -29,6 +29,27 @@ import httpx
 ACCESS = "landed_at"
 REFRESH = "landed_rt"
 
+# The browser-safe key, under either of its names.
+#
+# Supabase replaced the anon key with a publishable key -- same low
+# privileges, same role, so the policies in supabase/migrations behave
+# identically -- and is retiring the old one. A project may be on
+# either, and a project that has just been created is on the new one,
+# so both names are read and the newer is preferred. The value is never
+# logged: it is public by design, but a key in a log line is still a key
+# somebody has to think about.
+KEY_VARS = ("SUPABASE_PUBLISHABLE_KEY", "SUPABASE_ANON_KEY")
+
+
+def public_key(env=None) -> str:
+    import os
+
+    env = os.environ if env is None else env
+    for name in KEY_VARS:
+        if env.get(name):
+            return env[name]
+    return ""
+
 # A refresh costs a round trip, so it is not done on every request; it is
 # done when the token is close enough to expiry that the next one might
 # land after it. Sixty seconds is comfortably more than a slow request.

@@ -42,7 +42,7 @@ def auth() -> session.Auth:
         import os
 
         _auth = session.Auth(os.environ.get("SUPABASE_URL", ""),
-                             os.environ.get("SUPABASE_ANON_KEY", ""))
+                             session.public_key())
     return _auth
 
 
@@ -51,7 +51,8 @@ def verifier() -> Verifier:
     if _verifier is None:
         import os
 
-        _verifier = Verifier(os.environ.get("SUPABASE_URL", ""))
+        _verifier = Verifier(os.environ.get("SUPABASE_URL", ""),
+                             session.public_key())
     return _verifier
 
 
@@ -144,9 +145,16 @@ def health_auth() -> dict:
     import os
 
     url = os.environ.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_ANON_KEY", "")
-    missing = [n for n, v in (("SUPABASE_URL", url),
-                              ("SUPABASE_ANON_KEY", key)) if not v]
+    key = session.public_key()
+    missing = []
+    if not url:
+        missing.append("SUPABASE_URL")
+    if not key:
+        # Named with the current key first. Supabase is retiring the anon
+        # key in favour of the publishable one, and a project created
+        # now has only the latter -- so telling someone to go and find
+        # an anon key sends them looking for something that is not there.
+        missing.append("SUPABASE_PUBLISHABLE_KEY (or SUPABASE_ANON_KEY)")
     return {
         "sign_in_enabled": not missing,
         "missing": missing,
@@ -169,7 +177,7 @@ def config() -> dict:
 
     return {
         "auth_configured": bool(os.environ.get("SUPABASE_URL")
-                                and os.environ.get("SUPABASE_ANON_KEY")),
+                                and session.public_key()),
         "version": __version__,
     }
 

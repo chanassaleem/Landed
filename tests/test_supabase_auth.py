@@ -253,3 +253,20 @@ def test_a_symmetric_algorithm_is_refused_before_any_key_is_fetched(keys):
     v._jwk_client = explode
     with pytest.raises(AuthError, match="asymmetric"):
         v._verify_locally("a.b.c", "HS256")
+
+
+def test_the_project_key_travels_in_the_apikey_header_not_authorization():
+    """A publishable or secret key is not a JWT and cannot go in the
+    Authorization header -- that one carries the user's token. The key
+    was previously sent as an empty string, which the endpoint rejects,
+    so every legacy-symmetric project would have failed to verify.
+    """
+    http = FakeHTTP(200, {"id": "44444444-4444-4444-4444-444444444444",
+                          "email": "c@example.com"})
+    v = Verifier(PROJECT, api_key="sb_publishable_example", http=http)
+    tok = jwt.encode({"sub": "44444444-4444-4444-4444-444444444444",
+                      "exp": int(time.time()) + 600}, "s", algorithm="HS256")
+    v.verify(tok)
+    _, headers = http.calls[0]
+    assert headers["apikey"] == "sb_publishable_example"
+    assert headers["Authorization"] == f"Bearer {tok}"

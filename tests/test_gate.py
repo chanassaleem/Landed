@@ -208,12 +208,13 @@ def test_health_auth_names_the_missing_variable(monkeypatch):
     app does not break, it drops the gate and serves sample data, which
     looks exactly like a build where login was never written."""
     monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_PUBLISHABLE_KEY", raising=False)
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
     webapp._auth = None
     d = TestClient(webapp.app).get("/health/auth").json()
     assert d["sign_in_enabled"] is False
-    assert d["missing"] == ["SUPABASE_ANON_KEY"]
-    assert "SUPABASE_ANON_KEY" in d["detail"]
+    assert d["missing"] == ["SUPABASE_PUBLISHABLE_KEY (or SUPABASE_ANON_KEY)"]
+    assert "SUPABASE_PUBLISHABLE_KEY" in d["detail"]
     webapp._auth = None
 
 
@@ -248,3 +249,41 @@ def test_the_version_is_reported_so_a_stale_deploy_is_visible(monkeypatch):
     assert r.json()["version"] == webapp.__version__
     assert TestClient(webapp.app).get("/health/auth").json()["version"] == \
         webapp.__version__
+
+
+# ------------------------------------------------------ the new key scheme
+
+def test_either_key_name_switches_sign_in_on(monkeypatch):
+    """Supabase is retiring the anon key for a publishable one.
+
+    A project created today has only the new key, so reading just
+    SUPABASE_ANON_KEY would leave sign-in off with no way to switch it
+    on. An older project has only the old one. Both must work.
+    """
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    for name in ("SUPABASE_PUBLISHABLE_KEY", "SUPABASE_ANON_KEY"):
+        for other in ("SUPABASE_PUBLISHABLE_KEY", "SUPABASE_ANON_KEY"):
+            monkeypatch.delenv(other, raising=False)
+        monkeypatch.setenv(name, "sb_publishable_example")
+        webapp._auth = None
+        d = TestClient(webapp.app).get("/health/auth").json()
+        assert d["sign_in_enabled"] is True, f"{name} was not read"
+    webapp._auth = None
+
+
+def test_the_publishable_key_wins_when_both_are_present(monkeypatch):
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "legacy-jwt")
+    monkeypatch.setenv("SUPABASE_PUBLISHABLE_KEY", "sb_publishable_new")
+    assert session.public_key() == "sb_publishable_new"
+
+
+def test_what_is_missing_names_the_current_key_first(monkeypatch):
+    """Sending someone to look for an anon key in a project that has
+    none is a wasted trip through the dashboard."""
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_PUBLISHABLE_KEY", raising=False)
+    webapp._auth = None
+    d = TestClient(webapp.app).get("/health/auth").json()
+    assert d["missing"] == ["SUPABASE_PUBLISHABLE_KEY (or SUPABASE_ANON_KEY)"]
+    webapp._auth = None
