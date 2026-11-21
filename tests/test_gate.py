@@ -624,11 +624,15 @@ def test_importing_with_no_organisation_says_so_in_words(signed_in, monkeypatch)
     client, _ = signed_in
 
     class Conn:
+        """A connection whose organisations table is empty for this
+        caller -- which is what row-level security returns when the
+        account belongs to none."""
+
         def __enter__(self): return self
         def __exit__(self, *a): return False
         def execute(self, *a, **k):
             class R:
-                def fetchone(self_): return (0,)       # no organisations
+                def fetchone(self_): return None       # no organisation
             return R()
 
     class DB:
