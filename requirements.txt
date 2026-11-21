@@ -5,3 +5,14 @@ duckdb==2.0.0
 psycopg[binary]==3.3.9
 psycopg_pool==3.2.6
 argon2-cffi==25.1.0
+
+# Auth. The [crypto] extra is not optional here: without it PyJWT can
+# parse an ES256/RS256 token but cannot verify its signature, which is
+# the only part that makes the token worth anything.
+pyjwt[crypto]==2.15.0
+httpx==0.28.1
+
+# The Excel model. Imported by engine/workbook.py and tools/, so the
+# /api/workbook.xlsx route needs it in the image -- it was missing, and
+# that route has been failing in production since it shipped.
+openpyxl==3.1.5

@@ -1,3 +1,8 @@
 -r requirements.txt
 pytest==8.3.4
-httpx==0.28.1
+# cryptography arrives via pyjwt[crypto] in requirements.txt; named here
+# because tests/test_supabase_auth.py imports it directly to mint the
+# keypairs it forges tokens against.
+cryptography
+# Parses .github/workflows/ci.yml in tests that check the workflow.
+pyyaml

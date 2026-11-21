@@ -43,3 +43,37 @@ jobs:
         run: python -m pytest tests/test_rls.py -q --no-header
         env:
           LANDED_TEST_DSN: postgres://postgres:postgres@localhost:5432/landed
+
+  # A second job, on purpose. The one above installs requirements-dev.txt,
+  # so it can pass while the production image will not start -- which is
+  # exactly what happened: httpx and openpyxl were imported by shipped
+  # code and declared nowhere, the suite was green, and the deploy died
+  # on ModuleNotFoundError. A test cannot catch that from inside an
+  # environment that already has the package.
+  starts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install only what ships
+        run: pip install -r requirements.txt
+
+      - name: The app must import with nothing else present
+        run: |
+          python -c "import web.app; print(web.app.__version__)"
+          python -c "import tools.build_workbook, engine.supabase_auth"
+
+      - name: And it must actually answer
+        run: |
+          python -m uvicorn web.app:app --port 8000 &
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8000/health && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/health | grep -q '"status":"ok"'
+          curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/
+          curl -fsS http://127.0.0.1:8000/api/workbook.xlsx -o /tmp/m.xlsx
+          python -c "import zipfile,sys; sys.exit(0 if zipfile.is_zipfile('/tmp/m.xlsx') else 1)"
