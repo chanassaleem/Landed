@@ -1487,3 +1487,71 @@ td.warn { color: var(--attention); }
 .settings-form .drop-sub { margin: 5px 0 0; text-align: left; max-width: 52ch; }
 .settings-form .primary { width: auto; margin: 20px 16px 0; }
 .settings-form .detail-block { padding: 10px 16px 6px; }
+
+/* ---------------------------------------------------------- filters
+   A row of views and a row of narrowing. Views are named questions --
+   "what do I order today" -- and the filters are for the times none of
+   them is quite the question. */
+
+.views { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+.view-chip {
+  padding: 4px 11px;
+  border: 1px solid var(--rule);
+  border-radius: 13px;
+  background: var(--surface);
+  color: var(--text-2);
+  font: 400 12.5px var(--sans);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.view-chip:hover { color: var(--text); }
+.view-chip[aria-pressed='true'] {
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--paper);
+}
+.view-chip .n {
+  margin-left: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  opacity: .65;
+}
+
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.filters input[type=search], .filters select {
+  padding: 6px 9px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--surface);
+  color: var(--text);
+  font: 400 12.5px var(--sans);
+}
+.filters input[type=search] { min-width: 210px; }
+.filters input:focus-visible, .filters select:focus-visible {
+  outline: 2px solid var(--transit);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+.filters .shown { font-size: 12px; color: var(--text-3); }
+
+/* A sortable header says so, and says which way, without a legend. */
+.panel th[data-sort] { cursor: pointer; user-select: none; }
+.panel th[data-sort]:hover { color: var(--text); }
+.panel th[aria-sort] { color: var(--text); }
+.panel th[aria-sort]::after {
+  content: '';
+  display: inline-block;
+  width: 0; height: 0;
+  margin-left: 5px;
+  vertical-align: 2px;
+  border-left: 3.5px solid transparent;
+  border-right: 3.5px solid transparent;
+}
+.panel th[aria-sort='ascending']::after { border-bottom: 4px solid currentColor; }
+.panel th[aria-sort='descending']::after { border-top: 4px solid currentColor; }

@@ -701,14 +701,128 @@ function renderToday() {
     ]), soon));
 }
 
+/* Named views, because a filter is a mechanism and a view is a
+   question. "Running out" is what somebody came here to find; "state
+   equals running out and sort by cover ascending" is how you would
+   have to ask for it otherwise. */
+const STOCK_VIEWS = [
+  { id: 'all', label: 'Everything', pick: () => true,
+    sort: (a, b) => (b.idle_value + b.shortfall_value)
+                  - (a.idle_value + a.shortfall_value) },
+  { id: 'order', label: 'Order today',
+    pick: (r) => r.state === 'running out' || r.state === 'reorder',
+    sort: (a, b) => (a.cover ?? 99) - (b.cover ?? 99) },
+  { id: 'idle', label: 'Money standing still',
+    pick: (r) => r.idle_value > 0,
+    sort: (a, b) => b.idle_value - a.idle_value },
+  { id: 'expiring', label: 'Expiring',
+    pick: (r) => r.state === 'expiring' || (r.days_to_expiry ?? 9e9) < 180,
+    sort: (a, b) => (a.days_to_expiry ?? 9e9) - (b.days_to_expiry ?? 9e9) },
+  { id: 'quiet', label: 'No demand',
+    pick: (r) => r.cover === null,
+    sort: (a, b) => b.value - a.value },
+];
+
+const SORTS = {
+  Item: (r) => r.description,
+  Branch: (r) => r.branch,
+  Cover: (r) => (r.cover === null ? Infinity : r.cover),
+  'On hand': (r) => r.on_hand,
+  'On order': (r) => r.on_order,
+  State: (r) => r.state,
+};
+
+function stockRows() {
+  const view = STOCK_VIEWS.find((v) => v.id === S.view_stock)
+            || STOCK_VIEWS[0];
+  let r = rows().filter(view.pick);
+
+  const q = (S.q || '').trim().toLowerCase();
+  if (q) {
+    r = r.filter((x) => x.description.toLowerCase().includes(q)
+                     || x.sku.toLowerCase().includes(q));
+  }
+  if (S.f_state) r = r.filter((x) => x.state === S.f_state);
+  if (S.f_class) r = r.filter((x) => x.demand_class === S.f_class);
+
+  r = r.slice();
+  if (S.sort) {
+    const get = SORTS[S.sort.col];
+    const dir = S.sort.dir === 'ascending' ? 1 : -1;
+    r.sort((a, b) => {
+      const x = get(a);
+      const y = get(b);
+      if (x === y) return 0;
+      return (typeof x === 'string' ? x.localeCompare(y) : x - y) * dir;
+    });
+  } else {
+    r.sort(view.sort);
+  }
+  return r;
+}
+
+function renderViews() {
+  const host = $('views');
+  if (!host) return;
+  host.textContent = '';
+  const base = rows();
+  STOCK_VIEWS.forEach((v) => {
+    const b = el('button', 'view-chip');
+    b.type = 'button';
+    b.append(v.label);
+    const n = base.filter(v.pick).length;
+    b.append(el('span', 'n', String(n)));
+    b.setAttribute('aria-pressed', String((S.view_stock || 'all') === v.id));
+    b.addEventListener('click', () => {
+      S.view_stock = v.id;
+      S.sort = null;               // the view brings its own order
+      renderStock();
+    });
+    host.append(b);
+  });
+}
+
+function fillFilterOptions() {
+  const base = rows();
+  const fill = (id, values, blank) => {
+    const sel = $(id);
+    if (!sel) return;
+    const was = sel.value;
+    sel.textContent = '';
+    const any = el('option', null, blank);
+    any.value = '';
+    sel.append(any);
+    values.forEach((v) => {
+      const o = el('option', null, v);
+      o.value = v;
+      sel.append(o);
+    });
+    sel.value = was;
+  };
+  fill('f-state', [...new Set(base.map((r) => r.state))].sort(), 'Any state');
+  fill('f-class', [...new Set(base.map((r) => r.demand_class))].sort(),
+       'Any pattern');
+}
+
 function renderStock() {
-  let r = rows();
-  if (S.actionOnly) r = r.filter((x) => NEEDS_DECISION.has(x.state));
-  r = r.slice().sort((a, b) => (b.idle_value + b.shortfall_value) - (a.idle_value + a.shortfall_value));
+  renderViews();
+  fillFilterOptions();
+  const all = rows();
+  let r = stockRows();
+
+  const narrowed = r.length !== all.length;
+  const shown = $('shown');
+  if (shown) {
+    shown.textContent = narrowed
+      ? `${qty(r.length)} of ${qty(all.length)}` : `${qty(all.length)} lines`;
+  }
+  const clear = $('clear-filters');
+  if (clear) clear.hidden = !(S.q || S.f_state || S.f_class
+                              || (S.view_stock && S.view_stock !== 'all'));
 
   $('stock-sub').textContent = S.segment
-    ? `${plural(r.length, 'line')} in ${SEGMENTS.find((s) => s.key === S.segment).label.toLowerCase()}.`
-    : `${plural(r.length, 'line')} across ${plural(S.data.branches.length - 1, 'branch')}.`;
+    ? `${plural(all.length, 'line')} in ${SEGMENTS.find((s) => s.key === S.segment).label.toLowerCase()}.`
+    : `${plural(all.length, 'line')} across ${plural(S.data.branches.length - 1, 'branch')}.`;
 
   const host = $('stock');
   host.textContent = '';
@@ -798,7 +912,27 @@ function table(cols, bodyRows, rows_) {
   const t = el('table');
   const thead = el('thead');
   const tr = el('tr');
-  cols.forEach(([label, cls]) => tr.append(el('th', cls, label)));
+  cols.forEach(([label, cls]) => {
+    const th = el('th', cls, label);
+    if (SORTS[label]) {
+      th.dataset.sort = label;
+      th.tabIndex = 0;
+      if (S.sort && S.sort.col === label) th.setAttribute('aria-sort', S.sort.dir);
+      const flip = () => {
+        const same = S.sort && S.sort.col === label;
+        S.sort = {
+          col: label,
+          dir: same && S.sort.dir === 'ascending' ? 'descending' : 'ascending',
+        };
+        renderStock();
+      };
+      th.addEventListener('click', flip);
+      th.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); }
+      });
+    }
+    tr.append(th);
+  });
   thead.append(tr);
   t.append(thead);
 
@@ -1081,6 +1215,7 @@ async function boot() {
   buildNav();
   theme();
   wireImport();
+  wireFilters();
 
   const res = await fetch('/api/state');
   if (!res.ok) {
@@ -1102,12 +1237,10 @@ async function boot() {
   renderHome();
   palette();
 
-  $('only-action').addEventListener('click', (e) => {
-    S.actionOnly = !S.actionOnly;
-    e.target.textContent = S.actionOnly
-      ? 'Show every line' : 'Only what needs a decision';
-    renderStock();
-  });
+  /* The "Only what needs a decision" button is gone: it was one view
+     hard-coded as a toggle, and the view chips do the same job for
+     five questions instead of one. Its handler outlived it and threw
+     on every load, which took the rest of boot() with it. */
 
   const start = (location.hash || '#today').slice(1);
   go(VIEWS.some((v) => v.id === start) ? start : 'today');
@@ -1436,6 +1569,34 @@ async function previewFile(file) {
     importReport({ ok: false, counts: {}, problem_count: 1, problems: [
       { sheet: 'workbook', row: null, fatal: true, message: e.message }] });
   }
+}
+
+function wireFilters() {
+  const q = $('q-stock');
+  if (!q || q.dataset.wired) return;
+  q.dataset.wired = '1';
+
+  /* Typing filters as you type, but not on every keystroke: at 104
+     lines it is instant, and at ten thousand it would not be. */
+  let t = null;
+  q.addEventListener('input', () => {
+    clearTimeout(t);
+    t = setTimeout(() => { S.q = q.value; renderStock(); }, 120);
+  });
+  ['f-state', 'f-class'].forEach((id) => {
+    $(id).addEventListener('change', () => {
+      S[id.replace('-', '_')] = $(id).value;
+      renderStock();
+    });
+  });
+  $('clear-filters').addEventListener('click', () => {
+    S.q = ''; S.f_state = ''; S.f_class = ''; S.view_stock = 'all';
+    S.sort = null;
+    q.value = '';
+    $('f-state').value = '';
+    $('f-class').value = '';
+    renderStock();
+  });
 }
 
 let importWired = false;

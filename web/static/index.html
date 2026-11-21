@@ -185,7 +185,22 @@
           <div class="section-head">
             <h2>Stock</h2>
             <p id="stock-sub"></p>
-            <span class="right"><button class="btn" id="only-action">Only what needs a decision</button></span>
+          </div>
+
+          <!-- Views first, then the narrowing. A named view is the
+               question somebody actually has; the filters are for when
+               none of them is quite it. -->
+          <div class="views" id="views"></div>
+          <div class="filters">
+            <input type="search" id="q-stock" placeholder="Item or SKU"
+                   autocomplete="off" spellcheck="false"
+                   aria-label="Search items">
+            <select id="f-state" aria-label="State"></select>
+            <select id="f-class" aria-label="Demand pattern"></select>
+            <span class="grow"></span>
+            <span class="shown" id="shown"></span>
+            <button class="btn" id="clear-filters" type="button" hidden>
+              Clear</button>
           </div>
           <div class="panel" id="stock"></div>
         </div>
