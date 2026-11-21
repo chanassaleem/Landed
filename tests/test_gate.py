@@ -518,3 +518,94 @@ def test_an_empty_organisation_says_so_and_says_what_to_do(
     assert set(d) >= {"line", "stock", "shipments", "decisions", "branches"}
     assert len(d["decisions"]) == 1
     assert d["decisions"][0]["action"]
+
+
+# ------------------------------------------------------------- importing
+
+def _book():
+    import subprocess
+    import sys
+    import tempfile
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    with tempfile.TemporaryDirectory() as tmp:
+        subprocess.run([sys.executable,
+                        str(root / "tools" / "make_import_workbook.py"), tmp],
+                       check=True, cwd=root)
+        return next(Path(tmp).glob("landed-import-meridian*.xlsx")).read_bytes()
+
+
+def test_a_visitor_cannot_upload(client, monkeypatch):
+    monkeypatch.setattr(webapp, "auth", lambda: FakeAuth())
+    r = client.post("/api/import/preview",
+                    files={"file": ("x.xlsx", b"PK\x03\x04", "application/x")})
+    assert r.status_code == 401
+
+
+def test_preview_reports_what_it_would_do_and_writes_nothing(
+    signed_in, monkeypatch
+):
+    """The whole reason preview exists. An import is not undoable, so
+    the first anyone hears of what it does must be before it does it."""
+    client, _ = signed_in
+    touched = []
+
+    class DB:
+        def as_user(self, _uid):
+            touched.append(1)
+            raise AssertionError("preview must not open a transaction")
+
+    import engine.db.supabase as sup
+    monkeypatch.setattr(sup, "database", lambda: DB())
+
+    r = client.post("/api/import/preview",
+                    files={"file": ("book.xlsx", _book(),
+                                    "application/vnd.openxmlformats-"
+                                    "officedocument.spreadsheetml.sheet")})
+    assert r.status_code == 200, r.text[:200]
+    d = r.json()
+    assert d["ok"] is True
+    assert d["counts"]["items"] == 60
+    assert d["counts"]["branches"] == 4
+    assert not touched
+
+
+def test_a_file_that_is_not_a_workbook_is_refused_in_words(signed_in):
+    client, _ = signed_in
+    r = client.post("/api/import/preview",
+                    files={"file": ("notes.xlsx", b"hello", "text/plain")})
+    assert r.status_code == 400
+    assert "workbook" in r.json()["error"].lower()
+
+
+def test_an_empty_upload_is_refused(signed_in):
+    client, _ = signed_in
+    r = client.post("/api/import/preview",
+                    files={"file": ("empty.xlsx", b"", "application/x")})
+    assert r.status_code == 400
+
+
+def test_commit_refuses_a_workbook_with_problems(signed_in, monkeypatch):
+    """And refuses it before opening a transaction, so a broken file
+    cannot leave anything half-written."""
+    from io import BytesIO
+    from openpyxl import load_workbook
+
+    client, _ = signed_in
+    wb = load_workbook(BytesIO(_book()))
+    wb["Stock"].cell(2, 1, "GHOST-1")       # a SKU that is not on Items
+    buf = BytesIO()
+    wb.save(buf)
+
+    class DB:
+        def as_user(self, _uid):
+            raise AssertionError("must not reach the database")
+
+    import engine.db.supabase as sup
+    monkeypatch.setattr(sup, "database", lambda: DB())
+
+    r = client.post("/api/import/commit",
+                    files={"file": ("book.xlsx", buf.getvalue(),
+                                    "application/x")})
+    assert r.status_code == 400
+    assert r.json()["ok"] is False

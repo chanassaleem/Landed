@@ -113,6 +113,14 @@ def state_payload(as_of: date | None = None, items=None, demand=None,
                 "shortfall_value": round(r.suggested_order_qty * unit_cost, 2),
                 "days_to_expiry": r.days_to_expiry,
                 "why": r.reason,
+                # The policy behind the verdict. On the table these would
+                # be four more columns nobody scans; in the panel they
+                # are the answer to "why does it say that", which is the
+                # first thing anyone asks of a number they did not expect.
+                "unit_cost": unit_cost,
+                "order_up_to": r.order_up_to,
+                "safety_stock": r.safety_stock,
+                "lead_time_days": item.lead_time_days if item else None,
             })
 
     shipments = _shipments(stock, by_item, as_of)

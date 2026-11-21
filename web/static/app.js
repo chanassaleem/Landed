@@ -102,44 +102,94 @@ const plural = (n, word) =>
 
 /* ------------------------------------------------------------------ nav */
 
+/* Destinations, in the order the day runs: what needs deciding, then
+   what you are deciding about, then the records behind it, then setup.
+   `sep` draws a rule, which groups them without three more headings. */
+const ICON = {
+  today: 'M2 8h3l2-4 3 8 2-4h2',
+  stock: 'M2 5.5l6-3 6 3v5l-6 3-6-3zM2 5.5l6 3 6-3M8 8.5v6',
+  shipments: 'M2 11h12M3 11V7l4-2 4 2v4M6 7h3M8 2v3',
+  items: 'M3 3h10v10H3zM3 6.5h10M6.5 6.5V13',
+  import: 'M8 2v7M5 6.5L8 9.5l3-3M3 12.5h10',
+  cash: 'M2 4.5h12v7H2zM2 7h12M4.5 9.5h2',
+};
+
 const VIEWS = [
   { id: 'today',     label: 'Today' },
+  { sep: true },
   { id: 'stock',     label: 'Stock' },
   { id: 'shipments', label: 'On the water' },
+  { sep: true },
+  { id: 'items',     label: 'Items' },
+  { sep: true },
+  { id: 'import',    label: 'Import' },
   { id: 'cash',      label: 'Cash' },
 ];
 
+/* The money line belongs to the screens it filters, not to the chrome.
+   It made no sense sitting above the import screen. */
+const WITH_LINE = new Set(['today', 'stock', 'shipments']);
+
+function icon(path) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('width', '16');
+  svg.setAttribute('height', '16');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.4');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  const d = document.createElementNS(ns, 'path');
+  d.setAttribute('d', path);
+  svg.append(d);
+  return svg;
+}
+
 function buildNav() {
-  const nav = $('nav');
+  const host = $('rail-items');
   VIEWS.forEach((v) => {
+    if (v.sep) { host.append(el('div', 'sep')); return; }
     const a = el('a');
     a.href = `#${v.id}`;
     a.dataset.view = v.id;
-    a.append(v.label);
+    a.title = v.label;
+    a.append(icon(ICON[v.id] || ICON.items));
+    a.append(el('span', 'rail-label', v.label));
     a.append(el('span', 'count'));
     a.addEventListener('click', (e) => { e.preventDefault(); go(v.id); });
-    nav.append(a);
+    host.append(a);
+  });
+
+  const pin = $('rail-pin');
+  const rail = $('rail');
+  try {
+    if (localStorage.getItem('landed.rail') === '1') rail.dataset.pinned = '1';
+  } catch (e) { /* storage can throw; the default stands */ }
+  pin.addEventListener('click', () => {
+    const on = rail.dataset.pinned === '1';
+    rail.dataset.pinned = on ? '0' : '1';
+    pin.setAttribute('aria-pressed', String(!on));
+    try { localStorage.setItem('landed.rail', on ? '0' : '1'); } catch (e) {}
   });
 }
 
-function moveMarker() {
-  const a = document.querySelector(`.nav a[data-view="${S.view}"]`);
-  if (!a) return;
-  const m = $('marker');
-  m.style.width = `${a.offsetWidth}px`;
-  m.style.transform = `translateX(${a.offsetLeft}px)`;
-}
+function moveMarker() { /* the rail marks the current item in CSS */ }
 
 function go(view) {
   S.view = view;
   document.querySelectorAll('.view').forEach((v) => {
     v.classList.toggle('on', v.id === `v-${view}`);
   });
-  document.querySelectorAll('.nav a').forEach((a) => {
+  document.querySelectorAll('.rail a').forEach((a) => {
     if (a.dataset.view === view) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
-  moveMarker();
+  const line = $('money-line');
+  if (line) line.hidden = !WITH_LINE.has(view);
+  closeDetail();
   $('main').scrollTop = 0;
   history.replaceState(null, '', `#${view}`);
 }
@@ -229,6 +279,139 @@ function pick(key) {
   renderAll();
 }
 
+/* ---------------------------------------------------------- the panel
+   What you clicked, beside what you clicked it in. The list keeps its
+   scroll position and its filter, so acting on one line does not cost
+   you your place among the other thirty-five -- which is the whole
+   reason this is a panel and not a page. */
+
+function closeDetail() {
+  const d = $('detail');
+  if (d) d.hidden = true;
+  document.querySelectorAll('tr.picked').forEach(
+    (r) => r.classList.remove('picked'));
+}
+
+function fact(label, value, said) {
+  const f = el('div', said ? 'fact said' : 'fact');
+  f.append(el('span', null, label));
+  f.append(el('span', null, value));
+  return f;
+}
+
+function block(title, facts) {
+  const b = el('div', 'detail-block');
+  if (title) b.append(el('h3', null, title));
+  const g = el('div', 'facts');
+  facts.forEach((f) => g.append(f));
+  b.append(g);
+  return b;
+}
+
+function openDetail(row, tr) {
+  const d = $('detail');
+  document.querySelectorAll('tr.picked').forEach(
+    (r) => r.classList.remove('picked'));
+  if (tr) tr.classList.add('picked');
+
+  $('detail-title').textContent = row.description;
+  $('detail-sub').textContent = `${row.sku} · ${row.branch}`;
+
+  const u = unit([row.value, row.idle_value, row.unit_cost]);
+  const body = $('detail-body');
+  body.textContent = '';
+
+  body.append(block('Position', [
+    fact('On hand', qty(row.on_hand)),
+    fact('On order', row.on_order ? qty(row.on_order) : '—'),
+    fact('Months of cover', row.cover === null ? 'no demand yet'
+                                               : months(row.cover)),
+    fact('State', row.state, true),
+  ]));
+
+  body.append(block('Policy', [
+    fact('Reorder at', qty(row.reorder_point)),
+    fact('Order up to', qty(row.order_up_to ?? 0)),
+    fact('Safety stock', qty(row.safety_stock ?? 0)),
+    fact('Lead time', `${qty(row.lead_time_days ?? 0)} days`, true),
+    fact('Demand pattern', row.demand_class || '—', true),
+  ]));
+
+  body.append(block('Money', [
+    fact('Unit cost', `${S.data.currency} ${money(row.unit_cost)}`),
+    fact('At cost', `${S.data.currency} ${money(row.value)}`),
+    fact('Standing still', row.idle_value
+         ? `${S.data.currency} ${money(row.idle_value)}` : '—'),
+  ]));
+
+  /* Said plainly, because the number above is the answer to a question
+     and the question is worth stating once. */
+  const why = el('div', 'detail-block');
+  why.append(el('h3', null, 'Why it says that'));
+  why.append(el('p', 'drop-sub', row.why || reasonFor(row)));
+  why.style.textAlign = 'left';
+  body.append(why);
+
+  const acts = $('detail-actions');
+  acts.textContent = '';
+  if (row.suggested) {
+    const b = el('button', 'primary', `Order ${qty(row.suggested)}`);
+    b.type = 'button';
+    b.style.width = 'auto';
+    b.addEventListener('click', () => notYet('Raising a purchase order'));
+    acts.append(b);
+  }
+  [['Receive stock', 'Receiving stock'],
+   ['Record a sale', 'Recording a sale'],
+   ['Adjust count', 'Adjusting a count']].forEach(([label, what]) => {
+    const b = el('button', 'btn', label);
+    b.type = 'button';
+    b.addEventListener('click', () => notYet(what));
+    acts.append(b);
+  });
+
+  d.hidden = false;
+}
+
+/* An action that does not exist yet says so, here, rather than doing
+   nothing and leaving somebody clicking it twice. */
+function notYet(what) {
+  const acts = $('detail-actions');
+  let note = document.getElementById('not-yet');
+  if (!note) {
+    note = el('p', 'drop-sub');
+    note.id = 'not-yet';
+    note.style.flexBasis = '100%';
+    acts.append(note);
+  }
+  note.textContent = `${what} is not built yet. It is next, once the `
+    + 'import is in.';
+}
+
+function reasonFor(row) {
+  if (row.state === 'running out') {
+    return 'Below the reorder point with under a month of cover, so an '
+      + 'order placed today does not arrive before it runs dry.';
+  }
+  if (row.state === 'reorder') {
+    return 'Below the reorder point. An order placed now arrives before '
+      + 'the shelf is empty.';
+  }
+  if (row.state === 'standing still') {
+    return 'More cover than the policy limit. The money is not lost, but '
+      + 'it is not working, and another branch may want it.';
+  }
+  if (row.state === 'expiring') {
+    return 'Enough stock, but some of it expires before it will sell.';
+  }
+  return 'Above the reorder point and inside the cover limit.';
+}
+
+$('detail-close').addEventListener('click', closeDetail);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('detail').hidden) closeDetail();
+});
+
 /* --------------------------------------------------------------- filters */
 
 function rows() {
@@ -292,7 +475,7 @@ function renderToday() {
       cell(qty(r.reorder_point), 'num'),
       cell(r.suggested ? qty(r.suggested) : '—', 'num'),
       stateCell(r.state),
-    ])));
+    ]), soon));
 }
 
 function renderStock() {
@@ -339,7 +522,7 @@ function renderStock() {
       stateCell(x.state),
     );
     return cells;
-  })));
+  }), r));
 }
 
 function renderShipments() {
@@ -388,7 +571,7 @@ function renderShipments() {
    horizontal scrollbar. Nothing is cut off, so it looks like it works,
    and in practice nobody drags a table sideways to find the number they
    came for. */
-function table(cols, bodyRows) {
+function table(cols, bodyRows, rows_) {
   const t = el('table');
   const thead = el('thead');
   const tr = el('tr');
@@ -397,13 +580,25 @@ function table(cols, bodyRows) {
   t.append(thead);
 
   const tb = el('tbody');
-  bodyRows.forEach((cells) => {
+  bodyRows.forEach((cells, n) => {
     const r = el('tr');
     cells.forEach((c, i) => {
       const label = cols[i] ? cols[i][0] : '';
       if (label) c.dataset.label = label;
       r.append(c);
     });
+    const row = (rows_ || [])[n];
+    if (row) {
+      r.dataset.click = '1';
+      r.tabIndex = 0;
+      r.addEventListener('click', () => openDetail(row, r));
+      r.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          openDetail(row, r);
+        }
+      });
+    }
     tb.append(r);
   });
   t.append(tb);
@@ -552,14 +747,18 @@ function counts() {
     (r) => (S.branch === 'ALL' || r.branch === S.branch) && NEEDS_DECISION.has(r.state));
   const out = needing.filter((r) => r.state === 'running out').length;
   const set = (view, n, alarm) => {
-    const a = document.querySelector(`.nav a[data-view="${view}"]`);
+    // The rail, not the old horizontal nav. Guarded because a count for
+    // a destination that does not exist should do nothing, not throw
+    // and take the rest of the render down with it.
+    const a = document.querySelector(`.rail a[data-view="${view}"]`);
+    if (!a) return;
     a.querySelector('.count').textContent = n ? String(n) : '';
     a.dataset.alarm = alarm ? '1' : '0';
   };
   set('today', out, out > 0);
   set('stock', needing.length, false);
   set('shipments', S.data.shipments.length, false);
-  set('cash', 0, false);
+  set('items', new Set(S.data.stock.map((r) => r.sku)).size, false);
 }
 
 function branches() {
@@ -608,6 +807,7 @@ async function announceOpenAccess() {
 async function boot() {
   buildNav();
   theme();
+  wireImport();
 
   const res = await fetch('/api/state');
   if (!res.ok) {
@@ -638,6 +838,168 @@ async function boot() {
   const start = (location.hash || '#today').slice(1);
   go(VIEWS.some((v) => v.id === start) ? start : 'today');
   addEventListener('resize', moveMarker);
+}
+
+/* boot() is called at the very bottom of this file, after every
+   declaration it reaches. Called from here it ran before the
+   import block below had been evaluated, and touching a `let`
+   from above its declaration is an error, not a hoist. */
+
+/* ---------------------------------------------------------- importing
+   Two steps, because an import is not undoable and the first anyone
+   should know about what it does is before it does it. The file is
+   sent twice rather than held on the server between the steps: server
+   state would need a lifetime and a cleanup, and reading a spreadsheet
+   again costs nothing. */
+
+let pendingFile = null;
+
+function importReport(d) {
+  const host = $('import-report');
+  host.textContent = '';
+  host.hidden = false;
+
+  const c = d.counts || {};
+  const head = el('div', 'section-head');
+  const v = el('div', 'verdict');
+  v.append(el('b', null, d.ok ? 'Ready to write' : 'Not ready yet'));
+  v.append(el('span', null, d.ok
+    ? 'Nothing has been written. Check the figures, then write it.'
+    : 'Fix what is listed below and upload the file again.'));
+  head.append(v);
+  host.append(head);
+
+  const rows = [
+    ['Branches', c.branches], ['Suppliers', c.suppliers],
+    ['Items', c.items], ['Stock lines', c.stock],
+    ['Months of history', c.history], ['Open orders', c.orders],
+    ['Shipment costs', c.shipment_costs],
+  ].filter(([, n]) => n !== undefined);
+
+  host.append(table(
+    [['What', ''], ['Rows', 'num']],
+    rows.map(([label, n]) => [cell(label, 'lead'), cell(qty(n), 'num')])));
+
+  if (d.value) {
+    const p = el('p', 'drop-sub',
+      `Opening stock at cost: ${S.data ? S.data.currency : 'PKR'} `
+      + `${money(d.value)}. Sense-check that against your own figure `
+      + 'before writing.');
+    p.style.padding = '10px 14px';
+    host.append(p);
+  }
+
+  if (d.problems && d.problems.length) {
+    const h = el('div', 'section-head');
+    h.append(el('h2', null,
+      d.problem_count > d.problems.length
+        ? `Problems (showing ${d.problems.length} of ${d.problem_count})`
+        : 'Problems'));
+    host.append(h);
+    host.append(table(
+      [['Sheet', ''], ['Row', 'num'], ['What is wrong', '']],
+      d.problems.map((p) => [
+        cell(p.sheet, 'lead'),
+        cell(p.row ? String(p.row) : '—', 'num'),
+        cell(p.message, p.fatal ? 'bad' : 'warn'),
+      ])));
+  }
+
+  $('import-go').hidden = !d.ok;
+}
+
+async function previewFile(file) {
+  if (!file) return;
+  if (!/\.xlsx$/i.test(file.name)) {
+    importReport({ ok: false, counts: {}, problems: [
+      { sheet: 'workbook', row: null, fatal: true,
+        message: 'That is not an .xlsx file. Export it from Excel as a '
+          + 'workbook and try again.' }], problem_count: 1 });
+    return;
+  }
+  pendingFile = file;
+  const body = new FormData();
+  body.append('file', file);
+  try {
+    const r = await fetch('/api/import/preview', { method: 'POST', body });
+    const d = await r.json();
+    if (!r.ok && d.error) throw new Error(d.error);
+    importReport(d);
+  } catch (e) {
+    importReport({ ok: false, counts: {}, problem_count: 1, problems: [
+      { sheet: 'workbook', row: null, fatal: true, message: e.message }] });
+  }
+}
+
+let importWired = false;
+
+function wireImport() {
+  const drop = $('drop');
+  const input = $('file');
+  // boot() runs again after a successful import, to pull the new
+  // figures in. Without this guard every listener here would be
+  // attached a second time and the next upload would fire twice.
+  if (!drop || importWired) return;
+  importWired = true;
+
+  $('browse').addEventListener('click', () => input.click());
+  input.addEventListener('change', () => previewFile(input.files[0]));
+
+  ['dragenter', 'dragover'].forEach((ev) =>
+    drop.addEventListener(ev, (e) => {
+      e.preventDefault();
+      drop.classList.add('over');
+    }));
+  ['dragleave', 'drop'].forEach((ev) =>
+    drop.addEventListener(ev, (e) => {
+      e.preventDefault();
+      drop.classList.remove('over');
+    }));
+  drop.addEventListener('drop', (e) => {
+    const f = e.dataTransfer && e.dataTransfer.files[0];
+    if (f) previewFile(f);
+  });
+
+  $('cancel-import').addEventListener('click', () => {
+    pendingFile = null;
+    input.value = '';
+    $('import-report').hidden = true;
+    $('import-go').hidden = true;
+  });
+
+  $('commit').addEventListener('click', async () => {
+    if (!pendingFile) return;
+    const btn = $('commit');
+    btn.disabled = true;
+    btn.textContent = 'Writing…';
+    const body = new FormData();
+    body.append('file', pendingFile);
+    try {
+      const r = await fetch('/api/import/commit', { method: 'POST', body });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || 'The import was refused.');
+      const w = d.written || {};
+      $('import-report').textContent = '';
+      const done = el('div', 'empty');
+      done.append(el('strong', null, 'Imported'));
+      done.append(el('p', null,
+        `${qty(w.items)} items across ${qty(w.branches)} branches, with `
+        + `${qty(w.movements)} opening entries and ${qty(w.history)} months `
+        + 'of history. Your figures are on every screen now.'));
+      $('import-report').append(done);
+      $('import-go').hidden = true;
+      pendingFile = null;
+      /* Reload the state rather than ask them to: the whole app is
+         about to be wrong by exactly the amount they just imported. */
+      await boot();
+      go('today');
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = 'Write this to my organisation';
+      importReport({ ok: false, counts: {}, problem_count: 1, problems: [
+        { sheet: 'import', row: null, fatal: true, message: e.message }] });
+    }
+  });
 }
 
 boot();

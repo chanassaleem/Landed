@@ -62,12 +62,29 @@
     </button>
   </header>
 
-  <nav class="nav" id="nav" aria-label="Sections">
-    <span class="marker" id="marker"></span>
+  <div class="body">
+
+  <!-- Destinations live here, not in the top bar. Four of them fitted
+       across the top; twelve do not, and this is going to be twelve.
+       The top bar keeps what is global -- search, branch, theme --
+       which is a different job from saying where you are. -->
+  <nav class="rail" id="rail" aria-label="Sections">
+    <div class="rail-group" id="rail-items"></div>
+    <button class="rail-pin" id="rail-pin" type="button"
+            aria-label="Keep the menu open">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none"
+           stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <path d="M6 3h7M6 8h7M6 13h7" stroke-linecap="round"/>
+        <path d="M2.5 3h.01M2.5 8h.01M2.5 13h.01" stroke-linecap="round"/>
+      </svg>
+      <span class="rail-label">Keep open</span>
+    </button>
   </nav>
 
+  <div class="stage">
+
   <!-- The hero. Where every rupee is, as one band, and the main filter. -->
-  <section class="line" aria-label="Where the money is">
+  <section class="line" id="money-line" aria-label="Where the money is">
     <div class="line-head">
       <h1>Money in the business</h1>
       <span class="total num" id="total">—</span>
@@ -129,26 +146,95 @@
       </div>
     </section>
 
+    <section class="view" id="v-items">
+      <div class="wrap">
+        <div class="section">
+          <div class="section-head">
+            <h2>Items</h2>
+            <p id="items-sub"></p>
+          </div>
+          <div class="panel" id="items"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="v-import">
+      <div class="wrap">
+        <div class="section">
+          <div class="section-head">
+            <h2>Import</h2>
+            <p>Bring a workbook in. Nothing is written until you have seen
+               what it will do.</p>
+          </div>
+
+          <div class="drop" id="drop">
+            <input type="file" id="file" accept=".xlsx"
+                   aria-label="Choose a workbook">
+            <p class="drop-main">Drop a workbook here, or
+              <button class="linkish" id="browse" type="button">choose a
+                file</button>
+            </p>
+            <p class="drop-sub">An .xlsx with the sheets Branches, Items,
+              Stock and Sales history. On order, Shipments and Suppliers
+              are read if they are there.</p>
+          </div>
+
+          <div class="panel" id="import-report" hidden></div>
+          <div class="import-go" id="import-go" hidden>
+            <button class="primary" id="commit" type="button">
+              Write this to my organisation</button>
+            <button class="btn" id="cancel-import" type="button">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="view" id="v-cash">
       <div class="wrap">
         <div class="empty">
           <strong>Cash is not connected yet</strong>
           <p>It needs your bank balance and what you have already committed
              to pay. Both live on the Settings screen.</p>
-          <button class="btn">Add an opening balance</button>
         </div>
       </div>
     </section>
 
   </main>
-</div>
+  </div><!-- /stage -->
 
-<footer class="foot">
-  <span id="foot-scope">—</span>
-  <span class="mono" id="foot-asof"></span>
-  <span class="grow"></span>
-  <span id="foot-source">Sample data</span>
-</footer>
+  <!-- Opens over the right of the stage when a line is clicked. The
+       list stays where it is behind it: you act on a line without
+       losing your place among the other thirty-five, which is the
+       whole reason this is a panel and not another page. -->
+  <aside class="detail" id="detail" hidden aria-label="Line detail">
+    <header class="detail-head">
+      <div>
+        <h2 id="detail-title">—</h2>
+        <p id="detail-sub"></p>
+      </div>
+      <button class="iconbtn" id="detail-close" type="button"
+              aria-label="Close">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none"
+             stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+          <path d="M4 4l8 8M12 4l-8 8" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </header>
+    <div class="detail-body" id="detail-body"></div>
+    <footer class="detail-actions" id="detail-actions"></footer>
+  </aside>
+
+  </div><!-- /body -->
+
+  <!-- Inside the shell, not after it. Outside, with the shell owning
+       the full viewport height, it sat below the fold permanently. -->
+  <footer class="foot">
+    <span id="foot-scope">—</span>
+    <span class="mono" id="foot-asof"></span>
+    <span class="grow"></span>
+    <span id="foot-source">Sample data</span>
+  </footer>
+</div>
 
 <div class="scrim" id="scrim" hidden>
   <div class="palette" role="dialog" aria-modal="true" aria-label="Search">

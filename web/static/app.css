@@ -151,10 +151,23 @@ body {
 
 /* --------------------------------------------------------------- shell */
 
+/* A column, not a grid. The footer used to be fixed to the viewport
+   and the rows were fixed in number; with a rail and a panel in the
+   middle, the shell has to be the thing that owns the height and hands
+   what is left to the middle row. */
+/* `display: flex` on an element beats the browser's own
+   `[hidden] { display: none }`, so anything laid out as a flex or grid
+   container ignores the attribute entirely. The detail panel and the
+   import button both did: the panel sat open and empty on every
+   screen, and "Write this to my organisation" offered itself on a
+   workbook that had just failed its checks. */
+[hidden] { display: none !important; }
+
 .app {
-  display: grid;
-  grid-template-rows: var(--bar) auto 1fr;
-  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 .topbar {
@@ -435,8 +448,9 @@ body {
 /* -------------------------------------------------------------- content */
 
 .main {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
-  padding: 0 0 56px;
 }
 
 .view { display: none; }
@@ -694,8 +708,7 @@ td.dim { color: var(--text-2); }
   background: var(--surface);
   color: var(--text-3);
   font-size: 11.5px;
-  position: fixed;
-  bottom: 0; left: 0; right: 0;
+  flex: none;
 }
 .foot .mono { color: var(--text-2); }
 
@@ -1068,3 +1081,243 @@ td.dim { color: var(--text-2); }
   background: color-mix(in srgb, var(--attention) 7%, transparent);
 }
 .banner.warn a { color: var(--attention); }
+
+/* ===================================================== the new shell
+   Three regions, three jobs. The top bar holds what is global: search,
+   branch, theme. The rail says where you are. The panel says what you
+   clicked. Nothing does two of those. */
+
+.body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.stage {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ------------------------------------------------------------- rail
+   Icons at rest, labels on hover or when pinned. A permanent 220px of
+   labels is 220px taken from the tables, which are the part anyone
+   actually reads. */
+
+.rail {
+  flex: none;
+  width: 54px;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 0 6px;
+  border-right: 1px solid var(--rule);
+  background: var(--surface);
+  transition: width var(--t);
+  overflow: hidden;
+  z-index: 3;
+}
+.rail:hover,
+.rail[data-pinned='1'] { width: 196px; }
+
+.rail-group { flex: 1; overflow-y: auto; scrollbar-width: none; }
+.rail-group::-webkit-scrollbar { display: none; }
+
+.rail a,
+.rail-pin {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 0 0 0 17px;
+  height: 34px;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font: 400 13px var(--sans);
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+  position: relative;
+}
+.rail a:hover, .rail-pin:hover { color: var(--text); background: var(--sunk); }
+.rail a[aria-current='page'] { color: var(--text); font-weight: 500; }
+.rail a[aria-current='page']::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 7px; bottom: 7px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--text);
+}
+.rail svg { flex: none; }
+
+/* The label is what collapses, not the row: the icons must not move
+   when the rail opens, or every destination shifts under the pointer. */
+.rail-label {
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.rail:hover .rail-label,
+.rail[data-pinned='1'] .rail-label { opacity: 1; }
+
+.rail .count {
+  margin-left: auto;
+  margin-right: 14px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.rail:hover .count,
+.rail[data-pinned='1'] .count { opacity: 1; }
+.rail a[data-alarm='1'] .count { color: var(--urgent); }
+
+/* A rule between groups rather than a heading above each. The grouping
+   is visible either way, and a heading would be three more words of
+   chrome that say nothing the icons do not. */
+.rail .sep {
+  height: 1px;
+  margin: 7px 12px;
+  background: var(--rule);
+}
+
+.rail-pin { color: var(--text-3); font-size: 12px; }
+.rail[data-pinned='1'] .rail-pin { color: var(--text-2); }
+
+/* ----------------------------------------------------------- detail */
+
+.detail {
+  flex: none;
+  width: 380px;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--rule);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.detail-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 14px 12px 16px;
+  border-bottom: 1px solid var(--rule);
+}
+.detail-head h2 {
+  margin: 0 0 2px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+.detail-head p { margin: 0; font-size: 12px; color: var(--text-2); }
+.detail-head .iconbtn { margin-left: auto; }
+
+.detail-body { flex: 1; overflow-y: auto; padding: 4px 0 14px; }
+
+.detail-block { padding: 12px 16px 2px; }
+.detail-block h3 {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+/* Figures in a panel read as a list of facts, not as a table: one per
+   line, label left, value right, aligned on the digit. */
+.facts { display: grid; gap: 5px; }
+.fact { display: flex; align-items: baseline; gap: 12px; font-size: 12.5px; }
+.fact span:first-child { color: var(--text-2); }
+.fact span:last-child {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.fact.said span:last-child { font-family: var(--sans); }
+
+.detail-actions {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--rule);
+}
+
+tbody tr.picked { background: var(--sunk); }
+tbody tr[data-click] { cursor: pointer; }
+
+/* ----------------------------------------------------------- import */
+
+.drop {
+  border: 1px dashed var(--rule);
+  border-radius: var(--r);
+  padding: 30px 20px;
+  text-align: center;
+  background: var(--surface);
+}
+.drop.over { border-color: var(--transit); background: var(--sunk); }
+.drop input[type=file] { display: none; }
+.drop-main { margin: 0 0 6px; font-size: 13.5px; }
+.drop-sub {
+  margin: 0 auto;
+  max-width: 54ch;
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.5;
+}
+.import-go { display: flex; gap: 10px; margin-top: 14px; }
+.import-go .primary { width: auto; }
+
+.verdict { display: flex; align-items: baseline; gap: 8px; }
+.verdict b { font-size: 13px; }
+td.bad { color: var(--urgent); }
+td.warn { color: var(--attention); }
+
+@media (max-width: 860px) {
+  /* The rail becomes a strip of icons along the top: a 54px column on a
+     390px screen is a seventh of the width spent on navigation. */
+  .body { flex-direction: column; }
+  .rail {
+    width: auto;
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+    padding: 0;
+  }
+  .rail:hover, .rail[data-pinned='1'] { width: auto; }
+  .rail-group { display: flex; flex: 1; overflow-x: auto; }
+  .rail a { width: auto; padding: 0 13px; height: 42px; }
+  .rail a[aria-current='page']::before {
+    left: 0; right: 0; top: auto; bottom: 0;
+    width: auto; height: 2px; border-radius: 0;
+  }
+  .rail .sep, .rail-pin, .rail .count { display: none; }
+  .rail-label { opacity: 1; }
+
+  /* The panel takes the screen, because on a phone there is no "beside". */
+  .detail {
+    position: fixed;
+    inset: 0;
+    width: auto;
+    z-index: 20;
+  }
+}
+
+
+/* A sentence in a table cell wraps. The nowrap rule exists so a column
+   of figures does not break mid-number; a message is not a figure. */
+.panel td.bad, .panel td.warn, .panel th:last-child, .panel td:last-child {
+  white-space: normal;
+}
+.panel td.bad, .panel td.warn { min-width: 34ch; line-height: 1.45; }
+
+/* The import report is two tables and a verdict, so each part gets its
+   own card rather than being run together in one. */
+#import-report { margin-top: 14px; }
+#import-report .section-head { padding: 12px 14px 10px; }
+#import-report .section-head + table { border-top: 1px solid var(--rule); }

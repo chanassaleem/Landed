@@ -393,6 +393,78 @@ async def create_organisation(request: Request,
     return JSONResponse({"id": str(row[0]), "name": row[1]})
 
 
+# An import is two requests on purpose: see what it will do, then do
+# it. The file is sent twice rather than parked on the server between
+# them -- server-side state would need a lifetime, a cleanup and a
+# story about what happens when two tabs upload at once, and re-reading
+# a spreadsheet costs milliseconds.
+
+MAX_UPLOAD = 12 * 1024 * 1024
+
+
+async def _read_upload(request: Request) -> bytes:
+    form = await request.form()
+    up = form.get("file")
+    if up is None or not hasattr(up, "read"):
+        raise HTTPException(400, "No file was sent.")
+    data = await up.read()
+    if not data:
+        raise HTTPException(400, "That file is empty.")
+    if len(data) > MAX_UPLOAD:
+        raise HTTPException(
+            413, f"That file is larger than {MAX_UPLOAD // (1024*1024)} MB.")
+    return data
+
+
+@app.post("/api/import/preview")
+async def import_preview(request: Request,
+                         claims: Claims = Depends(require)) -> JSONResponse:
+    """Read the workbook and report what it would do. Writes nothing."""
+    from engine.importer import BadWorkbook, plan
+
+    data = await _read_upload(request)
+    try:
+        p = plan(data)
+    except BadWorkbook as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, 400)
+    return JSONResponse(p.as_dict())
+
+
+@app.post("/api/import/commit")
+async def import_commit(request: Request,
+                        claims: Claims = Depends(require)) -> JSONResponse:
+    """Write it. One transaction, so a failure leaves nothing behind."""
+    from engine.db.supabase import NotConfigured, database
+    from engine.importer import BadWorkbook, apply, plan
+
+    data = await _read_upload(request)
+    try:
+        p = plan(data)
+    except BadWorkbook as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, 400)
+    if not p.ok:
+        return JSONResponse(
+            {"ok": False,
+             "error": "This workbook still has problems that must be fixed.",
+             **p.as_dict()}, 400)
+
+    try:
+        with database().as_user(claims.user_id) as conn:
+            made = apply(conn, p)
+    except NotConfigured:
+        return JSONResponse({"ok": False, "error": "No database is "
+                             "configured for this deployment."}, 503)
+    except Exception as exc:
+        # Named rather than swallowed: an import that half-worked and
+        # said nothing is the worst outcome here, and the transaction
+        # has already rolled the whole thing back.
+        return JSONResponse(
+            {"ok": False,
+             "error": "Nothing was written. The database refused the "
+                      f"import: {type(exc).__name__}."}, 400)
+    return JSONResponse({"ok": True, "written": made})
+
+
 @app.get("/api/state")
 def state(request: Request) -> dict:
     """Everything the screen needs, in one response.
