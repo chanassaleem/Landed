@@ -804,7 +804,57 @@ async function announceOpenAccess() {
   } catch (e) {}
 }
 
+/* Before anything else: does this account have an organisation?
+   Everything that writes needs one, and an app that renders first and
+   discovers it later shows a dashboard that cannot be used and gives
+   no reason. */
+async function needsOrganisation() {
+  try {
+    const r = await fetch('/api/me');
+    const d = await r.json();
+    if (!d.signed_in) return false;          // auth is off; sample data
+    if (d.organisations === null) return false;   // database unreachable
+    return d.organisations.length === 0;
+  } catch (e) {
+    return false;
+  }
+}
+
+function showSetup() {
+  $('setup').hidden = false;
+  $('app').hidden = true;
+  const form = $('setup-form');
+  const err = $('setup-error');
+  $('org-name').focus();
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = $('org-name').value.trim();
+    if (!name) { err.hidden = false; err.textContent = 'Give it a name.'; return; }
+    const btn = $('setup-go');
+    btn.disabled = true;
+    btn.textContent = 'Creating…';
+    err.hidden = true;
+    try {
+      const r = await fetch('/api/organisation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'That did not work.');
+      location.reload();
+    } catch (ex) {
+      err.hidden = false;
+      err.textContent = ex.message;
+      btn.disabled = false;
+      btn.textContent = 'Create it';
+    }
+  }, { once: false });
+}
+
 async function boot() {
+  if (await needsOrganisation()) { showSetup(); return; }
   buildNav();
   theme();
   wireImport();

@@ -31,6 +31,10 @@ MONTH_COL = re.compile(r"^sold[_ ](\d{4})[_-](\d{2})$", re.I)
 TRUE = {"yes", "y", "true", "1", "t"}
 
 
+class NoOrganisation(Exception):
+    """The caller has no organisation, so there is nowhere to write."""
+
+
 class BadWorkbook(Exception):
     """The file cannot be read at all. Distinct from a problem inside a
     sheet, which is reported as a Problem and does not stop the read."""
@@ -94,7 +98,20 @@ class Plan:
 # ------------------------------------------------------------- reading
 
 def _text(v) -> str:
-    return "" if v is None else str(v).strip()
+    """Whatever the cell holds, as a trimmed string.
+
+    Excel returns more than str and None: a formula cell can come back
+    as a float, a date cell as a datetime, and a cell with mixed
+    formatting as rich text. str() handles all of them; the point is
+    that nothing downstream has to.
+    """
+    if v is None:
+        return ""
+    if isinstance(v, float) and v.is_integer():
+        # 4417.0 is a SKU somebody typed as a number. Matching it
+        # against "4417" on another sheet has to work.
+        return str(int(v))
+    return str(v).strip()
 
 
 def _num(v, default=0.0) -> float:
@@ -104,6 +121,18 @@ def _num(v, default=0.0) -> float:
         return float(v)
     except (TypeError, ValueError):
         return default
+
+
+def _three(code: str, fallback: str = "PKR") -> str:
+    """A currency the column constraint will accept.
+
+    The schema requires exactly three characters. A blank cell, or
+    "Rs", reaches the database as a value it refuses -- and the refusal
+    arrives at the end of a long transaction, after everything else has
+    already been written and is about to be rolled back.
+    """
+    code = (code or "").strip().upper()
+    return code if len(code) == 3 and code.isalpha() else fallback
 
 
 def _is_num(v) -> bool:
@@ -218,8 +247,8 @@ def _read_suppliers(ws, p):
             p.suppliers.append({
                 "name": name,
                 "country": _text(vals[i["country"]]) if "country" in i else "",
-                "currency": (_text(vals[i["currency"]]) if "currency" in i
-                             else "") or "PKR",
+                "currency": _three(_text(vals[i["currency"]])
+                                   if "currency" in i else ""),
             })
 
 
@@ -339,8 +368,9 @@ def _read_orders(ws, p):
             "supplier": _text(vals[i["supplier_name"]]) if "supplier_name" in i else "",
             "qty": _num(vals[i["qty"]]) if "qty" in i else 0,
             "price": _num(vals[i["unit_price"]]) if "unit_price" in i else 0,
-            "currency": (_text(vals[i["currency"]]) if "currency" in i else "") or "PKR",
-            "fx": _num(vals[i["fx_rate"]], 1.0) if "fx_rate" in i else 1.0,
+            "currency": _three(_text(vals[i["currency"]])
+                               if "currency" in i else ""),
+            "fx": _num(vals[i["fx_rate"]], 1.0) or 1.0,
             "ordered": _day(vals[i["ordered_at"]]) if "ordered_at" in i else None,
             "expected": _day(vals[i["expected_at"]]) if "expected_at" in i else None,
             "status": (_text(vals[i["status"]]) if "status" in i else "") or "placed",
@@ -437,6 +467,19 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
     """
     if not p.ok:
         raise BadWorkbook("This plan has problems that must be fixed first.")
+
+    # Every insert below reads `select id from public.organisations limit 1`
+    # to find the caller's organisation. With no organisation that
+    # returns no rows, the insert writes nothing, and the fetchone()
+    # after it hands back None -- which surfaced to the first real user
+    # as "TypeError" and nothing else. Checked once, here, and said in
+    # words.
+    row = conn.execute("select count(*) from public.organisations").fetchone()
+    if not row or not row[0]:
+        raise NoOrganisation(
+            "This account has no organisation yet, so there is nowhere to "
+            "put the import. Name your business first.")
+
     as_of = as_of or date.today()
     made = {k: 0 for k in
             ("branches", "suppliers", "items", "movements", "history",
@@ -547,7 +590,7 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
                 "%s, %s, %s from public.items where id = %s "
                 "on conflict (org_id, po_number) do update set "
                 "status = excluded.status returning id",
-                (lid, sup.get(o["supplier"]), o["po"], o["currency"][:3],
+                (lid, sup.get(o["supplier"]), o["po"], o["currency"],
                  o["fx"] or 1, o["status"], o["ordered"], o["expected"], iid),
             ).fetchone()
             heads[o["po"]] = row[0]

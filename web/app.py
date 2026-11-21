@@ -435,7 +435,8 @@ async def import_commit(request: Request,
                         claims: Claims = Depends(require)) -> JSONResponse:
     """Write it. One transaction, so a failure leaves nothing behind."""
     from engine.db.supabase import NotConfigured, database
-    from engine.importer import BadWorkbook, apply, plan
+    from engine.importer import (BadWorkbook, NoOrganisation,
+                                 apply, plan)
 
     data = await _read_upload(request)
     try:
@@ -451,17 +452,36 @@ async def import_commit(request: Request,
     try:
         with database().as_user(claims.user_id) as conn:
             made = apply(conn, p)
+    except NoOrganisation as exc:
+        return JSONResponse({"ok": False, "error": str(exc),
+                             "needs_organisation": True}, 409)
     except NotConfigured:
         return JSONResponse({"ok": False, "error": "No database is "
                              "configured for this deployment."}, 503)
     except Exception as exc:
-        # Named rather than swallowed: an import that half-worked and
-        # said nothing is the worst outcome here, and the transaction
-        # has already rolled the whole thing back.
+        # The message, not just the class name.
+        #
+        # This handler used to report "TypeError" and nothing else,
+        # which is the same as reporting nothing: it names the shape of
+        # the problem and withholds the problem. The first real import
+        # failed on it and neither of us could say why.
+        #
+        # The text is redacted because an exception from the database
+        # layer can carry a connection string, and a connection string
+        # carries a password.
+        import logging
+        import traceback
+
+        from engine.db.supabase import redact
+
+        logging.getLogger("landed.import").exception("import failed")
+        detail = redact(f"{type(exc).__name__}: {exc}")[:400]
         return JSONResponse(
             {"ok": False,
-             "error": "Nothing was written. The database refused the "
-                      f"import: {type(exc).__name__}."}, 400)
+             "error": f"Nothing was written. The import failed: {detail}",
+             "where": redact(traceback.format_exc().strip().splitlines()[-2]
+                             if traceback.format_exc().strip() else "")[:200],
+             }, 400)
     return JSONResponse({"ok": True, "written": made})
 
 

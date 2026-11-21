@@ -23,7 +23,42 @@
 </head>
 <body>
 
-<div class="app">
+<!-- Shown before the app when the account has no organisation yet.
+     Everything that writes needs one, and without this screen a new
+     account could sign in, see an empty dashboard, upload a workbook
+     and get a TypeError -- which is exactly what happened. -->
+<div class="gate" id="setup" hidden>
+  <div class="gate-grid">
+    <div class="gate-card">
+      <span class="wordmark gate-mark">
+        <svg width="22" height="16" viewBox="0 0 22 16" aria-hidden="true">
+          <line x1="2" y1="8" x2="20" y2="8" stroke="currentColor"
+                stroke-width="1.25" opacity=".3"/>
+          <circle cx="2" cy="8" r="1.75" fill="none" stroke="currentColor"
+                  stroke-width="1.25" opacity=".45"/>
+          <circle cx="8" cy="8" r="1.75" fill="none" stroke="currentColor"
+                  stroke-width="1.25" opacity=".6"/>
+          <circle cx="14" cy="8" r="1.75" fill="none" stroke="currentColor"
+                  stroke-width="1.25" opacity=".8"/>
+          <circle cx="20" cy="8" r="2.25" fill="currentColor"/>
+        </svg>
+        Landed
+      </span>
+      <h1>Name your business</h1>
+      <p class="gate-sub">Your branches, items and stock all belong to it.
+        You only do this once.</p>
+      <form id="setup-form" novalidate>
+        <label for="org-name">Business name</label>
+        <input id="org-name" type="text" autocomplete="organization"
+               placeholder="Meridian Diagnostics" required>
+        <p class="gate-error" id="setup-error" role="alert" hidden></p>
+        <button class="primary" type="submit" id="setup-go">Create it</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="app" id="app">
 
   <header class="topbar">
     <span class="wordmark">

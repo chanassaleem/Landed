@@ -609,3 +609,77 @@ def test_commit_refuses_a_workbook_with_problems(signed_in, monkeypatch):
                                     "application/x")})
     assert r.status_code == 400
     assert r.json()["ok"] is False
+
+
+# -------------------------------------------------- the missing first step
+
+def test_importing_with_no_organisation_says_so_in_words(signed_in, monkeypatch):
+    """The failure the first real import hit.
+
+    Every insert finds the caller's organisation with `select id from
+    public.organisations limit 1`. With no organisation that returns
+    nothing, the insert writes nothing, and the fetchone() after it
+    hands back None. It reached the screen as the word "TypeError".
+    """
+    client, _ = signed_in
+
+    class Conn:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, *a, **k):
+            class R:
+                def fetchone(self_): return (0,)       # no organisations
+            return R()
+
+    class DB:
+        def as_user(self, _uid): return Conn()
+
+    import engine.db.supabase as sup
+    monkeypatch.setattr(sup, "database", lambda: DB())
+
+    r = client.post("/api/import/commit",
+                    files={"file": ("book.xlsx", _book(), "application/x")})
+    assert r.status_code == 409
+    d = r.json()
+    assert d["needs_organisation"] is True
+    assert "organisation" in d["error"].lower()
+    assert "TypeError" not in r.text
+
+
+def test_a_failed_import_reports_the_message_not_just_the_class(
+    signed_in, monkeypatch
+):
+    """Reporting only the exception class names the shape of the problem
+    and withholds the problem."""
+    client, _ = signed_in
+
+    class DB:
+        def as_user(self, _uid):
+            raise RuntimeError("relation \"items\" does not exist")
+
+    import engine.db.supabase as sup
+    monkeypatch.setattr(sup, "database", lambda: DB())
+
+    r = client.post("/api/import/commit",
+                    files={"file": ("book.xlsx", _book(), "application/x")})
+    assert r.status_code == 400
+    assert "does not exist" in r.json()["error"]
+
+
+def test_a_failure_message_cannot_leak_a_password(signed_in, monkeypatch):
+    """An exception out of the database layer can carry a connection
+    string, and a connection string carries a password."""
+    client, _ = signed_in
+
+    class DB:
+        def as_user(self, _uid):
+            raise RuntimeError(
+                "could not connect: postgres://user:hunter2@db.host:5432/x")
+
+    import engine.db.supabase as sup
+    monkeypatch.setattr(sup, "database", lambda: DB())
+
+    r = client.post("/api/import/commit",
+                    files={"file": ("book.xlsx", _book(), "application/x")})
+    assert "hunter2" not in r.text
+    assert "********" in r.json()["error"]
