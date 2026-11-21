@@ -485,6 +485,208 @@ async def import_commit(request: Request,
     return JSONResponse({"ok": True, "written": made})
 
 
+# --------------------------------------------------------- settings
+#
+# What a business can change about how its own figures are read. Held
+# in organisations.settings, which is jsonb, so a new knob needs no
+# migration -- and read back into Thresholds, which is where the
+# engine already takes every number it uses.
+
+# Only these, and only as numbers. A settings blob written straight
+# into Thresholds would let anything in the column become anything in
+# the engine, which is a wide door for a feature this small.
+SETTABLE = {
+    "target_cover_months": (0.25, 36.0),
+    "excess_cover_months": (0.5, 60.0),
+    "cost_of_capital_annual": (0.0, 1.0),
+    "cash_buffer": (0.0, 1e12),
+}
+
+
+def thresholds_for(settings: dict):
+    """Thresholds with this organisation's own numbers in them."""
+    from engine.schema import Thresholds
+
+    clean = {}
+    for key, (lo, hi) in SETTABLE.items():
+        if key not in (settings or {}):
+            continue
+        try:
+            v = float(settings[key])
+        except (TypeError, ValueError):
+            continue
+        if lo <= v <= hi:
+            clean[key] = v
+    # Nonsense is refused rather than clamped: an excess limit below
+    # the reorder level means every line is at once too little and too
+    # much, and silently swapping them would be the software deciding
+    # what the business meant.
+    if clean.get("excess_cover_months", 6.0) <= clean.get(
+            "target_cover_months", 3.0):
+        clean.pop("excess_cover_months", None)
+        clean.pop("target_cover_months", None)
+    return Thresholds(**clean)
+
+
+@app.get("/api/settings")
+def read_settings(claims: Claims = Depends(require)) -> JSONResponse:
+    from engine.db.supabase import database
+
+    with database().as_user(claims.user_id) as conn:
+        row = conn.execute(
+            "select name, country, currency, settings from "
+            "public.organisations order by created_at limit 1").fetchone()
+        branches = [
+            {"code": c, "name": n, "city": city or ""}
+            for c, n, city in conn.execute(
+                "select code, name, city from public.locations "
+                "where is_active order by code").fetchall()]
+    if not row:
+        return JSONResponse({"error": "no organisation"}, 409)
+    return JSONResponse({
+        "name": row[0], "country": row[1], "currency": row[2],
+        "settings": row[3] or {},
+        "defaults": {k: getattr(thresholds_for({}), k) for k in SETTABLE},
+        "limits": {k: list(v) for k, v in SETTABLE.items()},
+        "branches": branches,
+        "email": claims.email,
+    })
+
+
+@app.post("/api/settings")
+async def write_settings(request: Request,
+                         claims: Claims = Depends(require)) -> JSONResponse:
+    from engine.db.supabase import database
+
+    body = await request.json()
+    name = str(body.get("name", "")).strip()
+    incoming = body.get("settings") or {}
+
+    keep, rejected = {}, []
+    for key, (lo, hi) in SETTABLE.items():
+        if key not in incoming or incoming[key] in ("", None):
+            continue
+        try:
+            v = float(incoming[key])
+        except (TypeError, ValueError):
+            rejected.append(f"{key} is not a number")
+            continue
+        if not (lo <= v <= hi):
+            rejected.append(f"{key} has to be between {lo:g} and {hi:g}")
+            continue
+        keep[key] = v
+
+    target = keep.get("target_cover_months", 3.0)
+    excess = keep.get("excess_cover_months", 6.0)
+    if excess <= target:
+        rejected.append(
+            "the standing-still limit has to be above the cover target, or "
+            "every line is at once too little and too much")
+    if rejected:
+        return JSONResponse({"ok": False, "problems": rejected}, 400)
+
+    import json as _json
+
+    with database().as_user(claims.user_id) as conn:
+        conn.execute(
+            "update public.organisations set settings = %s"
+            + (", name = %s" if name else "")
+            + " where id = (select id from public.organisations "
+              "order by created_at limit 1)",
+            (_json.dumps(keep), name) if name else (_json.dumps(keep),))
+    return JSONResponse({"ok": True, "settings": keep})
+
+
+# ------------------------------------------------------- operations
+#
+# The four things that happen to stock in a day. Each is a row in the
+# ledger and nothing else, so each is a POST that either writes one or
+# says plainly why it will not.
+
+
+def _ops(claims: Claims):
+    from engine.db.supabase import database
+
+    return database().as_user(claims.user_id)
+
+
+def _op_error(exc) -> JSONResponse:
+    from engine.operations import NotAllowed
+
+    if isinstance(exc, NotAllowed):
+        return JSONResponse({"ok": False, "error": str(exc)}, 400)
+    from engine.db.supabase import redact
+
+    return JSONResponse(
+        {"ok": False,
+         "error": f"Nothing was recorded: {redact(str(exc))[:200]}"}, 400)
+
+
+@app.post("/api/movement")
+async def movement(request: Request,
+                   claims: Claims = Depends(require)) -> JSONResponse:
+    """Received, sold, issued, returned, written off."""
+    from engine.operations import record
+
+    b = await request.json()
+    try:
+        with _ops(claims) as conn:
+            out = record(conn, str(b.get("sku", "")), str(b.get("branch", "")),
+                         str(b.get("kind", "")), b.get("qty"),
+                         unit_cost=b.get("unit_cost"),
+                         note=str(b.get("note", "")))
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({"ok": True, **out})
+
+
+@app.post("/api/adjust")
+async def adjust_count(request: Request,
+                       claims: Claims = Depends(require)) -> JSONResponse:
+    """A stock take. Takes the count, not the difference."""
+    from engine.operations import adjust
+
+    b = await request.json()
+    try:
+        with _ops(claims) as conn:
+            out = adjust(conn, str(b.get("sku", "")), str(b.get("branch", "")),
+                         b.get("counted"), note=str(b.get("note", "")))
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({"ok": True, **out})
+
+
+@app.post("/api/transfer")
+async def transfer_stock(request: Request,
+                         claims: Claims = Depends(require)) -> JSONResponse:
+    """Between two branches: two rows, both or neither."""
+    from engine.operations import transfer
+
+    b = await request.json()
+    try:
+        with _ops(claims) as conn:
+            out = transfer(conn, str(b.get("sku", "")),
+                           str(b.get("from", "")), str(b.get("to", "")),
+                           b.get("qty"), note=str(b.get("note", "")))
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({"ok": True, **out})
+
+
+@app.get("/api/line/history")
+def line_history(request: Request, sku: str, branch: str,
+                 claims: Claims = Depends(require)) -> JSONResponse:
+    """What has happened to this line. The panel asks for it on open."""
+    from engine.operations import history
+
+    try:
+        with _ops(claims) as conn:
+            return JSONResponse({"ok": True,
+                                 "movements": history(conn, sku, branch)})
+    except Exception as exc:
+        return _op_error(exc)
+
+
 @app.get("/api/state")
 def state(request: Request) -> dict:
     """Everything the screen needs, in one response.
@@ -513,6 +715,10 @@ def state(request: Request) -> dict:
 
         with database().as_user(claims.user_id) as conn:
             snap = read(conn, _date.today())
+            row = conn.execute(
+                "select settings from public.organisations "
+                "order by created_at limit 1").fetchone()
+            th = thresholds_for(row[0] if row else {})
     except NotConfigured:
         return api.state_payload()
     except Exception:
@@ -529,7 +735,7 @@ def state(request: Request) -> dict:
 
     return api.state_payload(as_of=_date.today(), items=snap.items,
                              demand=snap.demand, source="Your data",
-                             currency=snap.currency)
+                             currency=snap.currency, thresholds=th)
 
 
 @app.get("/api/workbook.xlsx")

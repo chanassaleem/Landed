@@ -55,8 +55,8 @@ def _sample_records() -> dict:
 
 
 def state_payload(as_of: date | None = None, items=None, demand=None,
-                  source: str = "Sample data",
-                  currency: str = "PKR") -> dict[str, Any]:
+                  source: str = "Sample data", currency: str = "PKR",
+                  thresholds: Thresholds | None = None) -> dict[str, Any]:
     """The whole screen in one response.
 
     One request rather than six, because every screen is a different cut
@@ -70,7 +70,7 @@ def state_payload(as_of: date | None = None, items=None, demand=None,
     than an empty one.
     """
     as_of = as_of or samples.AS_OF
-    th = Thresholds()
+    th = thresholds or Thresholds()
     if items is None:
         recs = _sample_records()
         items, demand = recs["inventory"], recs["demand"]

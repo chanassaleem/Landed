@@ -456,7 +456,22 @@ body {
 .view { display: none; }
 .view.on { display: block; }
 
-.wrap { padding: 16px; max-width: 1480px; }
+/* One width for everything, so the money line and the content below
+   it line up instead of disagreeing by six hundred pixels.
+   
+   Capped because a table row three thousand pixels wide is not more
+   readable, it is further to look; centred because on a 32-inch
+   monitor the old rule left 40% of the screen empty on one side and
+   the whole app hugging the other. */
+:root { --content: 2100px; }
+
+.wrap {
+  padding: 16px;
+  max-width: var(--content);
+  margin: 0 auto;
+  width: 100%;
+}
+.line > * { max-width: var(--content); margin-inline: auto; }
 
 .section { margin-bottom: 22px; }
 
@@ -1321,3 +1336,154 @@ td.warn { color: var(--attention); }
 #import-report { margin-top: 14px; }
 #import-report .section-head { padding: 12px 14px 10px; }
 #import-report .section-head + table { border-top: 1px solid var(--rule); }
+
+
+/* On a wide screen the morning reads as two columns: what to decide,
+   and the lines behind it. Stacked, the table starts below the fold on
+   a monitor with room for both. */
+@media (min-width: 1700px) {
+  #v-today .wrap {
+    display: grid;
+    grid-template-columns: minmax(380px, 1fr) minmax(0, 1.9fr);
+    align-items: start;
+    gap: 0 28px;
+  }
+  #v-today .banner { grid-column: 1 / -1; margin-inline: 0; }
+  #v-today .section:first-of-type { grid-column: 1; }
+  #v-today .section:last-of-type { grid-column: 2; }
+  /* Three decisions in a row needs width; in a column they stack. */
+  #v-today .decks { grid-template-columns: 1fr; gap: 0; }
+  #v-today .deck + .deck {
+    padding-left: 0;
+    margin-left: 0;
+    border-left: 0;
+    margin-top: 18px;
+    padding-top: 18px;
+    border-top: 1px solid var(--rule);
+  }
+}
+
+/* A form in the panel. Labels above fields, because a label beside a
+   field in 380px leaves no room for either. */
+.op-form { display: grid; gap: 0; margin-top: 12px; }
+.op-form label {
+  margin-bottom: 5px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.op-form input, .op-form select {
+  margin-bottom: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--surface);
+  color: var(--text);
+  font: 400 13.5px var(--sans);
+  width: 100%;
+}
+.op-form input[type=number] {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.op-form input:focus-visible, .op-form select:focus-visible {
+  outline: 2px solid var(--transit);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+.op-form .primary { width: 100%; margin-bottom: 8px; }
+.op-form .btn { width: 100%; }
+.op-form .gate-error { margin-bottom: 12px; }
+
+/* ------------------------------------------------------------- home
+   Three cards, because there are three things this does. Not the
+   SaaS-card kit: no shadow, no uniform radius on everything, and the
+   figure is the biggest thing on each, because the figure is why you
+   would click it. */
+
+.home-head { padding: 26px 0 22px; }
+.home-head h1 {
+  margin: 0 0 4px;
+  font-size: 26px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+.home-head p { margin: 0; font-size: 13.5px; color: var(--text-2); }
+
+.modules {
+  display: grid;
+  gap: 1px;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+.module {
+  display: block;
+  padding: 20px 20px 22px;
+  border: 0;
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.module:hover { background: var(--sunk); }
+.module-head { display: flex; align-items: baseline; gap: 9px; }
+.module-head h2 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 500;
+}
+.tag {
+  font-size: 11px;
+  color: var(--text-3);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 1px 7px;
+}
+.module-figure {
+  margin: 12px 0 2px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 24px;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+}
+.module-figure.dim { color: var(--text-3); }
+.module-label { margin: 0 0 12px; font-size: 12px; color: var(--text-3); }
+.module-blurb {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.5;
+  max-width: 42ch;
+}
+.m-soon .module-head h2 { color: var(--text-2); }
+
+/* ---------------------------------------------------------- settings */
+
+.settings-form { padding: 6px 0 18px; max-width: 560px; }
+.settings-form label {
+  display: block;
+  margin: 14px 0 5px;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.settings-form input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--surface);
+  color: var(--text);
+  font: 400 13.5px var(--sans);
+}
+.settings-form input[type=number] { font-family: var(--mono); }
+.settings-form input:focus-visible {
+  outline: 2px solid var(--transit);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+.settings-form .drop-sub { margin: 5px 0 0; text-align: left; max-width: 52ch; }
+.settings-form .primary { width: auto; margin: 20px 16px 0; }
+.settings-form .detail-block { padding: 10px 16px 6px; }

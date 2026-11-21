@@ -106,6 +106,11 @@ const plural = (n, word) =>
    what you are deciding about, then the records behind it, then setup.
    `sep` draws a rule, which groups them without three more headings. */
 const ICON = {
+  home: 'M2.5 7l5.5-4.5L13.5 7v6a1 1 0 01-1 1h-9a1 1 0 01-1-1z',
+  settings: 'M8 10a2 2 0 100-4 2 2 0 000 4zM13 8a5 5 0 01-.1 1l1.2.9-1 1.7'
+    + '-1.4-.5a5 5 0 01-1.7 1L9.8 14H7.8l-.2-1.4a5 5 0 01-1.7-1l-1.4.5-1-1.7'
+    + 'L4.7 9a5 5 0 010-2l-1.2-.9 1-1.7 1.4.5a5 5 0 011.7-1L7.8 2h2l.2 1.4'
+    + 'a5 5 0 011.7 1l1.4-.5 1 1.7-1.2.9A5 5 0 0113 8z',
   today: 'M2 8h3l2-4 3 8 2-4h2',
   stock: 'M2 5.5l6-3 6 3v5l-6 3-6-3zM2 5.5l6 3 6-3M8 8.5v6',
   shipments: 'M2 11h12M3 11V7l4-2 4 2v4M6 7h3M8 2v3',
@@ -115,15 +120,53 @@ const ICON = {
 };
 
 const VIEWS = [
+  { id: 'home',      label: 'Home' },
   { id: 'today',     label: 'Today' },
   { sep: true },
   { id: 'stock',     label: 'Stock' },
   { id: 'shipments', label: 'On the water' },
-  { sep: true },
   { id: 'items',     label: 'Items' },
   { sep: true },
-  { id: 'import',    label: 'Import' },
   { id: 'cash',      label: 'Cash' },
+  { sep: true },
+  { id: 'import',    label: 'Import' },
+  { id: 'settings',  label: 'Settings' },
+];
+
+/* The three things this is for, and what each one is worth today.
+   Named by the job rather than by the table, because nobody has a
+   "stock_movement" problem -- they have money sitting in the wrong
+   place. */
+const MODULES = [
+  {
+    id: 'stock', go: 'today', state: 'on',
+    title: 'What you are holding',
+    blurb: 'Every line at every branch, what it is worth, what runs out '
+      + 'first and what to order. The part that pays for itself.',
+    figure: (d) => ({
+      value: (d.line.on_shelf || 0) + (d.line.idle || 0)
+             + (d.line.running_out || 0),
+      label: 'on the shelf',
+    }),
+  },
+  {
+    id: 'buy', go: 'shipments', state: 'on',
+    title: 'What is on its way',
+    blurb: 'Orders placed, goods at sea, what is sitting at the port, and '
+      + 'the freight and duty that land on top of the invoice.',
+    figure: (d) => ({
+      value: (d.line.on_order || 0) + (d.line.on_water || 0)
+             + (d.line.at_port || 0),
+      label: 'between supplier and shelf',
+    }),
+  },
+  {
+    id: 'cash', go: 'cash', state: 'soon',
+    title: 'What it costs you',
+    blurb: 'What you owe and when, what is owed to you, and whether the '
+      + 'next order can be paid for. Needs your bank balance first.',
+    figure: () => null,
+  },
 ];
 
 /* The money line belongs to the screens it filters, not to the chrome.
@@ -190,6 +233,8 @@ function go(view) {
   const line = $('money-line');
   if (line) line.hidden = !WITH_LINE.has(view);
   closeDetail();
+  if (view === 'home' && S.data) renderHome();
+  if (view === 'settings') renderSettings();
   $('main').scrollTop = 0;
   history.replaceState(null, '', `#${view}`);
 }
@@ -277,6 +322,7 @@ function pick(key) {
   S.segment = S.segment === key ? null : key;
   renderLine();
   renderAll();
+  renderHome();
 }
 
 /* ---------------------------------------------------------- the panel
@@ -352,40 +398,217 @@ function openDetail(row, tr) {
   why.style.textAlign = 'left';
   body.append(why);
 
+  /* The movements behind the figures above. Asked for on open rather
+     than held in the payload: the list screens need none of it, and a
+     year of ledger for every line would be the bulk of the response. */
+  const log = el('div', 'detail-block');
+  log.append(el('h3', null, 'What has happened'));
+  const logBody = el('div', 'facts');
+  logBody.append(el('p', 'drop-sub', 'Reading the ledger…'));
+  log.append(logBody);
+  body.append(log);
+  loadHistory(row, logBody);
+
   const acts = $('detail-actions');
   acts.textContent = '';
-  if (row.suggested) {
-    const b = el('button', 'primary', `Order ${qty(row.suggested)}`);
+  OPS.forEach((op) => {
+    if (op.when && !op.when(row)) return;
+    const b = el('button', op.primary ? 'primary' : 'btn', op.label(row));
     b.type = 'button';
-    b.style.width = 'auto';
-    b.addEventListener('click', () => notYet('Raising a purchase order'));
-    acts.append(b);
-  }
-  [['Receive stock', 'Receiving stock'],
-   ['Record a sale', 'Recording a sale'],
-   ['Adjust count', 'Adjusting a count']].forEach(([label, what]) => {
-    const b = el('button', 'btn', label);
-    b.type = 'button';
-    b.addEventListener('click', () => notYet(what));
+    if (op.primary) b.style.width = 'auto';
+    b.addEventListener('click', () => openForm(op, row));
     acts.append(b);
   });
 
   d.hidden = false;
 }
 
-/* An action that does not exist yet says so, here, rather than doing
-   nothing and leaving somebody clicking it twice. */
-function notYet(what) {
-  const acts = $('detail-actions');
-  let note = document.getElementById('not-yet');
-  if (!note) {
-    note = el('p', 'drop-sub');
-    note.id = 'not-yet';
-    note.style.flexBasis = '100%';
-    acts.append(note);
+async function loadHistory(row, host) {
+  try {
+    const r = await fetch(
+      `/api/line/history?sku=${encodeURIComponent(row.sku)}`
+      + `&branch=${encodeURIComponent(row.branch)}`);
+    const d = await r.json();
+    host.textContent = '';
+    if (!d.ok || !d.movements.length) {
+      host.append(el('p', 'drop-sub',
+        d.ok ? 'Nothing recorded against this line yet.'
+             : 'The ledger could not be read.'));
+      return;
+    }
+    d.movements.forEach((m) => {
+      const f = el('div', 'fact said');
+      const what = el('span', null, `${m.on}  ${WORDS[m.reason] || m.reason}`);
+      const n = el('span', null, (m.qty > 0 ? '+' : '') + qty(m.qty));
+      n.style.fontFamily = 'var(--mono)';
+      n.style.color = m.qty > 0 ? 'var(--transit)' : 'var(--text-2)';
+      f.append(what); f.append(n);
+      host.append(f);
+    });
+  } catch (e) {
+    host.textContent = '';
+    host.append(el('p', 'drop-sub', 'The ledger could not be read.'));
   }
-  note.textContent = `${what} is not built yet. It is next, once the `
-    + 'import is in.';
+}
+
+const WORDS = {
+  opening: 'opening balance', grn: 'received', sale: 'sold',
+  issue: 'issued', adjustment: 'count corrected',
+  transfer_in: 'transferred in', transfer_out: 'transferred out',
+  return_in: 'returned by customer', return_out: 'returned to supplier',
+  write_off: 'written off', reversal: 'reversed',
+};
+
+/* Each operation is the same shape: a few fields, one call, and the
+   screen reloads from the server afterwards rather than guessing at
+   the new figure. Guessing is how a screen and a database start to
+   disagree. */
+const OPS = [
+  {
+    key: 'grn', label: () => 'Receive stock', primary: true,
+    title: 'Receive stock',
+    note: 'Goods arriving at this branch. Cost is per unit, landed if '
+      + 'you know it.',
+    fields: [
+      { name: 'qty', label: 'How many', type: 'number', required: true },
+      { name: 'unit_cost', label: 'Cost each', type: 'number' },
+      { name: 'note', label: 'Note', type: 'text' },
+    ],
+    send: (row, v) => ['/api/movement', {
+      sku: row.sku, branch: row.branch, kind: 'grn',
+      qty: v.qty, unit_cost: v.unit_cost || null, note: v.note }],
+  },
+  {
+    key: 'sale', label: () => 'Record a sale',
+    title: 'Record a sale',
+    note: 'Leaving the shelf. The cost comes from the running average, '
+      + 'so there is nothing to type.',
+    fields: [
+      { name: 'qty', label: 'How many', type: 'number', required: true },
+      { name: 'note', label: 'Customer or note', type: 'text' },
+    ],
+    send: (row, v) => ['/api/movement', {
+      sku: row.sku, branch: row.branch, kind: 'sale',
+      qty: v.qty, note: v.note }],
+  },
+  {
+    key: 'adjust', label: () => 'Adjust count',
+    title: 'Adjust count',
+    note: 'Type what is actually on the shelf. Not the difference -- '
+      + 'the ledger works that out.',
+    fields: [
+      { name: 'counted', label: 'Counted on the shelf', type: 'number',
+        required: true },
+      { name: 'note', label: 'Why', type: 'text' },
+    ],
+    send: (row, v) => ['/api/adjust', {
+      sku: row.sku, branch: row.branch, counted: v.counted, note: v.note }],
+  },
+  {
+    key: 'transfer', label: () => 'Send to another branch',
+    when: () => (S.data.branches || []).length > 2,
+    title: 'Send to another branch',
+    note: 'Two entries at once: out of here, into there. The total does '
+      + 'not change.',
+    fields: [
+      { name: 'to', label: 'To which branch', type: 'branch', required: true },
+      { name: 'qty', label: 'How many', type: 'number', required: true },
+      { name: 'note', label: 'Note', type: 'text' },
+    ],
+    send: (row, v) => ['/api/transfer', {
+      sku: row.sku, from: row.branch, to: v.to, qty: v.qty, note: v.note }],
+  },
+];
+
+function openForm(op, row) {
+  const body = $('detail-body');
+  body.textContent = '';
+  const wrap = el('div', 'detail-block');
+  wrap.append(el('h3', null, op.title));
+  wrap.append(el('p', 'drop-sub', op.note));
+
+  const form = el('form', 'op-form');
+  const inputs = {};
+  op.fields.forEach((f) => {
+    const lab = el('label', null, f.label);
+    lab.htmlFor = `op-${f.name}`;
+    form.append(lab);
+    let input;
+    if (f.type === 'branch') {
+      input = el('select');
+      (S.data.branches || []).filter((b) => b !== 'ALL' && b !== row.branch)
+        .forEach((b) => {
+          const o = el('option', null, b);
+          o.value = b;
+          input.append(o);
+        });
+    } else {
+      input = el('input');
+      input.type = f.type === 'number' ? 'number' : 'text';
+      if (f.type === 'number') { input.step = 'any'; input.min = '0'; }
+    }
+    input.id = `op-${f.name}`;
+    if (f.required) input.required = true;
+    inputs[f.name] = input;
+    form.append(input);
+  });
+
+  const err = el('p', 'gate-error');
+  err.hidden = true;
+  form.append(err);
+
+  const go = el('button', 'primary', op.title);
+  go.type = 'submit';
+  form.append(go);
+
+  const back = el('button', 'btn', 'Back');
+  back.type = 'button';
+  back.addEventListener('click', () => openDetail(row, null));
+  form.append(back);
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const values = {};
+    Object.entries(inputs).forEach(([k, i]) => { values[k] = i.value; });
+    go.disabled = true;
+    go.textContent = 'Recording…';
+    err.hidden = true;
+    try {
+      const [url, payload] = op.send(row, values);
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const { data } = await readResponse(r, 'That');
+      if (!data.ok) throw new Error(data.error || 'It was refused.');
+      /* Reload from the server rather than patch the figure here. A
+         screen that works out its own new total is a screen that can
+         disagree with the database, and nobody can tell which is
+         wrong. */
+      await boot();
+      go2(row);
+    } catch (ex) {
+      err.hidden = false;
+      err.textContent = ex.message;
+      go.disabled = false;
+      go.textContent = op.title;
+    }
+  });
+
+  wrap.append(form);
+  body.append(wrap);
+  $('detail-actions').textContent = '';
+}
+
+/* After a movement, find the line again in the freshly loaded data and
+   reopen it, so the panel shows the new position rather than the one
+   that was true before. */
+function go2(row) {
+  const fresh = (S.data.stock || []).find(
+    (r) => r.sku === row.sku && r.branch === row.branch);
+  if (fresh) openDetail(fresh, null);
+  else closeDetail();
 }
 
 function reasonFor(row) {
@@ -876,6 +1099,7 @@ async function boot() {
 
   renderLine();
   renderAll();
+  renderHome();
   palette();
 
   $('only-action').addEventListener('click', (e) => {
@@ -894,6 +1118,164 @@ async function boot() {
    declaration it reaches. Called from here it ran before the
    import block below had been evaluated, and touching a `let`
    from above its declaration is an error, not a hoist. */
+
+/* ------------------------------------------------------------- home
+   What this is for, in three pieces, with what each is worth today.
+   It exists because "inventory software" is four screens and a person
+   arriving at them cold cannot tell which one answers their question. */
+
+let orgName = null;
+
+function renderHome() {
+  const host = $('modules');
+  if (!host) return;
+  host.textContent = '';
+
+  /* The business's own name, not the product's. Somebody opening this
+     at seven in the morning knows what they bought; what they want to
+     see is that it is theirs. */
+  if (orgName === null) {
+    orgName = '';
+    fetch('/api/settings').then((r) => r.json()).then((d) => {
+      if (d && d.name) {
+        orgName = d.name;
+        const h = $('home-org');
+        if (h) h.textContent = d.name;
+      }
+    }).catch(() => {});
+  } else if (orgName) {
+    $('home-org').textContent = orgName;
+  }
+  const u = unit(MODULES.map((m) => (m.figure(S.data) || {}).value || 0));
+
+  MODULES.forEach((m) => {
+    const card = el('button', `module m-${m.state}`);
+    card.type = 'button';
+    const fig = m.figure(S.data);
+
+    const head = el('div', 'module-head');
+    head.append(el('h2', null, m.title));
+    if (m.state === 'soon') head.append(el('span', 'tag', 'not set up'));
+    card.append(head);
+
+    if (fig && fig.value) {
+      const n = el('div', 'module-figure',
+        `${S.data.currency} ${inUnit(fig.value, u)}`);
+      card.append(n);
+      card.append(el('p', 'module-label', fig.label));
+    } else {
+      card.append(el('div', 'module-figure dim', '—'));
+      card.append(el('p', 'module-label',
+        m.state === 'soon' ? 'nothing here yet' : 'no figures yet'));
+    }
+
+    card.append(el('p', 'module-blurb', m.blurb));
+    card.addEventListener('click', () => go(m.go));
+    host.append(card);
+  });
+}
+
+/* --------------------------------------------------------- settings */
+
+const SETTING_COPY = {
+  target_cover_months: ['Cover you aim to hold',
+    'Months of demand. Below this a line is due to be reordered.'],
+  excess_cover_months: ['Standing-still limit',
+    'Above this much cover, the money is counted as not working. For '
+    + 'goods with a long lead time this has to be well above the cover '
+    + 'target, or nothing you hold is ever the right amount.'],
+  cost_of_capital_annual: ['Cost of money, a year',
+    'What holding stock costs you. 0.22 means 22 per cent.'],
+  cash_buffer: ['Cash you will not spend',
+    'The floor. No order is suggested that would eat into it.'],
+};
+
+async function renderSettings() {
+  const host = $('settings');
+  if (!host) return;
+  host.textContent = '';
+  let d;
+  try {
+    const r = await fetch('/api/settings');
+    ({ data: d } = await readResponse(r, 'Settings'));
+  } catch (e) {
+    host.append(empty('Settings could not be read', e.message));
+    return;
+  }
+  if (d.error) { host.append(empty('No organisation yet', d.error)); return; }
+
+  const form = el('form', 'settings-form');
+
+  const who = el('div', 'detail-block');
+  who.append(el('h3', null, 'This business'));
+  const name = el('input');
+  name.type = 'text';
+  name.value = d.name || '';
+  name.id = 'set-name';
+  const nameLab = el('label', null, 'Name');
+  nameLab.htmlFor = 'set-name';
+  who.append(nameLab); who.append(name);
+  who.append(el('p', 'drop-sub',
+    `Signed in as ${d.email}. ${d.branches.length} branches: `
+    + `${d.branches.map((b) => b.code).join(', ')}.`));
+  form.append(who);
+
+  const pol = el('div', 'detail-block');
+  pol.append(el('h3', null, 'How your figures are read'));
+  const inputs = {};
+  Object.keys(SETTING_COPY).forEach((key) => {
+    const [label, note] = SETTING_COPY[key];
+    const lab = el('label', null, label);
+    lab.htmlFor = `set-${key}`;
+    const i = el('input');
+    i.type = 'number';
+    i.step = 'any';
+    i.id = `set-${key}`;
+    i.value = (d.settings || {})[key] ?? d.defaults[key];
+    i.placeholder = String(d.defaults[key]);
+    inputs[key] = i;
+    pol.append(lab);
+    pol.append(i);
+    pol.append(el('p', 'drop-sub', note));
+  });
+  form.append(pol);
+
+  const err = el('p', 'gate-error');
+  err.hidden = true;
+  form.append(err);
+  const save = el('button', 'primary', 'Save');
+  save.type = 'submit';
+  form.append(save);
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    save.disabled = true;
+    save.textContent = 'Saving…';
+    err.hidden = true;
+    const settings = {};
+    Object.entries(inputs).forEach(([k, i]) => { settings[k] = i.value; });
+    try {
+      const r = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.value.trim(), settings }),
+      });
+      const { data } = await readResponse(r, 'Saving');
+      if (!data.ok) throw new Error((data.problems || ['refused']).join('; '));
+      /* Thresholds change what every screen says, so reload rather than
+         leave the old verdicts on screen beside the new rules. */
+      await boot();
+      go('settings');
+    } catch (ex) {
+      err.hidden = false;
+      err.textContent = ex.message;
+      save.disabled = false;
+      save.textContent = 'Save';
+    }
+  });
+
+  host.append(form);
+}
 
 /* ---------------------------------------------------------- importing
    Two steps, because an import is not undoable and the first anyone
