@@ -312,3 +312,58 @@ def test_every_row_still_arrives_when_batched(book, org):
     assert cur.fetchone()[0] == len(p.stock)
     cur.execute("select count(*) from public.po_lines")
     assert cur.fetchone()[0] == len(p.orders)
+
+
+def test_the_workbook_brings_in_customers_machines_and_jobs(book, org):
+    """Four more sheets, written into the tables the other three engine
+    modules read. The workbook is the only way these get in, so if it
+    does not carry them those screens are permanently empty."""
+    conn, cur, _ = org
+    p = plan(book)
+    assert p.customers and p.invoices and p.machines and p.jobs
+
+    made = apply(cur, p)
+    assert made["customers"] == len(p.customers)
+    assert made["invoices"] == len(p.invoices)
+    assert made["machines"] == len(p.machines)
+    assert made["service_jobs"] == len(p.jobs)
+
+    from engine.db.snapshot import read_invoices, read_jobs, read_machines
+
+    assert len(read_machines(cur)) == len(p.machines)
+    assert len(read_jobs(cur)) == len(p.jobs)
+    # Only the unpaid ones are owed, so the reader returns every
+    # invoice and the engine decides which still count.
+    assert len(read_invoices(cur)) == len(p.invoices)
+
+
+def test_an_invoice_paid_more_than_it_was_worth_is_refused(book):
+    """Not clamped. More paid than invoiced is a real mistake somewhere
+    and flooring it silently hides which."""
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    wb = load_workbook(BytesIO(book))
+    ws = wb["Invoices"]
+    ws.cell(2, 6, 100)      # amount
+    ws.cell(2, 7, 500)      # paid
+    buf = BytesIO()
+    wb.save(buf)
+    p = plan(buf.getvalue())
+    assert not p.ok
+    assert any("more than the invoice" in x.message for x in p.fatal)
+
+
+def test_an_invoice_for_an_unknown_customer_is_fatal(book):
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    wb = load_workbook(BytesIO(book))
+    wb["Invoices"].cell(2, 2, "GHOST")
+    buf = BytesIO()
+    wb.save(buf)
+    p = plan(buf.getvalue())
+    assert not p.ok
+    assert any("GHOST" in x.message for x in p.fatal)

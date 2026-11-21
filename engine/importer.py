@@ -23,7 +23,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 
 REQUIRED_SHEETS = ("Branches", "Items", "Stock")
-OPTIONAL_SHEETS = ("Sales history", "On order", "Shipments", "Suppliers")
+OPTIONAL_SHEETS = ("Sales history", "On order", "Shipments", "Suppliers",
+                   "Customers", "Invoices", "Machines", "Service jobs")
 
 PERIOD = re.compile(r"^\d{4}-\d{2}$")
 MONTH_COL = re.compile(r"^sold[_ ](\d{4})[_-](\d{2})$", re.I)
@@ -57,6 +58,10 @@ class Plan:
     history: list[dict] = field(default_factory=list)
     orders: list[dict] = field(default_factory=list)
     shipments: list[dict] = field(default_factory=list)
+    customers: list[dict] = field(default_factory=list)
+    invoices: list[dict] = field(default_factory=list)
+    machines: list[dict] = field(default_factory=list)
+    jobs: list[dict] = field(default_factory=list)
     problems: list[Problem] = field(default_factory=list)
     months: list[str] = field(default_factory=list)
 
@@ -83,6 +88,10 @@ class Plan:
                 "history": len(self.history),
                 "orders": len(self.orders),
                 "shipment_costs": len(self.shipments),
+                "customers": len(self.customers),
+                "invoices": len(self.invoices),
+                "machines": len(self.machines),
+                "service_jobs": len(self.jobs),
             },
             "months": [self.months[0], self.months[-1]] if self.months else [],
             "value": round(sum(s["qty"] * s["cost"] for s in self.stock), 2),
@@ -211,6 +220,14 @@ def plan(data: bytes) -> Plan:
         _read_orders(wb["On order"], p)
     if "Shipments" in wb.sheetnames:
         _read_shipments(wb["Shipments"], p)
+    if "Customers" in wb.sheetnames:
+        _read_customers(wb["Customers"], p)
+    if "Invoices" in wb.sheetnames:
+        _read_invoices(wb["Invoices"], p)
+    if "Machines" in wb.sheetnames:
+        _read_machines(wb["Machines"], p)
+    if "Service jobs" in wb.sheetnames:
+        _read_jobs(wb["Service jobs"], p)
 
     _cross_check(p)
     return p
@@ -397,6 +414,126 @@ def _read_shipments(ws, p):
         })
 
 
+def _read_customers(ws, p):
+    h = _headers(ws)
+    i = {name: n for n, name in enumerate(h)}
+    seen = set()
+    for r, vals, _i in _rows(ws, h):
+        code = _text(vals[i.get("customer_code", 0)])
+        name = _text(vals[i["customer_name"]]) if "customer_name" in i else ""
+        if not code or not name:
+            p.problems.append(Problem("Customers", r,
+                                      "Needs a code and a name."))
+            continue
+        if code in seen:
+            p.problems.append(Problem("Customers", r,
+                                      f"{code} appears more than once."))
+            continue
+        seen.add(code)
+        p.customers.append({
+            "code": code, "name": name,
+            "city": _text(vals[i["city"]]) if "city" in i else "",
+            "public": (_text(vals[i["is_public_sector"]]).lower() in TRUE
+                       if "is_public_sector" in i else False),
+            "inter": (_text(vals[i["is_intercompany"]]).lower() in TRUE
+                      if "is_intercompany" in i else False),
+            "terms": int(_num(vals[i["payment_terms_days"]], 30))
+                     if "payment_terms_days" in i else 30,
+            "contact": _text(vals[i["contact_name"]]) if "contact_name" in i else "",
+            "email": _text(vals[i["contact_email"]]) if "contact_email" in i else "",
+        })
+
+
+def _read_invoices(ws, p):
+    h = _headers(ws)
+    i = {name: n for n, name in enumerate(h)}
+    for r, vals, _i in _rows(ws, h):
+        no = _text(vals[i.get("invoice_no", 0)])
+        cust = _text(vals[i["customer_code"]]) if "customer_code" in i else ""
+        issued = _day(vals[i["invoice_date"]]) if "invoice_date" in i else None
+        if not (no and cust and issued):
+            p.problems.append(Problem(
+                "Invoices", r, "Needs a number, a customer and a date."))
+            continue
+        amount = _num(vals[i["amount"]]) if "amount" in i else 0
+        paid = _num(vals[i["amount_paid"]]) if "amount_paid" in i else 0
+        if paid > amount:
+            # Not clamped: more paid than invoiced is a real mistake
+            # somewhere, and silently flooring it hides which.
+            p.problems.append(Problem(
+                "Invoices", r,
+                f"{no}: paid ({paid:,.0f}) is more than the invoice "
+                f"({amount:,.0f})."))
+            continue
+        p.invoices.append({
+            "no": no, "customer": cust, "date": issued,
+            "due": _day(vals[i["due_date"]]) if "due_date" in i else issued,
+            "branch": _text(vals[i["branch_code"]]).upper()
+                      if "branch_code" in i else "",
+            "amount": amount, "paid": paid,
+        })
+
+
+def _read_machines(ws, p):
+    h = _headers(ws)
+    i = {name: n for n, name in enumerate(h)}
+    seen = set()
+    for r, vals, _i in _rows(ws, h):
+        key = _text(vals[i.get("machine_key", 0)])
+        if not key:
+            continue
+        if key in seen:
+            p.problems.append(Problem("Machines", r,
+                                      f"{key} appears more than once."))
+            continue
+        seen.add(key)
+        p.machines.append({
+            "key": key,
+            "model": _text(vals[i["model"]]) if "model" in i else key,
+            "serial": _text(vals[i["serial_no"]]) if "serial_no" in i else "",
+            "customer": _text(vals[i["customer_code"]]) if "customer_code" in i else "",
+            "branch": _text(vals[i["branch_code"]]).upper() if "branch_code" in i else "",
+            "placed": _day(vals[i["placed_date"]]) if "placed_date" in i else None,
+            "capital": _num(vals[i["capital_cost"]]) if "capital_cost" in i else 0,
+            "months": int(_num(vals[i["contract_months"]], 36)) if "contract_months" in i else 36,
+            "tests": _num(vals[i["expected_monthly_tests"]]) if "expected_monthly_tests" in i else 0,
+            "per_test": _num(vals[i["revenue_per_test"]]) if "revenue_per_test" in i else 0,
+            "margin": _num(vals[i["reagent_margin_pct"]]) if "reagent_margin_pct" in i else 0,
+        })
+
+
+def _read_jobs(ws, p):
+    h = _headers(ws)
+    i = {name: n for n, name in enumerate(h)}
+    seen = set()
+    for r, vals, _i in _rows(ws, h):
+        no = _text(vals[i.get("job_no", 0)])
+        opened = _day(vals[i["opened_date"]]) if "opened_date" in i else None
+        if not no or not opened:
+            continue
+        if no in seen:
+            p.problems.append(Problem("Service jobs", r,
+                                      f"{no} appears more than once."))
+            continue
+        seen.add(no)
+        p.jobs.append({
+            "no": no,
+            "machine": _text(vals[i["machine_key"]]) if "machine_key" in i else "",
+            "branch": _text(vals[i["branch_code"]]).upper() if "branch_code" in i else "",
+            "opened": opened,
+            "closed": _day(vals[i["closed_date"]]) if "closed_date" in i else None,
+            "hours": _num(vals[i["labour_hours"]]) if "labour_hours" in i else 0,
+            "billed": _num(vals[i["labour_hours_billed"]]) if "labour_hours_billed" in i else 0,
+            "parts": _num(vals[i["parts_cost"]]) if "parts_cost" in i else 0,
+            "charged": _num(vals[i["parts_charged"]]) if "parts_charged" in i else 0,
+            "warranty": (_text(vals[i["is_warranty"]]).lower() in TRUE
+                         if "is_warranty" in i else False),
+            "repeat": (_text(vals[i["is_repeat_visit"]]).lower() in TRUE
+                       if "is_repeat_visit" in i else False),
+            "down": _num(vals[i["downtime_days"]]) if "downtime_days" in i else 0,
+        })
+
+
 def _cross_check(p: Plan):
     """The checks that need more than one sheet.
 
@@ -430,6 +567,23 @@ def _cross_check(p: Plan):
             p.problems.append(Problem(
                 "On order", None,
                 f"{o['sku']} is not on the Items sheet.", fatal=False))
+
+    codes_c = {c["code"] for c in p.customers}
+    for inv in p.invoices:
+        if inv["customer"] not in codes_c:
+            p.problems.append(Problem(
+                "Invoices", None,
+                f"{inv['no']}: customer {inv['customer']} is not on the "
+                f"Customers sheet."))
+            break
+    keys_m = {m["key"] for m in p.machines}
+    for j in p.jobs:
+        if j["machine"] and j["machine"] not in keys_m:
+            p.problems.append(Problem(
+                "Service jobs", None,
+                f"{j['no']}: machine {j['machine']} is not on the Machines "
+                f"sheet.", fatal=False))
+            break
 
     without = skus - {s["sku"] for s in p.stock}
     if without:
@@ -499,7 +653,8 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
     as_of = as_of or date.today()
     made = {k: 0 for k in
             ("branches", "suppliers", "items", "movements", "history",
-             "orders", "shipments")}
+             "orders", "shipments", "customers", "invoices", "machines",
+             "service_jobs")}
 
     # ---- the small tables, which need their ids back
 
@@ -618,5 +773,76 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
         run.executemany(
             "insert into public.po_lines (org_id, po_id, item_id, qty, "
             "unit_price) values (%s, %s, %s, %s, %s)", lines)
+
+    # ---- customers, and what they owe
+
+    cust = {}
+    for c in p.customers:
+        got = run.execute(
+            "insert into public.customers (org_id, code, name, city, "
+            "is_public_sector, is_intercompany, payment_terms_days, "
+            "contact_name, contact_email) values (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "on conflict (org_id, code) do update set name = excluded.name, "
+            "is_public_sector = excluded.is_public_sector, "
+            "is_intercompany = excluded.is_intercompany returning id",
+            (org, c["code"], c["name"], c["city"] or None, c["public"],
+             c["inter"], c["terms"], c["contact"] or None,
+             c["email"] or None)).fetchone()
+        cust[c["code"]] = got[0]
+        made["customers"] += 1
+
+    bills = []
+    for inv in p.invoices:
+        cid = cust.get(inv["customer"])
+        if not cid:
+            continue
+        bills.append((org, cid, loc.get(inv["branch"]), inv["no"],
+                      inv["date"], inv["due"], inv["amount"], inv["paid"]))
+    if bills:
+        run.executemany(
+            "insert into public.invoices (org_id, customer_id, location_id, "
+            "invoice_no, invoice_date, due_date, amount, amount_paid) "
+            "values (%s,%s,%s,%s,%s,%s,%s,%s) "
+            "on conflict (org_id, invoice_no) do update set "
+            "amount = excluded.amount, amount_paid = excluded.amount_paid",
+            bills)
+        made["invoices"] = len(bills)
+
+    # ---- machines placed, and the jobs done on them
+
+    mach = {}
+    for m in p.machines:
+        got = run.execute(
+            "insert into public.machines (org_id, customer_id, location_id, "
+            "machine_key, model, serial_no, placed_date, capital_cost, "
+            "contract_months, expected_monthly_tests, revenue_per_test, "
+            "reagent_margin_pct) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "on conflict (org_id, machine_key) do update set "
+            "model = excluded.model, capital_cost = excluded.capital_cost "
+            "returning id",
+            (org, cust.get(m["customer"]), loc.get(m["branch"]), m["key"],
+             m["model"], m["serial"] or None, m["placed"], m["capital"],
+             m["months"], m["tests"], m["per_test"], m["margin"])).fetchone()
+        mach[m["key"]] = got[0]
+        made["machines"] += 1
+
+    visits = []
+    for j in p.jobs:
+        visits.append((org, mach.get(j["machine"]), loc.get(j["branch"]),
+                       j["no"], j["opened"], j["closed"], j["hours"],
+                       j["billed"], j["parts"], j["charged"], j["warranty"],
+                       j["repeat"], j["down"]))
+    if visits:
+        run.executemany(
+            "insert into public.service_jobs (org_id, machine_id, "
+            "location_id, job_no, opened_date, closed_date, labour_hours, "
+            "labour_hours_billed, parts_cost, parts_charged, is_warranty, "
+            "is_repeat_visit, downtime_days) "
+            "values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "on conflict (org_id, job_no) do update set "
+            "labour_hours = excluded.labour_hours, "
+            "labour_hours_billed = excluded.labour_hours_billed",
+            visits)
+        made["service_jobs"] = len(visits)
 
     return made

@@ -92,6 +92,27 @@ const qty = (n) =>
 const months = (n) =>
   n === null || n === undefined ? '—' : n >= 100 ? '99+' : n.toFixed(1);
 
+/* months() caps at 99+ because a hundred months of cover is the same
+   decision as two hundred. A percentage and a count of hours are not
+   like that: 312 hours capped to "99+" is a wrong number on the
+   screen, and 110% recovered reading as "99+%" hides the only machine
+   that has paid for itself. */
+const pct = (n) =>
+  n === null || n === undefined ? '—' : `${(n * 100).toFixed(1)}%`;
+
+const hours = (n) =>
+  n === null || n === undefined ? '—' : n.toFixed(n < 10 ? 1 : 0);
+
+/* The engine's status names are precise; these are what a person
+   would say. Shown raw, "at_risk" tells somebody the screen is
+   printing a variable name. */
+const SAID = {
+  paid_back: 'paid back', at_risk: 'at risk', behind: 'behind',
+  on_track: 'on track', ramping: 'still ramping up',
+  ended: 'contract ended',
+};
+const said = (w) => SAID[w] || String(w).replace(/_/g, ' ');
+
 /* English plurals that the +s rule gets wrong. Short on purpose: this
    is a list of the words this interface actually uses, not an attempt
    at the language. "3 branchs" on the stock screen is the kind of
@@ -117,6 +138,8 @@ const ICON = {
   items: 'M3 3h10v10H3zM3 6.5h10M6.5 6.5V13',
   import: 'M8 2v7M5 6.5L8 9.5l3-3M3 12.5h10',
   cash: 'M2 4.5h12v7H2zM2 7h12M4.5 9.5h2',
+  owed: 'M8 2v12M5 4.5h4.5a1.75 1.75 0 010 3.5h-3a1.75 1.75 0 000 3.5H11',
+  equipment: 'M3 3h10v7H3zM6 10v3M10 10v3M4.5 13h7M5.5 5.5h5M5.5 7.5h3',
 };
 
 const VIEWS = [
@@ -127,6 +150,8 @@ const VIEWS = [
   { id: 'shipments', label: 'On the water' },
   { id: 'items',     label: 'Items' },
   { sep: true },
+  { id: 'owed',      label: 'Money owed' },
+  { id: 'equipment', label: 'Equipment' },
   { id: 'cash',      label: 'Cash' },
   { sep: true },
   { id: 'import',    label: 'Import' },
@@ -235,6 +260,8 @@ function go(view) {
   closeDetail();
   if (view === 'home' && S.data) renderHome();
   if (view === 'settings') renderSettings();
+  if (view === 'owed') renderOwed();
+  if (view === 'equipment') renderEquipment();
   $('main').scrollTop = 0;
   history.replaceState(null, '', `#${view}`);
 }
@@ -1251,6 +1278,151 @@ async function boot() {
    declaration it reaches. Called from here it ran before the
    import block below had been evaluated, and touching a `let`
    from above its declaration is an error, not a hoist. */
+
+/* ------------------------------------------------- money owed
+   The other half of the money question. The stock screens say what
+   you are holding; this says what you have already sold and not been
+   paid for, which for an importer is usually the larger number. */
+
+function figure(host, label, value, note, tone) {
+  const d = el('div', `deck${tone ? ' d-' + tone : ''}`);
+  d.append(el('h3', null, label));
+  d.append(el('div', 'big', value));
+  if (note) d.append(el('p', null, note));
+  host.append(d);
+}
+
+async function renderOwed() {
+  const host = $('owed');
+  const figs = $('owed-figures');
+  if (!host) return;
+  host.textContent = '';
+  figs.textContent = '';
+
+  let d;
+  try {
+    const r = await fetch('/api/owed');
+    ({ data: d } = await readResponse(r, 'Money owed'));
+    if (!d.ok) throw new Error(d.error || 'It could not be read.');
+  } catch (e) {
+    host.append(empty('Money owed could not be read', e.message));
+    return;
+  }
+
+  if (!d.invoices.length) {
+    figs.textContent = '';
+    host.append(empty('Nothing outstanding',
+      'No unpaid invoices. Import them, or raise one against a customer.'));
+    return;
+  }
+
+  const cur = S.data ? S.data.currency : 'PKR';
+  const u = unit([d.outstanding, d.overdue, d.cash_released_at_target]);
+  figure(figs, 'Owed to you', `${cur} ${inUnit(d.outstanding, u)}`,
+         `${qty(d.invoices.length)} invoices still open.`, 'water');
+  figure(figs, 'Already overdue', `${cur} ${inUnit(d.overdue, u)}`,
+         d.intercompany_excluded
+           ? `Your own companies owe a further ${cur} `
+             + `${inUnit(d.intercompany_excluded, u)}, which is not counted.`
+           : 'Past its due date.', 'urgent');
+  figure(figs, 'Days to get paid',
+         `${months(d.dso_days)} days`,
+         `Target is ${qty(d.target_dso_days)} days. Meeting it would free `
+         + `${cur} ${inUnit(d.cash_released_at_target, u)}.`, 'idle');
+
+  const iu = unit(d.invoices.map((i) => i.open));
+  host.append(table(
+    [['Invoice', ''], ['Customer', ''], ['Due', ''],
+     ['Days late', 'num'], [`Open ${iu.suffix}`.trim(), 'num'],
+     ['Counted?', '']],
+    d.invoices.map((i) => [
+      cell(i.invoice, 'lead'),
+      cell(i.customer + (i.public_sector ? '  · public sector' : ''), 'dim'),
+      cell(i.due, 'dim'),
+      cell(i.days_overdue ? qty(i.days_overdue) : '—',
+           i.days_overdue > 60 ? 'num bad' : 'num'),
+      cell(inUnit(i.open, iu), 'num'),
+      cell(i.intercompany ? 'own company' : 'yes', 'dim'),
+    ])));
+}
+
+/* ------------------------------------------------------- equipment */
+
+async function renderEquipment() {
+  const host = $('machines');
+  const shop = $('workshop');
+  const figs = $('equip-figures');
+  if (!host) return;
+  host.textContent = ''; shop.textContent = ''; figs.textContent = '';
+
+  let d;
+  try {
+    const r = await fetch('/api/equipment');
+    ({ data: d } = await readResponse(r, 'Equipment'));
+    if (!d.ok) throw new Error(d.error || 'It could not be read.');
+  } catch (e) {
+    host.append(empty('Equipment could not be read', e.message));
+    return;
+  }
+
+  const cur = S.data ? S.data.currency : 'PKR';
+  const w = d.service;
+
+  if (!d.machines.length) {
+    host.append(empty('No machines placed',
+      'A machine you put in a customer\'s lab, free or on contract, '
+      + 'belongs here. The question it answers is whether the reagent '
+      + 'it pulls has paid for it yet.'));
+  } else {
+    const mu = unit(d.machines.flatMap((m) => [m.capital, m.recovered]));
+    const placed = d.machines.reduce((t, m) => t + m.capital, 0);
+    const back = d.machines.reduce((t, m) => t + m.recovered, 0);
+    figure(figs, 'Capital out there', `${cur} ${inUnit(placed, mu)}`,
+           `${qty(d.machines.length)} machines placed.`, 'idle');
+    figure(figs, 'Earned back', `${cur} ${inUnit(back, mu)}`,
+           `${pct(placed ? back / placed : 0)} of what you put out.`,
+           'water');
+
+    host.append(table(
+      [['Machine', ''], ['Customer', ''], [`Cost ${mu.suffix}`.trim(), 'num'],
+       [`Back ${mu.suffix}`.trim(), 'num'], ['Recovered', 'num'],
+       ['Months in', 'num'], ['State', '']],
+      d.machines.map((m) => [
+        cell(`${m.key}  ${m.model}`, 'lead'),
+        cell(m.customer, 'dim'),
+        cell(inUnit(m.capital, mu), 'num'),
+        cell(inUnit(m.recovered, mu), 'num'),
+        cell(pct(m.recovery_pct), (m.recovery_pct || 0) < 0.5
+             ? 'num warn' : 'num'),
+        cell(months(m.months_elapsed), 'num'),
+        stateCell(said(m.status)),
+      ])));
+  }
+
+  if (!w.jobs) {
+    shop.append(empty('No service jobs yet',
+      'Hours worked and hours invoiced, kept apart. The gap between them '
+      + 'is work you did and did not charge for.'));
+    return;
+  }
+  const su = unit([w.labour_value_lost, w.parts_value_lost, w.parts_cost]);
+  shop.append(table(
+    [['', ''], ['Done', 'num'], ['Charged', 'num'], ['Given away', 'num']],
+    [
+      [cell('Labour, hours', 'lead'), cell(hours(w.hours), 'num'),
+       cell(hours(w.hours - w.hours_unbilled), 'num'),
+       cell(hours(w.hours_unbilled),
+            w.hours_unbilled ? 'num warn' : 'num')],
+      [cell(`Parts, ${cur} ${su.suffix}`.trim(), 'lead'),
+       cell(inUnit(w.parts_cost, su), 'num'),
+       cell(inUnit(w.parts_cost - w.parts_uncharged, su), 'num'),
+       cell(inUnit(w.parts_uncharged, su),
+            w.parts_uncharged ? 'num warn' : 'num')],
+      [cell('What that is worth', 'lead'), cell('', 'num'), cell('', 'num'),
+       cell(`${cur} ` + inUnit(w.labour_value_lost + w.parts_value_lost, su),
+            'num warn')],
+    ]));
+}
 
 /* ------------------------------------------------------------- home
    What this is for, in three pieces, with what each is worth today.

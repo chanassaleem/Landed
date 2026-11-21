@@ -485,6 +485,111 @@ async def import_commit(request: Request,
     return JSONResponse({"ok": True, "written": made})
 
 
+# ------------------------------------------------- money owed, equipment
+#
+# Separate requests from /api/state, not folded into it. They are
+# different modules with different entitlements, and a business that
+# does not place machines should not pay the cost of that query on
+# every load of the stock screen.
+
+
+def _th(conn):
+    row = conn.execute("select settings from public.organisations "
+                       "order by created_at limit 1").fetchone()
+    return thresholds_for(row[0] if row else {})
+
+
+@app.get("/api/owed")
+def owed(claims: Claims = Depends(require)) -> JSONResponse:
+    """What customers owe, aged, with the intercompany part set aside."""
+    from datetime import date as _d
+
+    from engine.db.snapshot import read_invoices
+    from engine.db.supabase import database
+    from engine.modules import receivables
+
+    try:
+        with database().as_user(claims.user_id) as conn:
+            invoices = read_invoices(conn)
+            out = receivables.evaluate(invoices, _th(conn), _d.today())
+            rows = [
+                {"invoice": i.invoice_no, "customer": i.customer_name,
+                 "due": i.due_date.isoformat(),
+                 "days_overdue": max(0, (_d.today() - i.due_date).days),
+                 "amount": i.amount, "paid": i.amount_paid,
+                 "open": round(i.amount - i.amount_paid, 2),
+                 "public_sector": i.is_public_sector,
+                 "intercompany": i.is_intercompany}
+                for i in invoices if i.amount > i.amount_paid
+            ]
+    except Exception as exc:
+        return _op_error(exc)
+
+    rows.sort(key=lambda r: -r["days_overdue"])
+    return JSONResponse({
+        "ok": True,
+        "outstanding": out.outstanding,
+        "overdue": out.overdue,
+        "intercompany_excluded": out.intercompany_excluded,
+        "dso_days": out.dso_days,
+        "target_dso_days": out.target_dso_days,
+        "cash_released_at_target": out.cash_released_at_target,
+        "buckets": out.buckets,
+        "invoices": rows,
+    })
+
+
+@app.get("/api/equipment")
+def equipment(claims: Claims = Depends(require)) -> JSONResponse:
+    """Placed machines, and what the workshop gave away this year."""
+    from datetime import date as _d
+
+    from engine.db.snapshot import read_jobs, read_machines
+    from engine.db.supabase import database
+    from engine.modules import machines as machines_mod
+    from engine.modules import service
+
+    try:
+        with database().as_user(claims.user_id) as conn:
+            th = _th(conn)
+            placements = read_machines(conn)
+            jobs = read_jobs(conn)
+            judged = machines_mod.evaluate(placements, th, _d.today())
+            work = service.evaluate(jobs, th, _d.today())
+    except Exception as exc:
+        return _op_error(exc)
+
+    return JSONResponse({
+        "ok": True,
+        "machines": [
+            {"key": m.machine_key, "model": m.model,
+             "customer": m.customer_name,
+             "capital": m.capital_cost,
+             "recovered": m.net_recovered,
+             "recovery_pct": m.recovery_pct,
+             "months_elapsed": m.months_elapsed,
+             "payback_months": m.payback_months,
+             "months_left": m.months_remaining_on_contract,
+             "utilisation": m.utilisation,
+             "downtime_days": m.downtime_days_ytd,
+             "service_cost": m.service_cost_to_date,
+             "shortfall": m.unrecoverable_shortfall,
+             "status": getattr(m.status, "value", str(m.status)),
+             "why": m.reason}
+            for m in judged
+        ],
+        "service": {
+            "jobs": work.jobs, "open": work.jobs_open,
+            "hours": work.labour_hours,
+            "hours_unbilled": work.labour_hours_unbilled,
+            "labour_value_lost": work.labour_value_lost,
+            "parts_cost": work.parts_cost,
+            "parts_uncharged": work.parts_uncharged,
+            "parts_value_lost": work.parts_value_lost,
+        },
+    })
+
+
 # --------------------------------------------------------- settings
 #
 # What a business can change about how its own figures are read. Held

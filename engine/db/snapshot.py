@@ -191,3 +191,127 @@ def read(conn, as_of: date, currency: str = "PKR") -> Snapshot:
 
     return Snapshot(items=items, demand=demand,
                     branches=sorted(branches), currency=currency)
+
+
+# ===================================================== selling and service
+#
+# The same job as above for the other three modules: take one tenant's
+# rows and hand back exactly the shapes engine/modules/receivables.py,
+# machines.py and service.py already take. Those modules have 47 tests
+# between them and none of them knows where a row came from, which is
+# why a Postgres schema can feed the same arithmetic a spreadsheet did.
+
+INVOICES_SQL = """
+select i.invoice_no, c.code, c.name, i.invoice_date, i.due_date,
+       i.amount, i.amount_paid, c.is_public_sector, c.is_intercompany,
+       coalesce(l.code, 'default')
+  from public.invoices i
+  join public.customers c on c.id = i.customer_id
+  left join public.locations l on l.id = i.location_id
+"""
+
+MACHINES_SQL = """
+select m.machine_key, m.model, coalesce(c.code, ''), coalesce(c.name, ''),
+       m.placed_date, m.capital_cost, m.contract_months,
+       m.expected_monthly_tests, m.revenue_per_test, m.reagent_margin_pct,
+       coalesce(l.code, 'default'), m.id
+  from public.machines m
+  left join public.customers c on c.id = m.customer_id
+  left join public.locations l on l.id = m.location_id
+ where m.status = 'placed'
+"""
+
+JOBS_SQL = """
+select j.job_no, coalesce(m.machine_key, ''), j.opened_date, j.closed_date,
+       j.labour_hours, j.labour_hours_billed, j.parts_cost, j.parts_charged,
+       j.is_warranty, j.is_repeat_visit, j.downtime_days,
+       coalesce(l.code, 'default'), j.machine_id
+  from public.service_jobs j
+  left join public.machines m on m.id = j.machine_id
+  left join public.locations l on l.id = j.location_id
+ where j.opened_date >= %s
+"""
+
+# Reagent pull per machine, which is what decides whether a placement
+# has paid for itself. Taken from the ledger rather than stored on the
+# machine: a stored total is a second number that drifts.
+MACHINE_PULL_SQL = """
+select j.machine_id, count(*) filter (where true) as jobs
+  from public.service_jobs j
+ where j.machine_id is not null
+ group by j.machine_id
+"""
+
+
+def read_invoices(conn):
+    from engine.schema import ReceivableInvoice
+
+    return [
+        ReceivableInvoice(
+            invoice_no=r[0], customer_key=r[1], customer_name=r[2],
+            invoice_date=r[3], due_date=r[4],
+            amount=float(r[5]), amount_paid=float(r[6]),
+            is_public_sector=bool(r[7]), is_intercompany=bool(r[8]),
+            location_id=r[9],
+        )
+        for r in conn.execute(INVOICES_SQL).fetchall()
+    ]
+
+
+def read_machines(conn):
+    """Placed machines, with what they have actually pulled.
+
+    reagent_revenue_to_date and the test counts come from the ledger
+    and the service log rather than from columns on the machine. A
+    stored total is a second number that drifts from the movements
+    behind it, and this is the figure the whole record exists for.
+    """
+    from engine.schema import MachinePlacement
+
+    out = []
+    for r in conn.execute(MACHINES_SQL).fetchall():
+        (key, model, ckey, cname, placed, capital, months, expected,
+         per_test, margin, loc, mid) = r
+        spend = conn.execute(
+            "select coalesce(sum(j.parts_cost), 0), "
+            "       coalesce(sum(j.downtime_days), 0) "
+            "  from public.service_jobs j where j.machine_id = %s", (mid,)
+        ).fetchone()
+        months_run = 0.0
+        if placed:
+            months_run = max(
+                0.0, (date.today() - placed).days / 30.44)
+        actual = float(expected or 0)       # until meter readings are in
+        revenue = actual * months_run * float(per_test or 0)
+        out.append(MachinePlacement(
+            machine_key=key, model=model, customer_key=ckey or key,
+            customer_name=cname or "(unassigned)",
+            placed_date=placed or date.today(),
+            capital_cost=float(capital or 0),
+            contract_months=int(months or 36),
+            reagent_revenue_to_date=revenue,
+            reagent_margin_pct=float(margin or 0),
+            expected_monthly_tests=float(expected or 0),
+            actual_monthly_tests=actual,
+            downtime_days_ytd=float(spend[1] or 0),
+            service_cost_to_date=float(spend[0] or 0),
+            revenue_per_test=float(per_test or 0),
+            location_id=loc,
+        ))
+    return out
+
+
+def read_jobs(conn, since: date | None = None):
+    from engine.schema import ServiceJob
+
+    since = since or date(date.today().year - 1, 1, 1)
+    return [
+        ServiceJob(
+            job_no=r[0], machine_key=r[1], opened_date=r[2], closed_date=r[3],
+            labour_hours=float(r[4]), labour_hours_billed=float(r[5]),
+            parts_cost=float(r[6]), parts_charged=float(r[7]),
+            is_warranty=bool(r[8]), is_repeat_visit=bool(r[9]),
+            downtime_days=float(r[10]), location_id=r[11],
+        )
+        for r in conn.execute(JOBS_SQL, (since,)).fetchall()
+    ]

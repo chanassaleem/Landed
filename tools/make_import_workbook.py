@@ -81,6 +81,23 @@ ORGS = {
         ],
         "pattern_mix": ["smooth", "smooth", "seasonal", "trending",
                         "erratic", "lumpy", "intermittent"],
+        "customers": [
+            ("Civil Hospital Karachi", "Karachi", True, False),
+            ("Aga Khan University Hospital", "Karachi", False, False),
+            ("Shifa International", "Islamabad", False, False),
+            ("Indus Hospital", "Karachi", False, False),
+            ("Services Hospital Lahore", "Lahore", True, False),
+            ("Meridian Supplies", "Karachi", False, True),
+        ],
+        "invoice": (180_000, 4_800_000),
+        "machine_prefix": "AN",
+        "machines": [
+            ("Sysmex XN-550 haematology analyser", 3_200_000, 900, 180),
+            ("Mindray BS-240 chemistry analyser", 2_450_000, 1400, 95),
+            ("Erba XL-200 chemistry analyser", 1_900_000, 1100, 110),
+            ("Sysmex CS-1600 coagulation analyser", 4_100_000, 400, 320),
+            ("Mindray BC-5150 cell counter", 1_650_000, 1800, 70),
+        ],
     },
     "indus": {
         "name": "Indus Medical Systems",
@@ -116,6 +133,22 @@ ORGS = {
         ],
         "pattern_mix": ["intermittent", "intermittent", "lumpy", "lumpy",
                         "erratic", "smooth", "trending"],
+        "customers": [
+            ("Punjab Institute of Cardiology", "Lahore", True, False),
+            ("Liaquat National Hospital", "Karachi", False, False),
+            ("Lady Reading Hospital", "Peshawar", True, False),
+            ("Nishtar Hospital Multan", "Multan", True, False),
+            ("Hameed Latif Hospital", "Lahore", False, False),
+            ("Indus Medical Trading", "Karachi", False, True),
+        ],
+        "invoice": (450_000, 14_000_000),
+        "machine_prefix": "EQ",
+        "machines": [
+            ("GE Logiq P9 ultrasound", 7_800_000, 0, 0),
+            ("Draeger Evita V300 ventilator", 5_400_000, 0, 0),
+            ("Fresenius 4008S dialysis machine", 3_900_000, 0, 0),
+            ("GE Carescape B650 monitor", 2_100_000, 0, 0),
+        ],
     },
 }
 
@@ -301,8 +334,71 @@ def build(key: str, seed: int) -> Workbook:
                 "allocate_by": basis,
             })
 
+    # ---- customers, and what they owe
+    customers, invoices = [], []
+    for n, (name, city, public, inter) in enumerate(spec["customers"]):
+        code = "".join(w[0] for w in name.split()[:3]).upper() + f"{n:02d}"
+        customers.append({
+            "code": code, "name": name, "city": city, "public": public,
+            "inter": inter, "terms": 60 if public else 30,
+            "contact": "", "email": "",
+        })
+    for n in range(12):
+        c = rng.choice(customers)
+        issued = today - timedelta(days=rng.randint(5, 210))
+        amount = round(rng.uniform(*spec["invoice"]), -3)
+        # Most invoices are settled; the open book is the minority, which
+        # is what makes the overdue ones worth looking at.
+        paid = amount if rng.random() < 0.45 else (
+            round(amount * rng.choice([0, 0, 0.25, 0.5]), -3))
+        invoices.append({
+            "no": f"INV-{today.year}-{140+n}", "customer": c["code"],
+            "branch": rng.choice(branches)[0],
+            "date": issued.isoformat(),
+            "due": (issued + timedelta(days=c["terms"])).isoformat(),
+            "amount": amount, "paid": paid,
+        })
+
+    # ---- machines placed, and the jobs done on them
+    machines, jobs = [], []
+    for n, (model, capital, tests, per_test) in enumerate(spec["machines"]):
+        c = rng.choice(customers)
+        placed = today - timedelta(days=rng.randint(120, 900))
+        machines.append({
+            "key": f"{spec['machine_prefix']}-{1000+n}", "model": model,
+            "serial": f"{rng.randint(10**7, 10**8-1)}",
+            "customer": c["code"], "branch": rng.choice(branches)[0],
+            "placed": placed.isoformat(), "capital": capital,
+            "months": rng.choice([24, 36, 36, 60]),
+            "tests": tests, "per_test": per_test,
+            "margin": round(rng.uniform(0.3, 0.52), 2),
+        })
+    for n in range(18):
+        m = rng.choice(machines) if machines else None
+        opened = today - timedelta(days=rng.randint(3, 330))
+        hours = round(rng.uniform(1, 9), 1)
+        # Not every hour gets invoiced, and that gap is the finding.
+        billed = round(hours * rng.choice([0, 0.3, 0.5, 1.0, 1.0]), 1)
+        parts = round(rng.uniform(0, 90_000), -3)
+        warranty = rng.random() < 0.25
+        jobs.append({
+            "no": f"JOB-{today.year}-{300+n}",
+            "machine": m["key"] if m else "",
+            "branch": rng.choice(branches)[0],
+            "opened": opened.isoformat(),
+            "closed": (opened + timedelta(days=rng.randint(0, 6))).isoformat()
+                      if rng.random() < 0.8 else "",
+            "hours": hours, "billed": billed,
+            "parts": parts,
+            "charged": 0 if warranty else round(
+                parts * rng.choice([0, 0.5, 1.0, 1.0]), -3),
+            "warranty": warranty, "repeat": rng.random() < 0.2,
+            "down": round(rng.uniform(0, 4), 1),
+        })
+
     return render(spec, branches, suppliers, items, stock, history,
-                  orders, shipments, months)
+                  orders, shipments, months, customers, invoices,
+                  machines, jobs)
 
 
 # --------------------------------------------------------------- the sheets
@@ -331,7 +427,7 @@ def put(ws, r, values, fonts=None, formats=None):
 
 
 def render(spec, branches, suppliers, items, stock, history, orders,
-           shipments, months):
+           shipments, months, customers, invoices, machines, jobs):
     wb = Workbook()
     del wb["Sheet"]
 
@@ -490,6 +586,85 @@ def render(spec, branches, suppliers, items, stock, history, orders,
     ws.cell(len(shipments) + 4, 1,
             "cost says how it is spread. allocate_by: value, weight, "
             "volume or qty.").font = NOTE
+
+    # ---------------------------------------------------------- Customers
+    ws = wb.create_sheet("Customers")
+    head(ws, ["customer_code", "customer_name", "city", "is_public_sector",
+              "is_intercompany", "payment_terms_days", "contact_name",
+              "contact_email"],
+         [16, 30, 16, 17, 16, 19, 22, 26],
+         required=("customer_code", "customer_name"))
+    for r, c in enumerate(customers, 2):
+        put(ws, r, [c["code"], c["name"], c["city"],
+                    "yes" if c["public"] else "",
+                    "yes" if c["inter"] else "", c["terms"],
+                    c["contact"], c["email"]],
+            formats={6: QTY})
+    ws.cell(len(customers) + 3, 1,
+            "is_public_sector: government hospitals pay late as a matter "
+            "of course, and mixing them into one").font = NOTE
+    ws.cell(len(customers) + 4, 1,
+            "figure hides whether the private book is healthy. "
+            "is_intercompany: a sale to a company you own is").font = NOTE
+    ws.cell(len(customers) + 5, 1,
+            "not money owed -- counted in the total it flatters the "
+            "figure and nobody notices.").font = NOTE
+
+    # ----------------------------------------------------------- Invoices
+    ws = wb.create_sheet("Invoices")
+    head(ws, ["invoice_no", "customer_code", "branch_code", "invoice_date",
+              "due_date", "amount", "amount_paid"],
+         [18, 16, 13, 14, 14, 16, 16],
+         required=("invoice_no", "customer_code", "invoice_date",
+                   "due_date", "amount"))
+    for r, i in enumerate(invoices, 2):
+        put(ws, r, [i["no"], i["customer"], i["branch"], i["date"],
+                    i["due"], i["amount"], i["paid"]],
+            formats={6: MONEY, 7: MONEY})
+    ws.cell(len(invoices) + 3, 1,
+            "amount_paid, not a status: a status cannot express a part "
+            "payment, and a part payment is most of this book.").font = NOTE
+
+    # ----------------------------------------------------------- Machines
+    ws = wb.create_sheet("Machines")
+    head(ws, ["machine_key", "model", "serial_no", "customer_code",
+              "branch_code", "placed_date", "capital_cost",
+              "contract_months", "expected_monthly_tests",
+              "revenue_per_test", "reagent_margin_pct"],
+         [15, 22, 16, 16, 13, 14, 16, 17, 22, 17, 19],
+         required=("machine_key", "model"))
+    for r, m in enumerate(machines, 2):
+        put(ws, r, [m["key"], m["model"], m["serial"], m["customer"],
+                    m["branch"], m["placed"], m["capital"], m["months"],
+                    m["tests"], m["per_test"], m["margin"]],
+            formats={7: MONEY, 8: QTY, 9: QTY, 10: MONEY, 11: '0.00'})
+    ws.cell(len(machines) + 3, 1,
+            "capital_cost is what it cost you to put it there -- zero for "
+            "a machine the customer bought, and the whole").font = NOTE
+    ws.cell(len(machines) + 4, 1,
+            "point of the record for one you placed free. No other system "
+            "you own holds this.").font = NOTE
+
+    # ------------------------------------------------------- Service jobs
+    ws = wb.create_sheet("Service jobs")
+    head(ws, ["job_no", "machine_key", "branch_code", "opened_date",
+              "closed_date", "labour_hours", "labour_hours_billed",
+              "parts_cost", "parts_charged", "is_warranty",
+              "is_repeat_visit", "downtime_days"],
+         [14, 15, 13, 14, 14, 15, 20, 14, 16, 14, 17, 15],
+         required=("job_no", "opened_date"))
+    for r, j in enumerate(jobs, 2):
+        put(ws, r, [j["no"], j["machine"], j["branch"], j["opened"],
+                    j["closed"], j["hours"], j["billed"], j["parts"],
+                    j["charged"], "yes" if j["warranty"] else "",
+                    "yes" if j["repeat"] else "", j["down"]],
+            formats={6: '0.0', 7: '0.0', 8: MONEY, 9: MONEY, 12: '0.0'})
+    ws.cell(len(jobs) + 3, 1,
+            "Hours worked and hours invoiced go in separate columns. Held "
+            "as one number the gap between them -- the work").font = NOTE
+    ws.cell(len(jobs) + 4, 1,
+            "you did and did not charge for -- cannot be computed at "
+            "all.").font = NOTE
 
     # ---------------------------------------------------------- Suppliers
     ws = wb.create_sheet("Suppliers")

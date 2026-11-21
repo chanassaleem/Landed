@@ -1555,3 +1555,19 @@ td.warn { color: var(--attention); }
 }
 .panel th[aria-sort='ascending']::after { border-bottom: 4px solid currentColor; }
 .panel th[aria-sort='descending']::after { border-top: 4px solid currentColor; }
+
+/* A row of figures above a table: the answer, then the detail behind
+   it. Reuses the decision card's type so the two read as the same
+   kind of statement. */
+.deck-row {
+  display: grid;
+  gap: 0 26px;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  margin-bottom: 18px;
+}
+.deck-row .deck + .deck {
+  padding-left: 26px;
+  margin-left: -26px;
+  border-left: 1px solid var(--rule);
+}
+.deck-row .big { font-size: 21px; }
