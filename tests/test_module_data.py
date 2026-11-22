@@ -821,3 +821,51 @@ def test_a_branch_that_holds_nothing_narrows_to_nothing(seeded):
     data = run("stock", nowhere)["data"]
     assert data["rows"] == []
     assert data["totals"]["stock_value"] == 0
+
+
+# ------------------------------------- a broken query is not a refusal
+#
+# Facts caught every exception and filed it under `refused`, so a
+# column renamed in a migration, a typo in a query or a dropped
+# connection all reached the person as "your role cannot see this" --
+# the one explanation that sends them to an administrator rather than
+# to the logs.
+
+
+def test_a_policy_refusal_is_recorded_rather_than_raised(facts):
+    """The behaviour that is meant to be there."""
+    import psycopg
+
+    def refuse():
+        raise psycopg.errors.InsufficientPrivilege("no grant")
+
+    got = facts._get("pretend", refuse, [])
+    assert got == []
+    assert "pretend" in facts.refused
+
+
+def test_a_broken_query_is_not_reported_as_a_permission_problem(facts):
+    import psycopg
+
+    def broken():
+        raise psycopg.errors.SyntaxError("you typed it wrong")
+
+    with pytest.raises(psycopg.errors.SyntaxError):
+        facts._get("pretend2", broken, [])
+    assert "pretend2" not in facts.refused
+
+
+def test_a_poisoned_transaction_surfaces_instead_of_emptying_the_page(facts):
+    """One failure used to poison the rest: Postgres refuses every
+    statement after an error with InFailedSqlTransaction, so a single
+    broken query turned every remaining module into a permission
+    problem. The honest answer is the error, not fourteen empty
+    screens."""
+    import psycopg
+
+    def poisoned():
+        raise psycopg.errors.InFailedSqlTransaction("aborted")
+
+    with pytest.raises(psycopg.errors.InFailedSqlTransaction):
+        facts._get("pretend3", poisoned, [])
+    assert "pretend3" not in facts.refused

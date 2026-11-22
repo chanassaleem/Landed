@@ -39,6 +39,28 @@ from engine.schema import Thresholds
 _UNSET = object()
 
 
+# What counts as "the policies will not show you this", as opposed to
+# "this query is broken". The first is a fact about the person and
+# belongs on the screen; the second is a fact about the code and
+# belongs in the logs with a 500 next to it.
+#
+# A filtered SELECT under row-level security returns no rows rather
+# than raising, so these are the narrower cases: a grant the role does
+# not hold, and a table or column a migration has not created here
+# yet. Everything else propagates.
+try:  # pragma: no cover - exercised wherever psycopg is installed
+    from psycopg import errors as _pg
+
+    _REFUSALS: tuple = (
+        _pg.InsufficientPrivilege,
+        _pg.UndefinedTable,
+        _pg.UndefinedColumn,
+        _pg.UndefinedFunction,
+    )
+except Exception:  # pragma: no cover - psycopg absent in some tooling
+    _REFUSALS = ()
+
+
 class Facts:
     """Lazily-read records and derived results for one request.
 
@@ -90,12 +112,26 @@ class Facts:
         caller is rendering a page, not performing a transaction: the
         right outcome is a module that says it is not available to this
         role, not a 500 on a screen that asked for something else.
+
+        Only a refusal, though. This caught every exception and filed
+        it under `refused`, so a column renamed in a migration, a
+        typo in a query or a dropped connection all reached the person
+        as "your role cannot see this" -- the one explanation that
+        sends them to an administrator instead of to the logs.
+
+        Worse, one failure poisoned the rest. A Postgres transaction
+        that has raised refuses every later statement with
+        InFailedSqlTransaction, so a single broken query turned every
+        remaining module on the page into a permission problem.
+        That one is re-raised deliberately: it means an earlier error
+        was swallowed, and the honest answer is the error, not
+        fourteen empty screens.
         """
         if name in self._cache:
             return self._cache[name]
         try:
             value = read()
-        except Exception:
+        except _REFUSALS:
             self.refused.add(name)
             value = empty
         self._cache[name] = value
