@@ -1743,7 +1743,12 @@ tbody tr.flagged td:first-child {
   min-width: 22ch;
 }
 
-#v-m table td.num, #v-m table th.num { width: 1%; white-space: nowrap; }
+/* Only the plain tables. The grid sets its own widths, and a 1%
+   override would undo every column somebody dragged. */
+#v-m table:not(.grid-table) td.num,
+#v-m table:not(.grid-table) th.num { width: 1%; white-space: nowrap; }
+
+.grid-table td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* A dialog, because what is being added is almost always in service of
    what is already on screen: a contact while looking at a customer, a
@@ -2112,4 +2117,143 @@ details.advanced[open] > summary::before { content: '▾ '; }
   background: var(--surface);
   border: 1px solid var(--rule);
   border-radius: var(--r);
+}
+
+/* ─────────────────────────────────────────────────────────── the grid
+   The screen somebody spends the day in. Forty rows, a dozen columns,
+   and the two that matter today are the two they cannot see -- so
+   columns resize, reorder and hide, and the arrangement is
+   remembered. */
+
+.grid-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.grid-views { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.grid-btn, .grid-bar .picker {
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  cursor: pointer;
+}
+
+.grid-picker {
+  position: absolute;
+  right: 0;
+  z-index: 40;
+  display: grid;
+  gap: 2px;
+  margin-top: 4px;
+  padding: 8px;
+  max-height: 60vh;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  box-shadow: 0 12px 32px rgba(14, 17, 22, 0.16);
+}
+
+.grid { position: relative; }
+
+.grid-picker label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 4px;
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.grid-picker label:hover { background: var(--sunk); }
+.grid-picker .grid-btn { margin-top: 6px; width: 100%; }
+
+/* Written to beat `.panel table { table-layout: auto }` above,
+   which is more specific than a bare class and quietly turned every
+   column width into a suggestion -- so the first column absorbed the
+   slack and a four-character SKU sat 780 pixels wide. */
+.panel .grid-table { table-layout: fixed; }
+.grid-table th { position: relative; }
+
+.grid-table th[data-dragging='1'] { opacity: 0.4; }
+.grid-table th[data-over='1'] { box-shadow: inset 2px 0 0 var(--focus); }
+
+.th-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The resize handle. Wider than it looks: a two-pixel target is a
+   two-pixel target however it is drawn. */
+.th-grip {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  width: 9px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+}
+
+.th-grip:hover { background: var(--focus); opacity: 0.25; }
+
+.grid-panel[data-display='compact'] tbody td { padding-top: 3px; padding-bottom: 3px; }
+.grid-panel[data-display='roomy'] tbody td { padding-top: 11px; padding-bottom: 11px; }
+
+/* A cell somebody may correct. Marked only on hover: a table where a
+   third of the cells advertise themselves is a table nobody can
+   read. */
+td.can-edit { cursor: text; }
+td.can-edit:hover { box-shadow: inset 0 0 0 1px var(--rule); }
+td.can-edit:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+td[data-saving='1'] { opacity: 0.5; }
+td[data-refused='1'] { box-shadow: inset 0 0 0 1px var(--urgent); }
+
+td.can-edit input {
+  width: 100%;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--focus);
+  border-radius: 2px;
+}
+
+td.can-edit input[type='checkbox'] { width: auto; }
+
+.grid-empty { border-top: 1px solid var(--rule); }
+
+/* The grid's named views. A view is the question somebody actually
+   has -- what needs a decision, what is standing still -- and the
+   filters are for when none of them is quite it. */
+.grid-chip {
+  padding: 5px 11px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-2);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.grid-chip:hover { border-color: var(--text-3); color: var(--text); }
+
+.grid-chip[data-on='1'] {
+  color: var(--surface);
+  background: var(--ink);
+  border-color: var(--ink);
 }

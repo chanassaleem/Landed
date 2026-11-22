@@ -337,3 +337,95 @@ def test_every_field_a_form_sends_is_one_the_route_accepts():
         # inside a select's options list.
         for name in re.findall(r"\n        \['([a-z_]+)',", body):
             assert name in known, f"{kind}.{name} is not accepted"
+
+
+# ------------------------------------------- correcting a fact in place
+#
+# The question this answers is where data gets entered on a stock
+# screen. There are two acts and they must not share a control:
+# correcting a lead time is editing something somebody wrote down, and
+# recording that forty units went out is a ledger event that can only
+# ever be reversed.
+
+
+def test_a_fact_about_an_item_can_be_corrected(api):
+    client, _org = api
+    add(client, "item", sku="RGT-1", description="Reagent")
+    r = client.post("/api/item/RGT-1", json={
+        "description": "HbA1c reagent kit, 100 test",
+        "lead_time_days": 75,
+        "list_price": 24500,
+    })
+    assert r.status_code == 200, r.text[:300]
+    assert r.json()["changed"]["lead_time_days"] == 75
+
+    with RealDatabase(DSN, OWNER_EMAIL).as_user(OWNER) as conn:
+        got = conn.execute(
+            "select description, lead_time_days, list_price"
+            "  from public.items where sku = 'RGT-1'").fetchone()
+    assert got[0] == "HbA1c reagent kit, 100 test"
+    assert float(got[1]) == 75
+    assert float(got[2]) == 24500
+
+
+def test_a_quantity_cannot_be_typed_over(api):
+    """The line that matters.
+
+    `on_hand` is the sum of the movements and `unit_cost` is derived
+    from them. Typing over either would put a number on screen that no
+    movement supports, and the first person to reconcile would find
+    stock that exists in the product and nowhere else.
+    """
+    client, _org = api
+    add(client, "item", sku="RGT-2", description="Reagent")
+    for field, value in (("on_hand", 999), ("unit_cost", 1),
+                         ("position", 5)):
+        r = client.post("/api/item/RGT-2", json={field: value})
+        assert r.status_code == 400, f"{field} was accepted"
+        assert "type over" in " ".join(r.json()["problems"]), \
+            r.json()["problems"]
+
+
+def test_a_field_that_is_not_on_an_item_is_named(api):
+    client, _org = api
+    add(client, "item", sku="RGT-3", description="Reagent")
+    r = client.post("/api/item/RGT-3", json={"colour": "blue"})
+    assert r.status_code == 400
+    assert "not a field on an item" in " ".join(r.json()["problems"])
+
+
+def test_a_price_that_is_not_a_number_is_refused(api):
+    client, _org = api
+    add(client, "item", sku="RGT-4", description="Reagent")
+    r = client.post("/api/item/RGT-4", json={"list_price": "lots"})
+    assert r.status_code == 400
+    assert "number" in " ".join(r.json()["problems"])
+
+
+def test_an_item_that_does_not_exist_is_a_404(api):
+    client, _org = api
+    r = client.post("/api/item/NOPE", json={"description": "x"})
+    assert r.status_code == 404
+    assert "NOPE" in " ".join(r.json()["problems"])
+
+
+def test_changing_nothing_on_an_item_is_refused(api):
+    client, _org = api
+    add(client, "item", sku="RGT-5", description="Reagent")
+    r = client.post("/api/item/RGT-5", json={})
+    assert r.status_code == 400
+    assert "Nothing to change" in " ".join(r.json()["problems"])
+
+
+def test_the_browser_only_offers_the_fields_the_server_accepts():
+    """The grid asks the server which columns may be typed into and
+    the stock module answers. A list hard-coded in the browser would
+    drift, and the drift would show up as a cell that looks editable
+    and refuses."""
+    from web.modules import EDITABLE_ITEM_FIELDS
+
+    assert "on_hand" not in EDITABLE_ITEM_FIELDS
+    assert "unit_cost" not in EDITABLE_ITEM_FIELDS
+    assert "stock_value" not in EDITABLE_ITEM_FIELDS
+    assert "description" in EDITABLE_ITEM_FIELDS
+    assert "list_price" in EDITABLE_ITEM_FIELDS

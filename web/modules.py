@@ -26,6 +26,16 @@ from engine import report
 from engine.platform import get as get_module
 from engine.schema import StockStatus
 
+# Facts about an item, which somebody may correct in place. Quantities
+# are not here and never will be: on_hand comes from the ledger and
+# unit_cost is derived from it, so typing over either would put a
+# number on screen that no movement supports.
+EDITABLE_ITEM_FIELDS = (
+    "description", "category", "uom", "barcode", "lead_time_days",
+    "lead_time_days_std", "is_clinical_critical", "list_price",
+    "is_generic",
+)
+
 
 def jsonable(value: Any) -> Any:
     """Anything the engine returns, as something JSON can carry.
@@ -105,16 +115,76 @@ def _blocked_donors(f) -> list[dict]:
     return out
 
 
+def _item_facts(f) -> dict:
+    """Per-item facts the engine does not carry, keyed by SKU.
+
+    Price and fitment are not inputs to any module -- no forecast or
+    reorder point moves because of them -- so they do not belong on
+    ItemSnapshot, which is the engine's contract and is deliberately
+    the smallest thing the arithmetic needs. They are read here and
+    merged into the rows the screen shows.
+    """
+    rows = {}
+    for r in f.conn.execute(
+        "select i.sku, i.list_price, i.is_generic, i.barcode, i.uom,"
+        "       i.category,"
+        "       coalesce((select string_agg(m.machine_key, ', '"
+        "                         order by m.machine_key)"
+        "                   from public.item_machines im"
+        "                   join public.machines m on m.id = im.machine_id"
+        "                  where im.item_id = i.id), '')"
+        "  from public.items i where i.is_active"
+    ).fetchall():
+        rows[r[0]] = {
+            "list_price": float(r[1]) if r[1] is not None else None,
+            "is_generic": bool(r[2]),
+            "barcode": r[3],
+            "uom": r[4],
+            "category": r[5],
+            "fits": r[6] or "",
+        }
+    return rows
+
+
 def _stock(f) -> dict:
     counts: dict[str, int] = {}
     for r in f.stock:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
     blocked = _blocked_donors(f)
+
+    # Margin per line, against the landed cost rather than the
+    # supplier's invoice. That distinction is the whole product: the
+    # same sum against an invoice price overstates margin by whatever
+    # freight, duty and clearing added, which in this trade is a fifth
+    # to a half.
+    facts = _item_facts(f)
+    for row in f.stock:
+        extra = facts.get(row["item_key"], {})
+        row["list_price"] = extra.get("list_price")
+        row["is_generic"] = extra.get("is_generic", False)
+        row["barcode"] = extra.get("barcode")
+        row["fits"] = extra.get("fits") or (
+            "Generic" if extra.get("is_generic") else "")
+        price, cost = row["list_price"], row.get("unit_cost")
+        row["margin"] = (round(price - cost, 2)
+                         if price is not None and cost else None)
+        row["margin_pct"] = (round((price - cost) / price, 4)
+                             if price and cost and price > 0 else None)
+        row["line_margin"] = (round((price - cost) * row["on_hand"], 2)
+                              if price is not None and cost else None)
     return {
         "rows": f.stock,
         "transfers": f.transfers,
         "counts": counts,
         "blocked_donors": blocked,
+        # Which columns a person may type into, decided here rather
+        # than in the browser. Editing a fact about an item and
+        # recording that forty units went out are different acts: the
+        # first corrects something somebody wrote down, the second is
+        # a ledger event that can never be edited, only reversed.
+        # Blurring them is how a stock figure stops reconciling with
+        # the movements behind it.
+        "editable": list(EDITABLE_ITEM_FIELDS),
         # Two resolutions, and they do different things. Raising the
         # standing-still limit stops the line being flagged -- which is
         # the honest answer when the stock is held on purpose for a long

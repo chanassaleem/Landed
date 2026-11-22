@@ -94,10 +94,68 @@
         ['description', 'Item', 'text'],
         ['location_id', 'Branch', 'text'],
         ['on_hand', 'On hand', 'qty'],
+        ['uom', 'Unit', 'text'],
         ['months_cover', 'Cover', 'months'],
-        ['demand_class', 'Pattern', 'said'],
         ['status', 'State', 'state'],
-        ['stock_value', 'Value', 'money'],
+        ['unit_cost', 'Landed each', 'money'],
+        ['list_price', 'Sells for', 'money'],
+        ['margin', 'Margin each', 'money'],
+        ['margin_pct', 'Margin', 'pct'],
+        ['stock_value', 'Value at cost', 'money'],
+        ['line_margin', 'Margin held', 'money'],
+        ['fits', 'Used on', 'text'],
+        ['category', 'Category', 'text'],
+        ['demand_class', 'Pattern', 'said'],
+        ['abc', 'Class', 'text'],
+        ['mean_monthly_demand', 'Sells a month', 'qty'],
+        ['reorder_point', 'Reorder at', 'qty'],
+        ['suggested_order_qty', 'Order now', 'qty'],
+        ['order_value', 'Order value', 'money'],
+        ['excess_value', 'Standing still', 'money'],
+        ['lead_time_days', 'Lead time', 'days'],
+        ['lead_time_days_std', 'Lead varies', 'days'],
+        ['open_po', 'On order', 'qty'],
+        ['position', 'Position', 'qty'],
+        ['safety_stock', 'Safety stock', 'qty'],
+        ['service_target', 'Service target', 'pct'],
+        ['days_to_expiry', 'Expires in', 'days'],
+        ['is_clinical_critical', 'Critical', 'bool'],
+        ['barcode', 'Barcode', 'text'],
+        ['reason', 'Why', 'text'],
+      ],
+      /* Twenty-eight columns is too many to show and not too many to
+         have. Eight are on by default -- the ones somebody reads
+         every morning -- and the rest are a tick away in the column
+         picker, remembered per person. */
+      show: ['item_key', 'description', 'location_id', 'on_hand',
+             'months_cover', 'status', 'unit_cost', 'stock_value'],
+      views: [
+        { id: 'all', label: 'Everything',
+          blurb: 'Every line at every branch.' },
+        { id: 'decide', label: 'Needs a decision',
+          blurb: 'Running out, due a reorder, standing still or '
+            + 'expiring. The lines that want somebody today.',
+          keep: (r) => ['critical', 'reorder', 'excess', 'expiry_risk']
+            .includes(String(r.status).toLowerCase()) },
+        { id: 'short', label: 'Running out',
+          blurb: 'At or below the reorder point.',
+          keep: (r) => ['critical', 'reorder']
+            .includes(String(r.status).toLowerCase()) },
+        { id: 'idle', label: 'Standing still',
+          blurb: 'More cover than the standing-still limit allows.',
+          keep: (r) => String(r.status).toLowerCase() === 'excess' },
+        { id: 'expiring', label: 'Expiring',
+          blurb: 'More on the shelf than will be used before it '
+            + 'expires.',
+          keep: (r) => String(r.status).toLowerCase() === 'expiry_risk' },
+        { id: 'critical', label: 'Clinically critical',
+          blurb: 'Lines flagged critical, whatever their state. A '
+            + 'stockout here stops a hospital testing.',
+          keep: (r) => !!r.is_clinical_critical },
+        { id: 'priced', label: 'Priced',
+          blurb: 'Lines with a selling price, so the margin is real.',
+          keep: (r) => r.list_price !== null
+                       && r.list_price !== undefined },
       ],
       tiles: [
         ['stock_value', 'On the shelf', 'money'],
@@ -347,6 +405,37 @@
       ],
     },
   };
+
+  /* Correcting a fact about an item. Quantities are not here: they
+     come from the ledger, and a cell that typed over one would put a
+     number on screen that no movement supports. */
+  async function saveItem(row, field, value) {
+    const sku = row.item_key || row.sku;
+    if (!sku) return false;
+    try {
+      const res = await fetch(`/api/item/${encodeURIComponent(sku)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [field]: value }),
+      });
+      const out = await res.json();
+      if (!res.ok || out.ok === false) {
+        const why = (out.problems || ['That change was refused.'])[0];
+        if (window.LANDED_PLATFORM) {
+          const bar = $('m-wrap');
+          if (bar) {
+            const n = note(why, 'warn');
+            bar.prepend(n);
+            setTimeout(() => n.remove(), 6000);
+          }
+        }
+        return false;
+      }
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
 
   /* --------------------------------------------------------- the screen */
 
@@ -669,15 +758,49 @@
     if (any) body.append(tiles);
 
     const rows = data[spec.key || 'rows'] || [];
-    const panel = el('div', 'panel');
     if (!rows.length) {
+      const panel = el('div', 'panel');
       panel.append(L.empty('Nothing here yet',
         'The module is reading your figures and finding none of this '
         + 'kind.'));
+      body.append(panel);
+    } else if (window.LANDED_GRID) {
+      const cols = spec.cols.map(([k, label, f]) => (
+        { key: k, label, fmt: f }));
+      /* A module that names its default columns starts with those
+         hidden-by-default; one that does not shows everything it
+         declares, which is what every module but stock does. */
+      const hide = spec.show
+        ? cols.filter((c) => !spec.show.includes(c.key)).map((c) => c.key)
+        : [];
+      const stored = (() => {
+        try {
+          return JSON.parse(
+            localStorage.getItem(`landed.grid.${mod.id}`));
+        } catch (e) { return null; }
+      })();
+      if (!stored && hide.length) {
+        try {
+          localStorage.setItem(`landed.grid.${mod.id}`,
+            JSON.stringify({ hidden: hide }));
+        } catch (e) { /* the grid still works without remembering */ }
+      }
+      body.append(window.LANDED_GRID.render({
+        key: mod.id,
+        cols,
+        rows,
+        fmt: FMT,
+        numeric: NUMERIC,
+        views: spec.views || [],
+        editable: data.editable || [],
+        flag: spec.flag,
+        onEdit: (row, field, value) => saveItem(row, field, value),
+      }));
     } else {
+      const panel = el('div', 'panel');
       panel.append(plainTable(spec, rows));
+      body.append(panel);
     }
-    body.append(panel);
 
     if (data.breakdown && data.breakdown.length) {
       const sec2 = el('div', 'section');
@@ -1062,7 +1185,13 @@
      does not -- chiefly the surplus that cannot be moved, which is
      the difference between "no transfers today" and "the two limits
      cross and nothing can ever move". */
-  const BESPOKE = { stock: 'stock' };
+  /* Stock used to route to its own hand-built screen. It is the
+     screen somebody spends the day in, which is exactly why it wants
+     the grid -- twenty-eight columns to choose from, named views,
+     resizing and editing -- rather than a fixed eight-column table.
+     The hand-built screens are still there and still reachable:
+     Today for the decisions and the money band, Import for a file. */
+  const BESPOKE = {};
 
   async function decorateStock() {
     const panel = $('views');

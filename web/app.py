@@ -1950,3 +1950,70 @@ def export_workbook(claims: Claims = Depends(require)) -> Response:
                 f'attachment; filename="{slug or "landed"}-{stamp}.xlsx"',
         },
     )
+
+
+@app.post("/api/item/{sku}")
+async def edit_item(sku: str, request: Request,
+                    claims: Claims = Depends(require)) -> JSONResponse:
+    """Correct a fact about an item, in place.
+
+    The question this answers is where data gets entered on a stock
+    screen, and the answer is that there are two different acts and
+    they must not share a control.
+
+    Correcting a lead time, a description or a selling price is
+    editing something somebody wrote down. It has no history worth
+    keeping and no arithmetic behind it, so it is typed into the cell.
+
+    Recording that forty units went out is a ledger event. It can
+    never be edited, only reversed, because the stock figure is the
+    sum of those events and nothing else. Those go through the
+    operations -- receive, sell, count, transfer -- which write a row
+    rather than change one.
+
+    So `on_hand` and `unit_cost` are not in this list and never will
+    be. Typing over either would put a number on screen that no
+    movement supports, and the first person to reconcile would find
+    stock that exists in the product and nowhere else.
+    """
+    from engine.db.supabase import database
+    from web.modules import EDITABLE_ITEM_FIELDS
+
+    body = await request.json()
+    cleaners = {
+        "description": _txt, "category": _txt, "uom": _txt,
+        "barcode": _txt, "lead_time_days": _number,
+        "lead_time_days_std": _number, "is_clinical_critical": _flag,
+        "list_price": _number, "is_generic": _flag,
+    }
+
+    values, problems = {}, []
+    for field, raw in body.items():
+        if field not in EDITABLE_ITEM_FIELDS:
+            problems.append(
+                f"{field} is not something you can type over here."
+                if field in ("on_hand", "unit_cost", "position")
+                else f"{field} is not a field on an item.")
+            continue
+        try:
+            values[field] = cleaners[field](raw)
+        except ValueError as exc:
+            problems.append(f"{field} {exc}.")
+    if problems:
+        return JSONResponse({"ok": False, "problems": problems}, 400)
+    if not values:
+        return JSONResponse(
+            {"ok": False, "problems": ["Nothing to change."]}, 400)
+
+    sets = ", ".join(f"{k} = %s" for k in values)
+    with database().as_user(claims.user_id) as conn:
+        got = conn.execute(
+            f"update public.items set {sets} where sku = %s returning sku",
+            (*values.values(), sku),
+        ).fetchone()
+    if not got:
+        return JSONResponse(
+            {"ok": False,
+             "problems": [f"No item here has the code {sku}, or your "
+                          f"role cannot change it."]}, 404)
+    return JSONResponse({"ok": True, "sku": got[0], "changed": values})
