@@ -90,6 +90,35 @@ ORGS = {
             ("Meridian Supplies", "Karachi", False, True),
         ],
         "invoice": (180_000, 4_800_000),
+        # The figures the money sheets are built from. They are a
+        # business's shape, not decoration: a reagent house turns stock
+        # over quickly, carries little plant and finances the gap
+        # between a letter of credit and a public hospital paying.
+        "staff": [
+            ("Imran Shah", "sales", 185_000),
+            ("Sana Raza", "service", 145_000),
+            ("Bilal Khan", "warehouse", 62_000),
+            ("Hina Qureshi", "finance", 160_000),
+            ("Adeel Mirza", "sales", 140_000),
+            ("Nadia Aslam", "service", 120_000),
+            ("Tariq Javed", "warehouse", 58_000),
+        ],
+        "contacts": ["Dr Farooq Ahmed", "Ms Rabia Sattar",
+                     "Dr Kamran Baig", "Mr Owais Dar",
+                     "Dr Shazia Malik", "Mr Junaid Rafi"],
+        "rent": 320_000,
+        "loan_instalment": 1_250_000,
+        "bank": 3_250_000,
+        "fixed_assets": 14_000_000,
+        "accum_depreciation": 3_000_000,
+        "depreciation": 1_250_000,
+        "finance_cost": 2_050_000,
+        "short_term_debt": 8_000_000,
+        "new_borrowing": 1_000_000,
+        "equity": 5_000_000,
+        "retained_earnings": 8_200_000,
+        "dividend": 1_000_000,
+        "capex": 6_500_000,
         "machine_prefix": "AN",
         "machines": [
             ("Sysmex XN-550 haematology analyser", 3_200_000, 900, 180),
@@ -142,6 +171,30 @@ ORGS = {
             ("Indus Medical Trading", "Karachi", False, True),
         ],
         "invoice": (450_000, 14_000_000),
+        "staff": [
+            ("Faisal Siddiqui", "sales", 260_000),
+            ("Ayesha Noor", "service", 210_000),
+            ("Zeeshan Haider", "service", 195_000),
+            ("Mehwish Tariq", "finance", 185_000),
+            ("Usman Ghani", "warehouse", 78_000),
+            ("Rizwan Akhtar", "sales", 225_000),
+        ],
+        "contacts": ["Dr Asma Jahangir", "Mr Saad Pervez",
+                     "Dr Haroon Rasheed", "Ms Fatima Zaidi",
+                     "Mr Danish Iqbal", "Dr Yasir Mehmood"],
+        "rent": 540_000,
+        "loan_instalment": 3_400_000,
+        "bank": 7_800_000,
+        "fixed_assets": 46_000_000,
+        "accum_depreciation": 11_500_000,
+        "depreciation": 4_200_000,
+        "finance_cost": 7_600_000,
+        "short_term_debt": 24_000_000,
+        "new_borrowing": 4_000_000,
+        "equity": 15_000_000,
+        "retained_earnings": 19_400_000,
+        "dividend": 2_500_000,
+        "capex": 18_000_000,
         "machine_prefix": "EQ",
         "machines": [
             ("GE Logiq P9 ultrasound", 7_800_000, 0, 0),
@@ -396,9 +449,229 @@ def build(key: str, seed: int) -> Workbook:
             "down": round(rng.uniform(0, 4), 1),
         })
 
+    # ---- the people on the payroll
+    #
+    # Pay is split into basic, allowances and medical because the
+    # deductions are: tax is on the taxable part, EOBI is charged on the
+    # minimum wage rather than on pay, and medical is exempt up to a
+    # tenth of basic. A single "salary" column cannot produce a correct
+    # payslip, so the sheet does not offer one.
+    employees = []
+    for n, (name, dept, basic) in enumerate(spec["staff"]):
+        employees.append({
+            "no": f"E-{100+n}",
+            "name": name,
+            "dept": dept,
+            "branch": branches[n % len(branches)][0],
+            "basic": basic,
+            "allow": round(basic * 0.30, -2),
+            "medical": round(basic * 0.08, -2),
+            "pf_er": 0.05,
+            "pf_ee": 0.05,
+            "joined": (today - timedelta(days=rng.randint(200, 2600)))
+                      .isoformat(),
+        })
+
+    # ---- money already promised
+    #
+    # Without these the thirteen-week view is fiction: the letter of
+    # credit settles and the salaries go out whatever the stock position
+    # says. The recurring ones are held once and spread by the engine,
+    # so changing the rent changes every week at once.
+    payroll_monthly = sum(e["basic"] + e["allow"] + e["medical"]
+                          for e in employees)
+    commitments = [
+        {"label": "Salaries", "kind": "payroll", "recurring": "yes",
+         "every": 30, "amount": round(payroll_monthly, -3),
+         "due": (today + timedelta(days=rng.randint(2, 20))).isoformat(),
+         "branch": branches[0][0]},
+        {"label": "Warehouse rent", "kind": "rent", "recurring": "yes",
+         "every": 30, "amount": spec["rent"],
+         "due": (today + timedelta(days=rng.randint(1, 28))).isoformat(),
+         "branch": branches[0][0]},
+        {"label": "Bank facility repayment", "kind": "loan_repayment",
+         "recurring": "yes", "every": 90,
+         "amount": spec["loan_instalment"],
+         "due": (today + timedelta(days=rng.randint(10, 60))).isoformat(),
+         "branch": branches[0][0]},
+    ]
+    # One letter of credit per open order, at close to full value, due
+    # about a week after the order: in this market the money leaves when
+    # the LC is opened, not when the goods arrive.
+    for o in orders[:4]:
+        commitments.append({
+            "label": f"LC {o['po']}",
+            "kind": "lc_settlement", "recurring": "", "every": "",
+            "amount": round(o["qty"] * o["price"] * o["fx"], -3),
+            "due": (today + timedelta(days=rng.randint(3, 40))).isoformat(),
+            "branch": o["branch"],
+        })
+
+    bank = [{
+        "as_at": (today - timedelta(days=1)).isoformat(),
+        "balance": spec["bank"],
+        "account": "Main account",
+    }]
+
+    # ---- the pipeline
+    #
+    # Each row names the item it would consume, which is what lets the
+    # engine check a tender against the shelf: one closing in six weeks
+    # for a line with eleven weeks of lead time is a disappointment with
+    # a date on it.
+    STAGES = [("lead", 40), ("qualified", 25), ("quoted", 35),
+              ("tender_submitted", 30), ("won", 25), ("lost", 20)]
+    pipeline = []
+    for n in range(14):
+        c = rng.choice(customers)
+        it = rng.choice(items)
+        stage = rng.choices([s for s, _ in STAGES],
+                            weights=[w for _, w in STAGES])[0]
+        closed = stage in ("won", "lost")
+        opened = today - timedelta(days=rng.randint(30, 300))
+        pipeline.append({
+            "ref": f"TND-{today.year}-{500+n}",
+            "customer": c["code"],
+            "stage": stage,
+            "value": round(rng.uniform(*spec["invoice"]) * 3, -3),
+            "close": (today + timedelta(days=rng.randint(-120, 150)))
+                     .isoformat(),
+            "sku": it["sku"],
+            "qty": rng.randint(10, 400),
+            "source": rng.choice(["tender", "referral", "conference",
+                                  "cold"]),
+            "owner": rng.choice(spec["staff"])[0],
+            "opened": opened.isoformat(),
+            "closed": (opened + timedelta(days=rng.randint(20, 120))
+                       ).isoformat() if closed else "",
+        })
+
+    spend = [
+        {"label": "Pathology conference stand", "category": "conference",
+         "on": (today - timedelta(days=70)).isoformat(), "amount": 450_000},
+        {"label": "Demonstration unit", "category": "demo_unit",
+         "on": (today - timedelta(days=130)).isoformat(), "amount": 900_000},
+        {"label": "Sample kits to tender accounts", "category": "samples",
+         "on": (today - timedelta(days=40)).isoformat(), "amount": 180_000},
+        {"label": "Trade directory listing", "category": "print",
+         "on": (today - timedelta(days=200)).isoformat(), "amount": 60_000},
+    ]
+
+    # ---- who to ring, and what was last said
+    contacts, dealings = [], []
+    for n, c in enumerate(customers):
+        contacts.append({
+            "customer": c["code"], "supplier": "",
+            "name": spec["contacts"][n % len(spec["contacts"])],
+            "role": rng.choice(["Head of Pathology", "Procurement officer",
+                                "Lab manager", "Biomedical engineer"]),
+            "email": "", "phone": "", "whatsapp": "",
+            "primary": "yes" if n % 2 == 0 else "",
+        })
+    for n in range(8):
+        c = rng.choice(customers)
+        when = today - timedelta(days=rng.randint(1, 90))
+        dealings.append({
+            "customer": c["code"],
+            "on": when.isoformat(),
+            "channel": rng.choice(["call", "visit", "email", "whatsapp",
+                                   "meeting"]),
+            "summary": rng.choice([
+                "Chased the overdue invoices; finance said next cycle.",
+                "Walked through the tender specification.",
+                "Complaint about a late delivery; apologised and reshipped.",
+                "Asked about a second analyser on placement.",
+                "Quarterly review; volumes steady.",
+            ]),
+            "next": rng.choice(["Send a revised quote", "Call back", ""]),
+            "next_on": (when + timedelta(days=rng.randint(7, 30))
+                        ).isoformat() if rng.random() < 0.6 else "",
+        })
+
+    # ---- the trial balance
+    #
+    # Derived, not invented, and that is the point. Three checks run on
+    # these figures: the sheet balances at both ends, reserves move by
+    # profit less the dividend, and the cash flow ties. A set of
+    # plausible round numbers fails all three, and then the example
+    # teaches somebody that the checks are noise.
+    #
+    # Two things make it tie. Every closing figure that exists elsewhere
+    # in this workbook is taken from there -- stock at cost, the open
+    # receivables, the bank balance -- and creditors are the plug. And
+    # accumulated depreciation moves by exactly the depreciation charge,
+    # with no disposals, which is what makes the indirect cash flow come
+    # out at the movement in cash.
+    stock_value = round(sum(s["qty"] * s["cost"] for s in stock), -3)
+    open_recv = round(sum(i["amount"] - i["paid"] for i in invoices), -3)
+
+    revenue = round(sum(i["amount"] for i in invoices) * 4.0, -3)
+    cogs = round(revenue * 0.64, -3)
+    payroll_year = round(payroll_monthly * 12, -3)
+    opex = round(revenue * 0.07, -3)
+    depreciation = spec["depreciation"]
+    finance_cost = spec["finance_cost"]
+    tax = round(max(0.0, revenue - cogs - payroll_year - opex
+                    - depreciation - finance_cost) * 0.29, -3)
+    pat = round(revenue - cogs - payroll_year - opex - depreciation
+                - finance_cost - tax, 2)
+    dividend = spec["dividend"]
+    capex = spec["capex"]
+
+    o_cash, o_recv = spec["bank"] * 0.7, open_recv * 0.85
+    o_inv, o_fixed = stock_value * 0.9, spec["fixed_assets"]
+    o_accdep = spec["accum_depreciation"]
+    o_std, o_taxpay, o_equity = spec["short_term_debt"], tax * 0.6, spec["equity"]
+    o_re = spec["retained_earnings"]
+    o_assets = o_cash + o_recv + o_inv + o_fixed - o_accdep
+    o_payables = o_assets - o_std - o_taxpay - o_equity - o_re
+
+    c_cash, c_recv, c_inv = spec["bank"], open_recv, stock_value
+    c_fixed, c_accdep = o_fixed + capex, o_accdep + depreciation
+    c_std, c_taxpay = o_std + spec["new_borrowing"], tax * 0.8
+    c_re = o_re + pat - dividend
+    c_assets = c_cash + c_recv + c_inv + c_fixed - c_accdep
+    c_payables = c_assets - c_std - c_taxpay - o_equity - c_re
+
+    year_start = date(today.year, 1, 1)
+    accounts = [
+        ("4000", "Sales", "revenue", 0, revenue),
+        ("5000", "Cost of sales", "cogs", 0, cogs),
+        ("6000", "Salaries and wages", "payroll", 0, payroll_year),
+        ("6100", "Other overheads", "opex", 0, opex),
+        ("6200", "Depreciation", "depreciation", 0, depreciation),
+        ("7000", "Bank mark-up", "finance_cost", 0, finance_cost),
+        ("8000", "Taxation", "tax", 0, tax),
+        ("1000", "Bank", "cash", o_cash, c_cash),
+        ("1100", "Trade debtors", "receivables", o_recv, c_recv),
+        ("1200", "Stock in trade", "inventory", o_inv, c_inv),
+        ("1500", "Plant and equipment", "fixed_assets", o_fixed, c_fixed),
+        ("1510", "Depreciation to date", "accumulated_depreciation",
+         o_accdep, c_accdep),
+        ("2000", "Trade creditors", "payables", o_payables, c_payables),
+        ("2100", "Running finance", "short_term_debt", o_std, c_std),
+        ("2200", "Taxation payable", "tax_payable", o_taxpay, c_taxpay),
+        ("3000", "Share capital", "equity", o_equity, o_equity),
+        ("3100", "Retained earnings", "retained_earnings", o_re, c_re),
+    ]
+    dividends = [{
+        "kind": "dividend",
+        "on": date(today.year, 6, 30).isoformat(),
+        "amount": dividend,
+        "note": "Interim dividend",
+    }] if dividend else []
+
+    extra = {
+        "accounts": accounts, "dividends": dividends,
+        "period": (year_start.isoformat(), today.isoformat()),
+        "commitments": commitments, "bank": bank,
+        "employees": employees, "pipeline": pipeline, "spend": spend,
+        "contacts": contacts, "dealings": dealings,
+    }
+
     return render(spec, branches, suppliers, items, stock, history,
                   orders, shipments, months, customers, invoices,
-                  machines, jobs)
+                  machines, jobs, extra)
 
 
 # --------------------------------------------------------------- the sheets
@@ -427,7 +700,8 @@ def put(ws, r, values, fonts=None, formats=None):
 
 
 def render(spec, branches, suppliers, items, stock, history, orders,
-           shipments, months, customers, invoices, machines, jobs):
+           shipments, months, customers, invoices, machines, jobs,
+           extra):
     wb = Workbook()
     del wb["Sheet"]
 
@@ -439,42 +713,85 @@ def render(spec, branches, suppliers, items, stock, history, orders,
         (spec["what"], NOTE),
         ("", BODY),
         ("What this is", H2),
-        ("The sheets Landed reads when you import. Fill them in, upload the "
-         "file, and every figure", BODY),
-        ("in the app is yours. The example rows are invented -- replace "
+        ("Every sheet Landed can read. Fill in what you have, upload "
+         "the file, and the figures in", BODY),
+        ("the app are yours. The example rows are invented -- replace "
          "them with your own.", BODY),
         ("", BODY),
-        ("Fill these in", H2),
-        ("Branches      every branch and warehouse you hold stock at.", BODY),
-        ("Items         every line you carry. Once each, not once per "
+        ("Nothing here is all-or-nothing. Each sheet switches on the "
+         "part of the app that reads it,", BODY),
+        ("so four sheets gets you stock and reordering, and the rest "
+         "can wait until you have them.", BODY),
+        ("", BODY),
+        ("Start here", H2),
+        ("Branches             every branch and warehouse you hold "
+         "stock at.", BODY),
+        ("Items                every line you carry. Once each, not "
+         "once per branch.", BODY),
+        ("Stock                what is on the shelf today, per item per "
          "branch.", BODY),
-        ("Stock         what is on the shelf today, per item per branch.", BODY),
-        ("Sales history what you sold each month. Months run across the "
-         "top.", BODY),
+        ("Sales history        what you sold each month. Months run "
+         "across the top.", BODY),
         ("", BODY),
-        ("Fill these in if you have them", H2),
-        ("On order      purchase orders placed and not yet arrived.", BODY),
-        ("Shipments     what is in transit, and the freight and duty on "
-         "it.", BODY),
-        ("Suppliers     who you buy from. Skipped, they are created from "
-         "the names on Items.", BODY),
+        ("Goods", H2),
+        ("On order             purchase orders placed and not yet "
+         "arrived.", BODY),
+        ("Shipments            what is in transit, and the freight and "
+         "duty on it.", BODY),
+        ("Suppliers            who you buy from. Skipped, they are "
+         "created from the names on Items.", BODY),
         ("", BODY),
-        ("Two rules worth knowing", H2),
-        ("A blank month on Sales history means you sold none that month. "
-         "That is a fact and the", BODY),
-        ("forecast uses it. If you genuinely have no record for a month, "
-         "delete the whole column", BODY),
-        ("instead -- a zero and a gap mean different things, and only one "
-         "of them is true.", BODY),
+        ("Money", H2),
+        ("Customers            who you sell to, their terms and their "
+         "credit limit.", BODY),
+        ("Invoices             what you have billed and what has been "
+         "paid.", BODY),
+        ("Bank balance         what the cash weeks open from.", BODY),
+        ("Committed payments   money already promised: letters of "
+         "credit, salaries, rent, loans.", BODY),
+        ("Trial balance        your accounts, for the profit, balance "
+         "sheet and cash flow.", BODY),
+        ("Dividends            only if you paid one.", BODY),
         ("", BODY),
-        ("An item's lead time, supplier and description live on Items and "
-         "nowhere else. That is why", BODY),
+        ("Service", H2),
+        ("Machines             instruments placed with a customer, and "
+         "what they cost you.", BODY),
+        ("Service jobs         hours and parts that went in, against "
+         "what was billed.", BODY),
+        ("", BODY),
+        ("People and selling", H2),
+        ("Employees            for payroll, at the rates you set in "
+         "Settings.", BODY),
+        ("Contacts             who to ring at each customer and "
+         "supplier.", BODY),
+        ("Dealings             what was last said, and what happens "
+         "next.", BODY),
+        ("Pipeline             tenders and accounts being worked.", BODY),
+        ("Marketing spend      what winning them costs.", BODY),
+        ("", BODY),
+        ("Three rules worth knowing", H2),
+        ("A blank month on Sales history means you sold none that "
+         "month. That is a fact and the", BODY),
+        ("forecast uses it. If you genuinely have no record for a "
+         "month, delete the whole column", BODY),
+        ("instead -- a zero and a gap mean different things, and only "
+         "one of them is true.", BODY),
+        ("", BODY),
+        ("An item's lead time, supplier and description live on Items "
+         "and nowhere else. That is why", BODY),
         ("Items and Stock are separate sheets: stated once, they cannot "
          "disagree with themselves.", BODY),
         ("", BODY),
-        ("A column marked * is required. Blue text is something you type.", NOTE),
-        ("Check the Check sheet before you upload. It counts the problems "
-         "that stop an import.", NOTE),
+        ("Importing the same file twice is safe. Before it writes "
+         "anything, the app compares every", BODY),
+        ("row against what you already have and tells you how many are "
+         "new, how many are changed", BODY),
+        ("and how many are already there.", BODY),
+        ("", BODY),
+        ("A column marked * is required. Blue text is something you "
+         "type.", NOTE),
+        ("Check the Check sheet before you upload. It counts the "
+         "problems that stop an import.", NOTE),
     ]
     for r, (text, font) in enumerate(lines, 1):
         c = ws.cell(r, 1, text)
@@ -667,6 +984,190 @@ def render(spec, branches, suppliers, items, stock, history, orders,
             "all.").font = NOTE
 
     # ---------------------------------------------------------- Suppliers
+    # ------------------------------------------------------ Trial balance
+    #
+    # One row per account, in natural positive amounts. Debits and
+    # credits are the accountant's convention; somebody filling in a
+    # sheet is far likelier to get "revenue 4,000,000" right than
+    # "revenue credit 4,000,000", so the statement_line column tells
+    # the engine the sign.
+    #
+    # statement_line is never guessed from the account name. Insurance
+    # could be an expense or a prepayment, and a product that guesses
+    # puts the difference in profit.
+    ws = wb.create_sheet("Trial balance")
+    head(ws, ["account_code", "account_name", "statement_line",
+              "period_from", "period_to", "opening", "closing"],
+         [14, 30, 26, 14, 14, 16, 16],
+         required=("account_code", "account_name", "statement_line",
+                   "period_to"))
+    pfrom, pto = extra["period"]
+    for r, (code, name, line, opening, closing) in enumerate(
+            extra["accounts"], 2):
+        put(ws, r, [code, name, line, pfrom, pto,
+                    round(opening, 2), round(closing, 2)],
+            formats={6: MONEY, 7: MONEY})
+    n = len(extra["accounts"]) + 2
+    for i, text in enumerate([
+            "statement_line must be one of: revenue, cogs, payroll, opex, "
+            "depreciation, finance_cost, other_income, tax, cash, "
+            "receivables,",
+            "inventory, other_current_assets, fixed_assets, "
+            "accumulated_depreciation, payables, short_term_debt, "
+            "long_term_debt, other_liabilities,",
+            "tax_payable, equity, retained_earnings. Amounts are "
+            "positive; the line decides the sign.",
+            "",
+            "Three checks run on these figures and all three are shown: "
+            "the sheet balances at both ends, reserves move by profit "
+            "less any dividend,",
+            "and the cash flow ties. A statement that does not tie is "
+            "not untidy -- it means a working-capital movement has been "
+            "missed.",
+    ]):
+        ws.cell(n + i + 1, 1, text).font = NOTE
+    ws.cell(n + 1, 6, f"=SUM(F2:F{n-1})").font = CALC
+    ws.cell(n + 1, 7, f"=SUM(G2:G{n-1})").font = CALC
+
+    # ---------------------------------------------------------- Dividends
+    ws = wb.create_sheet("Dividends")
+    head(ws, ["kind", "paid_on", "amount", "note"],
+         [18, 14, 16, 36], required=("kind", "paid_on", "amount"))
+    for r, d in enumerate(extra["dividends"], 2):
+        put(ws, r, [d["kind"], d["on"], d["amount"], d["note"]],
+            formats={3: MONEY})
+    ws.cell(len(extra["dividends"]) + 3, 1,
+            "Only needed if you paid one. Without it the reserves check "
+            "fails for every company that did: reserves move by profit "
+            "less the dividend.").font = NOTE
+
+    # ------------------------------------------------- Committed payments
+    ws = wb.create_sheet("Committed payments")
+    head(ws, ["label", "kind", "due_date", "amount", "is_recurring",
+              "recurs_every_days", "branch_code"],
+         [30, 18, 14, 16, 14, 18, 14],
+         required=("label", "kind", "due_date", "amount"))
+    for r, c in enumerate(extra["commitments"], 2):
+        put(ws, r, [c["label"], c["kind"], c["due"], c["amount"],
+                    c["recurring"], c["every"], c["branch"]],
+            formats={4: MONEY, 6: QTY})
+    n = len(extra["commitments"]) + 3
+    ws.cell(n, 1,
+            "kind: lc_settlement, loan_repayment, payroll, rent, tax, "
+            "supplier, other.").font = NOTE
+    ws.cell(n + 1, 1,
+            "A recurring payment is held once and spread across the "
+            "weeks, so changing the rent changes every week at once. "
+            "Without this sheet the").font = NOTE
+    ws.cell(n + 2, 1,
+            "thirteen-week view is fiction: the letter of credit settles "
+            "and the salaries go out whatever the stock position "
+            "says.").font = NOTE
+
+    # ------------------------------------------------------- Bank balance
+    ws = wb.create_sheet("Bank balance")
+    head(ws, ["as_at", "balance", "account_label"],
+         [14, 18, 24], required=("as_at", "balance"))
+    for r, b in enumerate(extra["bank"], 2):
+        put(ws, r, [b["as_at"], b["balance"], b["account"]],
+            formats={2: MONEY})
+    ws.cell(len(extra["bank"]) + 3, 1,
+            "What the cash weeks open from. Leave it out and they open "
+            "from nothing, which describes a business about to miss "
+            "payroll.").font = NOTE
+
+    # ---------------------------------------------------------- Employees
+    ws = wb.create_sheet("Employees")
+    head(ws, ["employee_no", "name", "department", "branch_code",
+              "basic_monthly", "allowances_monthly", "medical_monthly",
+              "employer_pf_rate", "employee_pf_rate", "joined"],
+         [14, 24, 16, 14, 16, 18, 16, 16, 16, 14],
+         required=("employee_no", "name", "basic_monthly"))
+    for r, e in enumerate(extra["employees"], 2):
+        put(ws, r, [e["no"], e["name"], e["dept"], e["branch"], e["basic"],
+                    e["allow"], e["medical"], e["pf_er"], e["pf_ee"],
+                    e["joined"]],
+            formats={5: MONEY, 6: MONEY, 7: MONEY, 8: DEC, 9: DEC})
+    n = len(extra["employees"]) + 3
+    ws.cell(n, 1,
+            "Pay is split because the deductions are: tax is on the "
+            "taxable part, EOBI is charged on the minimum wage rather "
+            "than on pay, and").font = NOTE
+    ws.cell(n + 1, 1,
+            "medical is exempt up to a tenth of basic. A single salary "
+            "column cannot produce a correct payslip.").font = NOTE
+    ws.cell(n + 2, 1,
+            "Provident rates are fractions: five per cent is 0.05, not "
+            "5. Typed as 5 it would be twenty times the real "
+            "figure.").font = NOTE
+
+    # ----------------------------------------------------------- Pipeline
+    ws = wb.create_sheet("Pipeline")
+    head(ws, ["reference", "customer_code", "stage", "value",
+              "expected_close", "sku", "quantity", "source", "owner",
+              "opened", "closed"],
+         [18, 16, 20, 16, 16, 16, 12, 14, 20, 14, 14],
+         required=("reference", "stage", "value"))
+    for r, o in enumerate(extra["pipeline"], 2):
+        put(ws, r, [o["ref"], o["customer"], o["stage"], o["value"],
+                    o["close"], o["sku"], o["qty"], o["source"],
+                    o["owner"], o["opened"], o["closed"]],
+            formats={4: MONEY, 7: QTY})
+    n = len(extra["pipeline"]) + 3
+    ws.cell(n, 1,
+            "stage: lead, qualified, quoted, tender_submitted, won, "
+            "lost. Won and lost rows are what the win rate is measured "
+            "from, so keep them.").font = NOTE
+    ws.cell(n + 1, 1,
+            "The sku is what lets a tender be checked against the "
+            "shelf. One closing in six weeks for a line with eleven "
+            "weeks of lead time and").font = NOTE
+    ws.cell(n + 2, 1,
+            "nothing on hand is not a forecast, it is a disappointment "
+            "with a date on it.").font = NOTE
+
+    # --------------------------------------------------- Marketing spend
+    ws = wb.create_sheet("Marketing spend")
+    head(ws, ["label", "category", "spent_on", "amount"],
+         [34, 18, 14, 16], required=("label", "spent_on", "amount"))
+    for r, x in enumerate(extra["spend"], 2):
+        put(ws, r, [x["label"], x["category"], x["on"], x["amount"]],
+            formats={4: MONEY})
+    ws.cell(len(extra["spend"]) + 3, 1,
+            "Spend against wins gives a cost per win, which is the only "
+            "marketing figure a small business owner can act on.").font = NOTE
+
+    # ----------------------------------------------------------- Contacts
+    ws = wb.create_sheet("Contacts")
+    head(ws, ["customer_code", "supplier_name", "name", "role",
+              "email", "phone", "whatsapp", "is_primary"],
+         [16, 24, 24, 24, 26, 18, 18, 12], required=("name",))
+    for r, c in enumerate(extra["contacts"], 2):
+        put(ws, r, [c["customer"], c["supplier"], c["name"], c["role"],
+                    c["email"], c["phone"], c["whatsapp"], c["primary"]])
+    ws.cell(len(extra["contacts"]) + 3, 1,
+            "One of customer_code or supplier_name, never both and "
+            "never neither -- otherwise there is no answer to whose "
+            "contact this is.").font = NOTE
+
+    # ----------------------------------------------------------- Dealings
+    ws = wb.create_sheet("Dealings")
+    head(ws, ["customer_code", "happened_on", "channel", "summary",
+              "next_step", "next_step_on"],
+         [16, 14, 14, 56, 30, 16],
+         required=("customer_code", "happened_on", "summary"))
+    for r, d in enumerate(extra["dealings"], 2):
+        put(ws, r, [d["customer"], d["on"], d["channel"], d["summary"],
+                    d["next"], d["next_on"]])
+    n = len(extra["dealings"]) + 3
+    ws.cell(n, 1,
+            "channel: note, call, visit, email, whatsapp, "
+            "meeting.").font = NOTE
+    ws.cell(n + 1, 1,
+            "The last thing anybody said to a customer, attached to the "
+            "customer it was about. This is the half of a CRM people "
+            "actually use.").font = NOTE
+
     ws = wb.create_sheet("Suppliers")
     head(ws, ["supplier_name", "country", "currency", "contact_email"],
          [28, 18, 12, 28], required=("supplier_name",))
@@ -721,6 +1222,65 @@ def render(spec, branches, suppliers, items, stock, history, orders,
         ("Total stock at cost", f"=SUM(Stock!E2:E{ns})", "money",
          "Sense-check this against your own figure before importing."),
     ]
+
+    # The money sheets, checked here rather than only after upload. The
+    # balance-sheet test is the one worth having in Excel: it is the
+    # single most common thing wrong with a hand-built trial balance,
+    # and finding it here costs a minute rather than an import.
+    na = len(extra["accounts"]) + 1
+    npl = len(extra["pipeline"]) + 1
+    nd = len(extra["dealings"]) + 1
+    nc = len(customers) + 1
+    if extra["accounts"]:
+        checks += [
+            ("Trial balance: assets less liabilities and equity, closing",
+             "=ROUND(SUMIF('Trial balance'!$C$2:$C$" + str(na) +
+             ',"cash",\'Trial balance\'!$G$2:$G$' + str(na) + ")"
+             "+SUMIF('Trial balance'!$C$2:$C$" + str(na) +
+             ',"receivables",\'Trial balance\'!$G$2:$G$' + str(na) + ")"
+             "+SUMIF('Trial balance'!$C$2:$C$" + str(na) +
+             ',"inventory",\'Trial balance\'!$G$2:$G$' + str(na) + ")"
+             "+SUMIF('Trial balance'!$C$2:$C$" + str(na) +
+             ',"other_current_assets",\'Trial balance\'!$G$2:$G$'
+             + str(na) + ")"
+             "+SUMIF('Trial balance'!$C$2:$C$" + str(na) +
+             ',"fixed_assets",\'Trial balance\'!$G$2:$G$' + str(na) + ")"
+             "-SUMIF('Trial balance'!$C$2:$C$" + str(na) +
+             ',"accumulated_depreciation",\'Trial balance\'!$G$2:$G$'
+             + str(na) + ")"
+             "-SUMIF('Trial balance'!$C$2:$C$" + str(na) +
+             ',"payables",\'Trial balance\'!$G$2:$G$' + str(na) + ")"
+             "-SUMIF('Trial balance'!$C$2:$C$" + str(na) +
+             ',"short_term_debt",\'Trial balance\'!$G$2:$G$' + str(na) + ")"
+             "-SUMIF('Trial balance'!$C$2:$C$" + str(na) +
+             ',"long_term_debt",\'Trial balance\'!$G$2:$G$' + str(na) + ")"
+             "-SUMIF('Trial balance'!$C$2:$C$" + str(na) +
+             ',"other_liabilities",\'Trial balance\'!$G$2:$G$' + str(na) + ")"
+             "-SUMIF('Trial balance'!$C$2:$C$" + str(na) +
+             ',"tax_payable",\'Trial balance\'!$G$2:$G$' + str(na) + ")"
+             "-SUMIF('Trial balance'!$C$2:$C$" + str(na) +
+             ',"equity",\'Trial balance\'!$G$2:$G$' + str(na) + ")"
+             "-SUMIF('Trial balance'!$C$2:$C$" + str(na) +
+             ',"retained_earnings",\'Trial balance\'!$G$2:$G$'
+             + str(na) + "),0)",
+             "zero",
+             "Must be nil. The commonest thing wrong with a hand-built "
+             "trial balance, and the app will say so too -- but here it "
+             "costs a minute instead of an import."),
+            ("Pipeline rows whose sku is not on Items",
+             f"=SUMPRODUCT((Pipeline!F2:F{npl}<>\"\")"
+             f"*(COUNTIF(Items!$A$2:$A${ni},Pipeline!F2:F{npl})=0))",
+             "warn",
+             "They import, but a tender with no item cannot be checked "
+             "against the shelf, which is the point of recording it "
+             "here."),
+            ("Dealings against a customer not on Customers",
+             f"=SUMPRODUCT((Dealings!A2:A{nd}<>\"\")"
+             f"*(COUNTIF(Customers!$A$2:$A${nc},Dealings!A2:A{nd})=0))",
+             "zero",
+             "These are skipped on import: there is nobody to attach "
+             "them to."),
+        ]
     for r, (label, formula, kind, advice) in enumerate(checks, 2):
         ws.cell(r, 1, label).font = BODY
         c = ws.cell(r, 2, formula)

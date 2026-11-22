@@ -33,6 +33,16 @@ MONTH_COL = re.compile(r"^sold[_ ](\d{4})[_-](\d{2})$", re.I)
 TRUE = {"yes", "y", "true", "1", "t"}
 
 
+def _yes(v) -> bool:
+    """A tick box, however somebody wrote it.
+
+    The existing readers spell this out inline; there are ten of them
+    now, and ten copies of the same expression is ten chances for one
+    of them to read "y" differently from the rest.
+    """
+    return _text(v).lower() in TRUE
+
+
 class NoOrganisation(Exception):
     """The caller has no organisation, so there is nowhere to write."""
 
@@ -63,6 +73,19 @@ class Plan:
     invoices: list[dict] = field(default_factory=list)
     machines: list[dict] = field(default_factory=list)
     jobs: list[dict] = field(default_factory=list)
+    # Migration 0009's tables. Each one switches on the part of the
+    # app that reads it, so a workbook with four sheets filled in is
+    # not a broken import -- it is stock and reordering, and the rest
+    # when they have it.
+    accounts: list[dict] = field(default_factory=list)
+    dividends: list[dict] = field(default_factory=list)
+    commitments: list[dict] = field(default_factory=list)
+    bank: list[dict] = field(default_factory=list)
+    employees: list[dict] = field(default_factory=list)
+    pipeline: list[dict] = field(default_factory=list)
+    spend: list[dict] = field(default_factory=list)
+    contacts: list[dict] = field(default_factory=list)
+    dealings: list[dict] = field(default_factory=list)
     problems: list[Problem] = field(default_factory=list)
     months: list[str] = field(default_factory=list)
 
@@ -93,6 +116,15 @@ class Plan:
                 "invoices": len(self.invoices),
                 "machines": len(self.machines),
                 "service_jobs": len(self.jobs),
+                "accounts": len(self.accounts),
+                "dividends": len(self.dividends),
+                "commitments": len(self.commitments),
+                "bank_balances": len(self.bank),
+                "employees": len(self.employees),
+                "pipeline": len(self.pipeline),
+                "marketing_spend": len(self.spend),
+                "contacts": len(self.contacts),
+                "dealings": len(self.dealings),
             },
             "months": [self.months[0], self.months[-1]] if self.months else [],
             "value": round(sum(s["qty"] * s["cost"] for s in self.stock), 2),
@@ -229,6 +261,24 @@ def plan(data: bytes) -> Plan:
         _read_machines(wb["Machines"], p)
     if "Service jobs" in wb.sheetnames:
         _read_jobs(wb["Service jobs"], p)
+
+    # Every one of these is optional, and a workbook written before
+    # they existed is still a valid import. That is why each is guarded
+    # rather than listed in REQUIRED_SHEETS: somebody who filled in a
+    # workbook last month should not be told their file is wrong.
+    for sheet, reader in (
+        ("Trial balance", _read_accounts),
+        ("Dividends", _read_dividends),
+        ("Committed payments", _read_commitments),
+        ("Bank balance", _read_bank),
+        ("Employees", _read_employees),
+        ("Pipeline", _read_pipeline),
+        ("Marketing spend", _read_spend),
+        ("Contacts", _read_contacts),
+        ("Dealings", _read_dealings),
+    ):
+        if sheet in wb.sheetnames:
+            reader(wb[sheet], p)
 
     _cross_check(p)
     return p
@@ -395,6 +445,41 @@ def _read_orders(ws, p):
         })
 
 
+COST_KINDS = ("freight", "duty", "clearing", "inland", "insurance",
+              "bank", "other")
+
+# What people actually write in that column, mapped to the kind the
+# table accepts. The typed words are kept as the note, so mapping
+# "Ocean freight" to `freight` never loses which freight it was.
+#
+# Matched on whole words, not substrings. "Inland transport" contains
+# "port", so a substring match filed every inland charge as clearing
+# -- and because both are real kinds, nothing anywhere said so: the
+# total was right and the breakdown was wrong.
+COST_WORDS = (
+    ("freight", ("freight", "ocean", "sea", "airfreight", "waybill")),
+    ("duty", ("duty", "duties", "customs", "tariff", "levy")),
+    ("inland", ("inland", "transport", "transportation", "trucking",
+                "haulage", "cartage", "delivery")),
+    ("clearing", ("clearing", "clearance", "agent", "port", "handling",
+                  "demurrage", "terminal", "wharfage")),
+    ("insurance", ("insurance", "marine")),
+    ("bank", ("bank", "lc", "swift", "credit")),
+)
+
+ALLOCATE_BY = ("value", "weight", "volume", "qty")
+
+_WORD = re.compile(r"[a-z]+")
+
+
+def _cost_kind(text: str) -> str:
+    words = set(_WORD.findall((text or "").lower()))
+    for kind, names in COST_WORDS:
+        if words & set(names):
+            return kind
+    return "other"
+
+
 def _read_shipments(ws, p):
     h = _headers(ws)
     i = {name: n for n, name in enumerate(h)}
@@ -402,16 +487,25 @@ def _read_shipments(ws, p):
         ref = _text(vals[i.get("shipment_ref", 0)])
         if not ref:
             continue
+        typed = _text(vals[i["cost_type"]]) if "cost_type" in i else ""
+        basis = (_text(vals[i["allocate_by"]]).lower()
+                 if "allocate_by" in i else "value") or "value"
+        if basis not in ALLOCATE_BY:
+            p.problems.append(Problem(
+                "Shipments", r,
+                f"{basis} is not a way to spread a cost. One of: "
+                f"{', '.join(ALLOCATE_BY)}.", fatal=False))
+            continue
         p.shipments.append({
             "ref": ref,
             "po": _text(vals[i["po_number"]]) if "po_number" in i else "",
-            "mode": _text(vals[i["mode"]]) if "mode" in i else "",
+            "mode": _text(vals[i["mode"]]).lower() if "mode" in i else "",
             "etd": _day(vals[i["etd"]]) if "etd" in i else None,
             "eta": _day(vals[i["eta"]]) if "eta" in i else None,
-            "cost_type": _text(vals[i["cost_type"]]) if "cost_type" in i else "",
+            "cost_type": typed,
+            "kind": _cost_kind(typed),
             "amount": _num(vals[i["amount_pkr"]]) if "amount_pkr" in i else 0,
-            "allocate_by": (_text(vals[i["allocate_by"]]).lower()
-                            if "allocate_by" in i else "value") or "value",
+            "allocate_by": basis,
         })
 
 
@@ -532,6 +626,264 @@ def _read_jobs(ws, p):
             "repeat": (_text(vals[i["is_repeat_visit"]]).lower() in TRUE
                        if "is_repeat_visit" in i else False),
             "down": _num(vals[i["downtime_days"]]) if "downtime_days" in i else 0,
+        })
+
+
+# --------------------------------------------------- migration 0009
+#
+# One reader per new sheet. They follow the readers above exactly: a
+# row with nothing in its key columns is a warning rather than a fatal
+# problem, because a half-filled optional sheet should cost that row
+# and not the import.
+
+
+def _read_accounts(ws, p):
+    """The trial balance.
+
+    statement_line is checked against the engine's own list rather
+    than guessed from the account name. Insurance could be an expense
+    or a prepayment, and a product that guesses puts the difference in
+    profit.
+    """
+    from engine.modules.finance import ALL_LINES
+
+    h = _headers(ws)
+    i = {name: n for n, name in enumerate(h)}
+    for r, vals, _i in _rows(ws, h):
+        code = _text(vals[i["account_code"]]) if "account_code" in i else ""
+        line = (_text(vals[i["statement_line"]]).lower()
+                if "statement_line" in i else "")
+        if not code:
+            continue
+        if line not in ALL_LINES:
+            p.problems.append(Problem(
+                "Trial balance", r,
+                f"{line or 'blank'} is not a statement line. One of: "
+                f"{', '.join(ALL_LINES)}.", fatal=False))
+            continue
+        p.accounts.append({
+            "code": code,
+            "name": (_text(vals[i["account_name"]])
+                     if "account_name" in i else code),
+            "line": line,
+            "from": _day(vals[i["period_from"]]) if "period_from" in i else None,
+            "to": _day(vals[i["period_to"]]) if "period_to" in i else None,
+            "opening": _num(vals[i["opening"]]) if "opening" in i else 0.0,
+            "closing": _num(vals[i["closing"]]) if "closing" in i else 0.0,
+        })
+
+
+def _read_dividends(ws, p):
+    h = _headers(ws)
+    i = {name: n for n, name in enumerate(h)}
+    for r, vals, _i in _rows(ws, h):
+        on = _day(vals[i["paid_on"]]) if "paid_on" in i else None
+        amount = _num(vals[i["amount"]]) if "amount" in i else 0.0
+        if not on or not amount:
+            continue
+        kind = (_text(vals[i["kind"]]).lower() if "kind" in i else "dividend")
+        p.dividends.append({
+            "kind": kind if kind in (
+                "dividend", "capital_injection", "other") else "other",
+            "on": on, "amount": amount,
+            "note": _text(vals[i["note"]]) if "note" in i else "",
+        })
+
+
+COMMITMENT_KINDS = ("lc_settlement", "loan_repayment", "payroll", "rent",
+                    "tax", "supplier", "other")
+
+
+def _read_commitments(ws, p):
+    h = _headers(ws)
+    i = {name: n for n, name in enumerate(h)}
+    for r, vals, _i in _rows(ws, h):
+        label = _text(vals[i["label"]]) if "label" in i else ""
+        due = _day(vals[i["due_date"]]) if "due_date" in i else None
+        if not (label and due):
+            p.problems.append(Problem(
+                "Committed payments", r,
+                "Needs a label and a due date.", fatal=False))
+            continue
+        kind = (_text(vals[i["kind"]]).lower() if "kind" in i else "other")
+        if kind not in COMMITMENT_KINDS:
+            p.problems.append(Problem(
+                "Committed payments", r,
+                f"{kind or 'blank'} is not a kind. One of: "
+                f"{', '.join(COMMITMENT_KINDS)}.", fatal=False))
+            continue
+        p.commitments.append({
+            "label": label, "kind": kind, "due": due,
+            "amount": _num(vals[i["amount"]]) if "amount" in i else 0.0,
+            "recurring": _yes(vals[i["is_recurring"]])
+                         if "is_recurring" in i else False,
+            "every": int(_num(vals[i["recurs_every_days"]]))
+                     if "recurs_every_days" in i else 0,
+            "branch": (_text(vals[i["branch_code"]]).upper()
+                       if "branch_code" in i else ""),
+        })
+
+
+def _read_bank(ws, p):
+    h = _headers(ws)
+    i = {name: n for n, name in enumerate(h)}
+    for r, vals, _i in _rows(ws, h):
+        on = _day(vals[i["as_at"]]) if "as_at" in i else None
+        if not on:
+            continue
+        p.bank.append({
+            "as_at": on,
+            "balance": _num(vals[i["balance"]]) if "balance" in i else 0.0,
+            "account": (_text(vals[i["account_label"]])
+                        if "account_label" in i else "") or "Main account",
+        })
+
+
+def _read_employees(ws, p):
+    h = _headers(ws)
+    i = {name: n for n, name in enumerate(h)}
+    for r, vals, _i in _rows(ws, h):
+        no = _text(vals[i["employee_no"]]) if "employee_no" in i else ""
+        name = _text(vals[i["name"]]) if "name" in i else ""
+        if not (no and name):
+            p.problems.append(Problem(
+                "Employees", r, "Needs a number and a name.", fatal=False))
+            continue
+        row = {
+            "no": no, "name": name,
+            "dept": _text(vals[i["department"]]) if "department" in i else "",
+            "branch": (_text(vals[i["branch_code"]]).upper()
+                       if "branch_code" in i else ""),
+            "basic": _num(vals[i["basic_monthly"]])
+                     if "basic_monthly" in i else 0.0,
+            "allow": _num(vals[i["allowances_monthly"]])
+                     if "allowances_monthly" in i else 0.0,
+            "medical": _num(vals[i["medical_monthly"]])
+                       if "medical_monthly" in i else 0.0,
+            "pf_er": _num(vals[i["employer_pf_rate"]])
+                     if "employer_pf_rate" in i else 0.0,
+            "pf_ee": _num(vals[i["employee_pf_rate"]])
+                     if "employee_pf_rate" in i else 0.0,
+            "joined": _day(vals[i["joined"]]) if "joined" in i else None,
+        }
+        # A provident rate typed as 5 for five per cent is the
+        # commonest way to get a payroll figure wrong by twenty times.
+        # Refused rather than divided by a hundred: converting it would
+        # be the importer deciding what somebody meant, and the error
+        # would surface months later in a figure nobody can explain.
+        for key, label in (("pf_er", "Employer"), ("pf_ee", "Employee")):
+            if row[key] > 1:
+                p.problems.append(Problem(
+                    "Employees", r,
+                    f"{label} provident rate is a fraction: five per "
+                    f"cent is 0.05, not {row[key]:g}.", fatal=False))
+                row[key] = 0.0
+        p.employees.append(row)
+
+
+PIPELINE_STAGES = ("lead", "qualified", "quoted", "tender_submitted",
+                   "won", "lost")
+
+
+def _read_pipeline(ws, p):
+    h = _headers(ws)
+    i = {name: n for n, name in enumerate(h)}
+    for r, vals, _i in _rows(ws, h):
+        ref = _text(vals[i["reference"]]) if "reference" in i else ""
+        stage = _text(vals[i["stage"]]).lower() if "stage" in i else ""
+        if not ref:
+            continue
+        if stage not in PIPELINE_STAGES:
+            p.problems.append(Problem(
+                "Pipeline", r,
+                f"{stage or 'blank'} is not a stage. One of: "
+                f"{', '.join(PIPELINE_STAGES)}.", fatal=False))
+            continue
+        p.pipeline.append({
+            "ref": ref, "stage": stage,
+            "customer": (_text(vals[i["customer_code"]]).upper()
+                         if "customer_code" in i else ""),
+            "value": _num(vals[i["value"]]) if "value" in i else 0.0,
+            "close": _day(vals[i["expected_close"]])
+                     if "expected_close" in i else None,
+            "sku": _text(vals[i["sku"]]) if "sku" in i else "",
+            "qty": _num(vals[i["quantity"]]) if "quantity" in i else 0.0,
+            "source": _text(vals[i["source"]]) if "source" in i else "",
+            "owner": _text(vals[i["owner"]]) if "owner" in i else "",
+            "opened": _day(vals[i["opened"]]) if "opened" in i else None,
+            "closed": _day(vals[i["closed"]]) if "closed" in i else None,
+        })
+
+
+def _read_spend(ws, p):
+    h = _headers(ws)
+    i = {name: n for n, name in enumerate(h)}
+    for r, vals, _i in _rows(ws, h):
+        label = _text(vals[i["label"]]) if "label" in i else ""
+        on = _day(vals[i["spent_on"]]) if "spent_on" in i else None
+        if not (label and on):
+            continue
+        p.spend.append({
+            "label": label, "on": on,
+            "category": (_text(vals[i["category"]])
+                         if "category" in i else "") or "other",
+            "amount": _num(vals[i["amount"]]) if "amount" in i else 0.0,
+        })
+
+
+def _read_contacts(ws, p):
+    h = _headers(ws)
+    i = {name: n for n, name in enumerate(h)}
+    for r, vals, _i in _rows(ws, h):
+        name = _text(vals[i["name"]]) if "name" in i else ""
+        if not name:
+            continue
+        customer = (_text(vals[i["customer_code"]]).upper()
+                    if "customer_code" in i else "")
+        supplier = (_text(vals[i["supplier_name"]])
+                    if "supplier_name" in i else "")
+        # Exactly one owner, which the table also enforces. Both or
+        # neither leaves "whose contact is this" with no answer.
+        if bool(customer) == bool(supplier):
+            p.problems.append(Problem(
+                "Contacts", r,
+                "Give either a customer code or a supplier name, not "
+                "both and not neither.", fatal=False))
+            continue
+        p.contacts.append({
+            "customer": customer, "supplier": supplier, "name": name,
+            "role": _text(vals[i["role"]]) if "role" in i else "",
+            "email": _text(vals[i["email"]]) if "email" in i else "",
+            "phone": _text(vals[i["phone"]]) if "phone" in i else "",
+            "whatsapp": _text(vals[i["whatsapp"]]) if "whatsapp" in i else "",
+            "primary": _yes(vals[i["is_primary"]]) if "is_primary" in i else False,
+        })
+
+
+CHANNELS = ("note", "call", "visit", "email", "whatsapp", "meeting")
+
+
+def _read_dealings(ws, p):
+    h = _headers(ws)
+    i = {name: n for n, name in enumerate(h)}
+    for r, vals, _i in _rows(ws, h):
+        code = (_text(vals[i["customer_code"]]).upper()
+                if "customer_code" in i else "")
+        on = _day(vals[i["happened_on"]]) if "happened_on" in i else None
+        summary = _text(vals[i["summary"]], ) if "summary" in i else ""
+        if not (code and on and summary):
+            p.problems.append(Problem(
+                "Dealings", r,
+                "Needs a customer code, a date and a summary.",
+                fatal=False))
+            continue
+        channel = _text(vals[i["channel"]]).lower() if "channel" in i else ""
+        p.dealings.append({
+            "customer": code, "on": on, "summary": summary,
+            "channel": channel if channel in CHANNELS else "note",
+            "next": _text(vals[i["next_step"]]) if "next_step" in i else "",
+            "next_on": _day(vals[i["next_step_on"]])
+                       if "next_step_on" in i else None,
         })
 
 
@@ -784,6 +1136,7 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
     # ---- purchase orders: header once, a line per row
 
     heads, lines = {}, []
+    po_supplier: dict = {}
     for o in p.orders:
         iid, lid = item.get(o["sku"]), loc.get(o["branch"])
         if not iid or not lid:
@@ -799,6 +1152,11 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
                  o["fx"] or 1, o["status"], o["ordered"], o["expected"]),
             ).fetchone()
             heads[o["po"]] = got[0]
+            # Remembered so a shipment can inherit the supplier from
+            # the order it carries: the Shipments sheet names a PO, not
+            # a supplier, because that is what a person has in front of
+            # them.
+            po_supplier[o["po"]] = sup.get(o["supplier"])
             made["orders"] += 1
         lines.append((org, heads[o["po"]], iid, o["qty"], o["price"]))
     if lines:
@@ -887,7 +1245,187 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
             visits)
         made["service_jobs"] = len(visits)
 
+    # ---- shipments, and what landed on top of them
+    #
+    # Read since the sheet was added and never written: `made` carried
+    # a "shipments" key that nothing ever set, so it reported zero and
+    # looked like an empty sheet. The freight module could therefore
+    # only ever be filled by hand.
+    #
+    # The sheet is one row per cost line, so the shipments themselves
+    # are the distinct references in it.
+    if p.shipments:
+        ships = {}
+        for sh in p.shipments:
+            keep = ships.setdefault(sh["ref"], sh)
+            # The first row that names a mode or a date wins; later
+            # rows for the same shipment are its other cost lines and
+            # usually repeat them.
+            for key in ("mode", "etd", "eta", "po"):
+                keep[key] = keep.get(key) or sh.get(key)
+
+        ship_ids = {}
+        for ref, sh in ships.items():
+            got = run.execute(
+                "insert into public.shipments (org_id, reference,"
+                " supplier_id, mode, etd, eta, status)"
+                " values (%s,%s,%s,%s,%s,%s,%s)"
+                " on conflict (org_id, reference) do update set"
+                " mode = excluded.mode, etd = excluded.etd,"
+                " eta = excluded.eta returning id",
+                (org, ref, po_supplier.get(sh.get("po")),
+                 sh.get("mode") or None, sh.get("etd"), sh.get("eta"),
+                 "arrived" if sh.get("eta") and sh["eta"] <= as_of
+                 else "in_transit"),
+            ).fetchone()
+            ship_ids[ref] = got[0]
+
+        # Replaced rather than added to. A cost line has no natural key
+        # -- two freight charges on one shipment are two real rows --
+        # so a re-import would otherwise double every landed cost, and
+        # the uplift on every item with it.
+        run.executemany(
+            "delete from public.shipment_costs where shipment_id = %s",
+            [(i,) for i in ship_ids.values()])
+        run.executemany(
+            "insert into public.shipment_costs (org_id, shipment_id,"
+            " kind, amount, currency, allocate_by, note)"
+            " values (%s,%s,%s,%s,'PKR',%s,%s)",
+            [(org, ship_ids[c["ref"]], c["kind"], c["amount"],
+              c["allocate_by"], c["cost_type"] or None)
+             for c in p.shipments])
+        made["shipments"] = len(ships)
+        made["shipment_costs"] = len(p.shipments)
+
+    # ---- migration 0009's tables
+    #
+    # Each one upserts on the natural key the sheet already has, so a
+    # second import of the same workbook corrects rather than
+    # duplicates. The two without a natural key -- marketing spend and
+    # dealings -- are handled below, and the reason is spelled out
+    # there rather than left as an inconsistency.
+
+    if p.accounts:
+        made["accounts"] = _write(run, org, "public.accounts",
+            ("code", "name", "line", "period_from", "period_to",
+             "opening", "closing"),
+            [(a["code"], a["name"], a["line"],
+              a["from"] or date(as_of.year, 1, 1), a["to"] or as_of,
+              a["opening"], a["closing"]) for a in p.accounts],
+            conflict="(org_id, code, period_to)",
+            update=("name", "line", "period_from", "opening", "closing"))
+
+    if p.dividends:
+        made["dividends"] = _write(run, org, "public.equity_movements",
+            ("kind", "moved_on", "amount", "note"),
+            [(d["kind"], d["on"], d["amount"], d["note"] or None)
+             for d in p.dividends],
+            conflict="(org_id, kind, moved_on, amount)",
+            update=("note",))
+
+    if p.commitments:
+        made["commitments"] = _write(run, org, "public.commitments",
+            ("location_id", "label", "kind", "due_date", "amount",
+             "is_recurring", "recurs_every_days"),
+            [(loc.get(c["branch"]), c["label"], c["kind"], c["due"],
+              c["amount"], c["recurring"], c["every"] or 0)
+             for c in p.commitments],
+            conflict="(org_id, label, due_date)",
+            update=("kind", "amount", "is_recurring",
+                    "recurs_every_days", "location_id"))
+
+    if p.bank:
+        made["bank_balances"] = _write(run, org, "public.cash_balances",
+            ("as_at", "balance", "account_label"),
+            [(b["as_at"], b["balance"], b["account"]) for b in p.bank],
+            conflict="(org_id, as_at, account_label)",
+            update=("balance",))
+
+    if p.employees:
+        made["employees"] = _write(run, org, "public.employees",
+            ("location_id", "employee_no", "name", "department",
+             "basic_monthly", "allowances_monthly", "medical_monthly",
+             "employer_pf_rate", "employee_pf_rate", "joined"),
+            [(loc.get(e["branch"]), e["no"], e["name"], e["dept"],
+              e["basic"], e["allow"], e["medical"], e["pf_er"],
+              e["pf_ee"], e["joined"]) for e in p.employees],
+            conflict="(org_id, employee_no)",
+            update=("name", "department", "basic_monthly",
+                    "allowances_monthly", "medical_monthly",
+                    "employer_pf_rate", "employee_pf_rate"))
+
+    if p.pipeline:
+        made["pipeline"] = _write(run, org, "public.opportunities",
+            ("customer_id", "item_id", "reference", "stage", "value",
+             "expected_close", "quantity", "source", "owner_name",
+             "opened", "closed"),
+            [(cust.get(o["customer"]), item.get(o["sku"]), o["ref"],
+              o["stage"], o["value"], o["close"], o["qty"], o["source"],
+              o["owner"], o["opened"], o["closed"])
+             for o in p.pipeline],
+            conflict="(org_id, reference)",
+            update=("stage", "value", "expected_close", "quantity",
+                    "owner_name", "closed"))
+
+    if p.spend:
+        made["marketing_spend"] = _write(run, org, "public.marketing_spend",
+            ("label", "category", "spent_on", "amount"),
+            [(x["label"], x["category"], x["on"], x["amount"])
+             for x in p.spend],
+            conflict="(org_id, label, spent_on)",
+            update=("category", "amount"))
+
+    if p.contacts:
+        sup_by_name = {n: i for n, i in sup.items()}
+        made["contacts"] = _write(run, org, "public.contacts",
+            ("customer_id", "supplier_id", "name", "role_title", "email",
+             "phone", "whatsapp", "is_primary"),
+            [(cust.get(c["customer"]), sup_by_name.get(c["supplier"]),
+              c["name"], c["role"], c["email"] or None,
+              c["phone"] or None, c["whatsapp"] or None, c["primary"])
+             for c in p.contacts
+             if cust.get(c["customer"]) or sup_by_name.get(c["supplier"])],
+            conflict="(org_id, coalesce(customer_id, supplier_id), name)",
+            update=("role_title", "email", "phone", "whatsapp",
+                    "is_primary"))
+
+    if p.dealings:
+        made["dealings"] = _write(run, org, "public.interactions",
+            ("customer_id", "happened_on", "channel", "summary",
+             "next_step", "next_step_on"),
+            [(cust.get(d["customer"]), d["on"], d["channel"], d["summary"],
+              d["next"] or None, d["next_on"])
+             for d in p.dealings if cust.get(d["customer"])],
+            conflict="(org_id, coalesce(customer_id, supplier_id),"
+                     " happened_on, md5(summary))",
+            update=("channel", "next_step", "next_step_on"))
+
     return made
+
+
+def _write(run, org, table, cols, rows, conflict=None, update=()):
+    """One bulk insert, optionally upserting. Returns rows offered.
+
+    Pulled out because nine tables wanted the same six lines, and six
+    lines copied nine times is nine places for a column list and a
+    value tuple to drift apart.
+
+    `executemany` rather than a statement each: psycopg pipelines it
+    into a few round trips. That is not a micro-optimisation -- this
+    importer once sent 5,218 individual statements and the platform
+    cut the request at two minutes.
+    """
+    if not rows:
+        return 0
+    names = ", ".join(("org_id", *cols))
+    marks = ", ".join(["%s"] * (len(cols) + 1))
+    sql = f"insert into {table} ({names}) values ({marks})"
+    if conflict:
+        sets = ", ".join(f"{c} = excluded.{c}" for c in update)
+        sql += (f" on conflict {conflict} do update set {sets}"
+                if sets else f" on conflict {conflict} do nothing")
+    run.executemany(sql, [(org, *r) for r in rows])
+    return len(rows)
 
 
 # ----------------------------------------------------- what it will do
@@ -1027,6 +1565,64 @@ def _specs(p: Plan):
              sql="select machine_key, model, capital_cost, contract_months,"
                  " expected_monthly_tests, revenue_per_test,"
                  " reagent_margin_pct from public.machines"),
+        dict(name="accounts", label="Trial balance", rows=p.accounts,
+             action="update",
+             key=lambda r: (r["code"], r["to"]),
+             vals=lambda r: (r["name"], r["line"], r["opening"],
+                             r["closing"]),
+             sql="select code, period_to, name, line, opening, closing"
+                 "  from public.accounts"),
+        dict(name="dividends", label="Dividends", rows=p.dividends,
+             action="update",
+             key=lambda r: (r["kind"], r["on"], r["amount"]),
+             vals=lambda r: (r["note"],),
+             sql="select kind, moved_on, amount, coalesce(note, '')"
+                 "  from public.equity_movements"),
+        dict(name="commitments", label="Committed payments",
+             rows=p.commitments, action="update",
+             key=lambda r: (r["label"], r["due"]),
+             vals=lambda r: (r["kind"], r["amount"], bool(r["recurring"]),
+                             r["every"] or 0),
+             sql="select label, due_date, kind, amount, is_recurring,"
+                 "       recurs_every_days from public.commitments"),
+        dict(name="bank", label="Bank balance", rows=p.bank,
+             action="update",
+             key=lambda r: (r["as_at"], r["account"]),
+             vals=lambda r: (r["balance"],),
+             sql="select as_at, account_label, balance"
+                 "  from public.cash_balances"),
+        dict(name="employees", label="Employees", rows=p.employees,
+             action="update",
+             key=lambda r: (r["no"],),
+             vals=lambda r: (r["name"], r["dept"], r["basic"], r["allow"],
+                             r["medical"]),
+             sql="select employee_no, name, department, basic_monthly,"
+                 "       allowances_monthly, medical_monthly"
+                 "  from public.employees"),
+        dict(name="pipeline", label="Pipeline", rows=p.pipeline,
+             action="update",
+             key=lambda r: (r["ref"],),
+             vals=lambda r: (r["stage"], r["value"], r["close"], r["qty"]),
+             sql="select reference, stage, value, expected_close, quantity"
+                 "  from public.opportunities"),
+        dict(name="spend", label="Marketing spend", rows=p.spend,
+             action="update",
+             key=lambda r: (r["label"], r["on"]),
+             vals=lambda r: (r["category"], r["amount"]),
+             sql="select label, spent_on, category, amount"
+                 "  from public.marketing_spend"),
+        dict(name="contacts", label="Contacts", rows=p.contacts,
+             action="update",
+             key=lambda r: (r["name"],),
+             vals=lambda r: (r["role"],),
+             sql="select name, role_title from public.contacts"),
+        dict(name="dealings", label="Dealings", rows=p.dealings,
+             action="update",
+             key=lambda r: (r["customer"], r["on"], r["summary"]),
+             vals=lambda r: (r["channel"],),
+             sql="select upper(c.code), x.happened_on, x.summary, x.channel"
+                 "  from public.interactions x"
+                 "  join public.customers c on c.id = x.customer_id"),
         dict(name="jobs", label="Service jobs", rows=p.jobs,
              action="update",
              key=lambda r: (r["no"],),
