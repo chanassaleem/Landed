@@ -280,3 +280,57 @@ def test_jsonable_handles_an_unprintable_value_without_raising():
         def __repr__(self): return "<odd>"
 
     assert isinstance(mod.jsonable(Odd()), str)
+
+
+# ------------------------------------------ what a screen is for
+#
+# Fourteen screens of figures and nothing saying where to start on any
+# of them is the state this product was in. These check that a
+# fifteenth module cannot ship without saying what somebody does on it
+# and why it is worth the time -- the two things the registry exists
+# to hold next to the dependencies and the engine function.
+
+
+def test_every_module_says_how_it_is_worked():
+    for m in platform.MODULES:
+        assert m.process, f"{m.id} has no stated process"
+        assert len(m.process) >= 3, \
+            f"{m.id} has {len(m.process)} steps; a process is at least three"
+        for step in m.process:
+            assert step.endswith("."), f"{m.id}: {step!r} is not a sentence"
+            assert len(step) > 24, f"{m.id}: {step!r} is too thin to help"
+
+
+def test_every_module_says_why_it_matters():
+    for m in platform.MODULES:
+        assert m.why, f"{m.id} does not say why it matters"
+        assert len(m.why) > 150, \
+            f"{m.id}: {len(m.why)} characters is a label, not a reason"
+
+
+def test_the_reason_is_about_this_trade_not_software_in_general():
+    """A reason that would fit any product is not a reason.
+
+    The check is crude on purpose: it looks for the vocabulary of this
+    business. A module whose justification could be pasted into a
+    generic inventory tool has not been thought about.
+    """
+    trade = (
+        "import", "landed", "freight", "duty", "clearing", "branch",
+        "cash", "credit", "margin", "stock", "analyser", "consumable",
+        "reagent", "customer", "salar", "payroll", "bank", "auditor",
+        "letter of credit", "forecast", "order", "machine", "service",
+        "warranty", "distributor", "hospital",
+    )
+    for m in platform.MODULES:
+        low = m.why.lower()
+        assert any(w in low for w in trade), \
+            f"{m.id}: the reason names nothing specific to this trade"
+
+
+def test_the_process_reaches_the_browser():
+    """The rail payload carries both, so a screen that cannot load its
+    figures can still say what it is for."""
+    for row in platform.catalogue():
+        assert row["process"], row["id"]
+        assert row["why"], row["id"]

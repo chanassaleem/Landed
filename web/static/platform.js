@@ -636,6 +636,64 @@
     return bar;
   }
 
+
+  /* ------------------------------------------- how a screen is worked
+
+     Fourteen screens of figures, and nothing saying where to start on
+     any of them. Most software of this kind is bought by one person
+     and used by another, and the second person is the one who opens a
+     reorder list for the first time with no idea which end of it to
+     work from.
+
+     So each module states two things: the steps somebody works
+     through, in order, and why the screen is worth the time at all.
+     Both come from the registry, so they sit next to the module's
+     dependencies and its engine function rather than in the browser
+     where they would drift.
+
+     Open the first time a person opens that module, shut after that,
+     and the choice is remembered. Collapsed by default would mean
+     nobody ever read it; open by default would push the figures below
+     the fold for somebody who has read it forty times. */
+
+  function howToWorkIt(mod) {
+    const steps = mod.process || [];
+    if (!steps.length && !mod.why) return null;
+
+    const key = `landed.how.${mod.id}`;
+    let seen = false;
+    try { seen = localStorage.getItem(key) === 'seen'; } catch (e) { /**/ }
+
+    const d = el('details', 'how');
+    d.open = !seen;
+    const sum = el('summary', '', 'How this screen is worked');
+    d.append(sum);
+
+    d.addEventListener('toggle', () => {
+      try {
+        if (!d.open) localStorage.setItem(key, 'seen');
+      } catch (e) { /* the disclosure still works without remembering */ }
+    });
+
+    const inner = el('div', 'how-body');
+    if (steps.length) {
+      /* Numbered because they are a sequence. The guidance against
+         decorative numbering is about lists that are not ordered;
+         this one is, and the order is the content. */
+      const ol = el('ol', 'how-steps');
+      steps.forEach((t) => ol.append(el('li', '', t)));
+      inner.append(ol);
+    }
+    if (mod.why) {
+      const why = el('div', 'how-why');
+      why.append(el('h4', '', 'Why it matters'));
+      why.append(el('p', '', mod.why));
+      inner.append(why);
+    }
+    d.append(inner);
+    return d;
+  }
+
   async function open(mod) {
     if (!bind()) return;
     const wrap = host();
@@ -656,6 +714,11 @@
     head.append(el('h2', '', mod.name));
     head.append(el('p', '', `${mod.title}. ${mod.blurb}`));
     sec.append(head);
+    /* After the head, not inside it: the head is a baseline-aligned
+       flex row for the title and its sentence, and a block of steps
+       dropped into it lands beside the title instead of under it. */
+    const how = howToWorkIt(mod);
+    if (how) sec.append(how);
     wrap.append(sec);
 
     const body = el('div');
