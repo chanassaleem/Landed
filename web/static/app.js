@@ -158,6 +158,21 @@ const ICON = {
   cash: 'M2 4.5h12v7H2zM2 7h12M4.5 9.5h2',
   owed: 'M8 2v12M5 4.5h4.5a1.75 1.75 0 010 3.5h-3a1.75 1.75 0 000 3.5H11',
   equipment: 'M3 3h10v7H3zM6 10v3M10 10v3M4.5 13h7M5.5 5.5h5M5.5 7.5h3',
+  /* The modules the rail gained. Drawn as what the thing is, not as a
+     company's logo for it: a ledger is a book, a forecast is a curve,
+     a pipeline is a funnel. */
+  buy: 'M2.5 3.5h2l1.5 7h7M5 13.5h.01M11 13.5h.01M6.5 6.5h7l-1 3h-5',
+  freight: 'M1.5 11h13M2.5 11V7.5l3-1.5 3 1.5V11M9 11V5l3 1v5',
+  demand: 'M2 12l3-4 3 2 3-6 3 3',
+  money: 'M8 2v12M5 4.5h4.5a1.75 1.75 0 010 3.5h-3a1.75 1.75 0 000 3.5H11',
+  sell: 'M2.5 2.5h3l1 2h7l-1.5 5h-6zM5 13h.01M11 13h.01',
+  books: 'M3 2.5h4.5V13H3zM8.5 2.5H13V13H8.5zM3 7.5h4.5M8.5 7.5H13',
+  customers: 'M6 7a2 2 0 100-4 2 2 0 000 4zM2.5 13c0-2 1.6-3.5 3.5-3.5'
+    + 'S9.5 11 9.5 13M11 6.5a1.5 1.5 0 100-3M11.5 13c0-1.3-.4-2.4-1-3',
+  people: 'M6 7a2 2 0 100-4 2 2 0 000 4zM2.5 13c0-2 1.6-3.5 3.5-3.5'
+    + 'S9.5 11 9.5 13M11 6.5a1.5 1.5 0 100-3M11.5 13c0-1.3-.4-2.4-1-3',
+  service: 'M9.5 3a3 3 0 00-4 4L3 9.5 6.5 13 9 10.5a3 3 0 004-4l-2 2-2-2z',
+  intelligence: 'M2 3h12l-4.5 5.5V13L6.5 11V8.5z',
 };
 
 const VIEWS = [
@@ -1287,10 +1302,39 @@ async function boot() {
      five questions instead of one. Its handler outlived it and threw
      on every load, which took the rest of boot() with it. */
 
+  /* The rail is built from the server's module list, not from the
+     VIEWS array above: a module has to exist in engine/platform.py to
+     appear here at all, which is what stops the browser offering a
+     screen the API will refuse. If that call fails the hard-coded rail
+     stands, so a module list that cannot be read costs the new screens
+     and not the whole app. */
+  let listed = null;
+  if (window.LANDED_PLATFORM) {
+    listed = await window.LANDED_PLATFORM.buildRail();
+  }
+  if (!listed) buildNav();
+
   const start = (location.hash || '#today').slice(1);
-  go(VIEWS.some((v) => v.id === start) ? start : 'today');
+  if (start.startsWith('m/') && listed) {
+    const want = start.slice(2);
+    const mod = listed.modules.find((m) => m.id === want);
+    if (mod) { window.LANDED_PLATFORM.open(mod); }
+    else go('today');
+  } else {
+    go(VIEWS.some((v) => v.id === start) ? start : 'today');
+  }
   addEventListener('resize', moveMarker);
 }
+
+/* What the platform layer is allowed to use. Exported rather than
+   duplicated: app.js already decides how money, quantities and months
+   read -- including the crore-and-lakh grouping that follows the
+   country pack -- and a second formatter in another file would drift
+   from this one the day somebody changed a country. */
+window.LANDED = {
+  $, el, go, icon, ICON, empty, money, qty, pct, months, said, plural,
+  get data() { return S.data; },
+};
 
 /* boot() is called at the very bottom of this file, after every
    declaration it reaches. Called from here it ran before the
@@ -1500,18 +1544,11 @@ function renderHome() {
 
 /* --------------------------------------------------------- settings */
 
-const SETTING_COPY = {
-  target_cover_months: ['Cover you aim to hold',
-    'Months of demand. Below this a line is due to be reordered.'],
-  excess_cover_months: ['Standing-still limit',
-    'Above this much cover, the money is counted as not working. For '
-    + 'goods with a long lead time this has to be well above the cover '
-    + 'target, or nothing you hold is ever the right amount.'],
-  cost_of_capital_annual: ['Cost of money, a year',
-    'What holding stock costs you. 0.22 means 22 per cent.'],
-  cash_buffer: ['Cash you will not spend',
-    'The floor. No order is suggested that would eat into it.'],
-};
+/* The settings screen used to carry its own copy for four of the
+   engine's numbers. There are twenty-three, and each now arrives from
+   /api/settings with its label, its bounds and the module it moves --
+   one description, on the server, beside the validation that enforces
+   it. Two copies would have disagreed the first time a bound changed. */
 
 async function renderSettings() {
   const host = $('settings');
@@ -1625,25 +1662,79 @@ async function renderSettings() {
     + `${d.branches.map((b) => b.code).join(', ')}.`));
   form.append(who);
 
-  const pol = el('div', 'detail-block');
-  pol.append(el('h3', null, 'How your figures are read'));
+  /* Every number the engine reads, from the server's own description
+     of them, rather than from a list here. Four used to be shown and
+     nineteen were unreachable: settable in the dataclass, invisible in
+     the product, which is hard-coded in every way that matters to
+     somebody who disagrees with a figure.
+
+     Split in two. The eight on the first screen are the ones a person
+     can answer without being told how a module works -- what money
+     costs you a year, what an engineer's hour is worth. The other
+     fifteen are real settings with real effects, and putting a
+     forecast's level-smoothing constant beside the minimum wage would
+     make the page unreadable for the nine people in ten who never
+     need it. */
+  const fields = d.fields || {};
   const inputs = {};
-  Object.keys(SETTING_COPY).forEach((key) => {
-    const [label, note] = SETTING_COPY[key];
-    const lab = el('label', null, label);
+
+  const numberField = (key, spec, host) => {
+    const lab = el('label', null, spec.label || key);
     lab.htmlFor = `set-${key}`;
     const i = el('input');
     i.type = 'number';
-    i.step = 'any';
+    i.step = spec.kind === 'int' ? '1' : 'any';
+    i.min = spec.lo;
+    i.max = spec.hi;
     i.id = `set-${key}`;
     i.value = (d.settings || {})[key] ?? d.defaults[key];
     i.placeholder = String(d.defaults[key]);
     inputs[key] = i;
-    pol.append(lab);
-    pol.append(i);
-    pol.append(el('p', 'drop-sub', note));
-  });
+    host.append(lab);
+    host.append(i);
+    if (spec.help) host.append(el('p', 'drop-sub', spec.help));
+  };
+
+  const plain = Object.keys(fields).filter((k) => !fields[k].advanced);
+  const deep = Object.keys(fields).filter((k) => fields[k].advanced);
+
+  const pol = el('div', 'detail-block');
+  pol.append(el('h3', null, 'How your figures are read'));
+  plain.forEach((k) => numberField(k, fields[k], pol));
   form.append(pol);
+
+  if (deep.length) {
+    const more = el('details', 'advanced');
+    const sum = el('summary', null,
+      `Advanced — ${deep.length} more, grouped by what they move`);
+    more.append(sum);
+    more.append(el('p', 'drop-sub',
+      'Each of these changes a figure somewhere. None of them is '
+      + 'hidden because it is dangerous; they are here because the '
+      + 'question each one asks only makes sense once you know which '
+      + 'module is asking it.'));
+
+    /* Grouped by the module each one moves, and labelled with that
+       module's own name, so somebody who disagrees with a number on a
+       screen can find the setting behind it by looking for the screen
+       rather than by guessing at a term. */
+    const titles = {};
+    ((window.LANDED_MODULES || {}).modules || []).forEach((m) => {
+      titles[m.id] = m.title;
+    });
+    const groups = {};
+    deep.forEach((k) => {
+      const g = fields[k].module || 'other';
+      (groups[g] = groups[g] || []).push(k);
+    });
+    Object.keys(groups).sort().forEach((g) => {
+      const block = el('div', 'detail-block');
+      block.append(el('h3', null, titles[g] || said(g)));
+      groups[g].forEach((k) => numberField(k, fields[k], block));
+      more.append(block);
+    });
+    form.append(more);
+  }
 
   const err = el('p', 'gate-error');
   err.hidden = true;

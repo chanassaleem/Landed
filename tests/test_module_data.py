@@ -272,9 +272,9 @@ def seeded():
                 (org, khi, label, kind, TODAY + timedelta(days=due), amount,
                  recurring, every))
 
-        # A trial balance that balances, so the module's three checks
-        # have something to pass rather than something to complain
-        # about.
+        # A trial balance that actually balances, and whose reserves
+        # and cash flow tie. Worked backwards from the three checks
+        # rather than invented: see the two closing figures below.
         for code, name, line, opening, closing in (
                 ("4000", "Sales", "revenue", 0, 48_000_000),
                 ("5000", "Cost of sales", "cogs", 0, 31_200_000),
@@ -291,14 +291,22 @@ def seeded():
                  14_000_000, 20_500_000),
                 ("1510", "Depreciation to date", "accumulated_depreciation",
                  3_000_000, 4_250_000),
+                # Closing creditors and closing reserves are not
+                # round numbers because they are not free: they are
+                # what makes all three checks tie. Reserves must move
+                # by profit after tax less the dividend
+                # (8.2 + 2.8 - 1.0 = 10.0), and creditors are then
+                # whatever balances the sheet against assets of 37.57.
+                # A seed whose books do not balance cannot prove the
+                # checks are right -- only that they fire.
                 ("2000", "Trade creditors", "payables",
-                 6_300_000, 7_070_000),
+                 6_300_000, 12_270_000),
                 ("2100", "Bank facility", "short_term_debt",
                  8_000_000, 9_000_000),
                 ("2200", "Tax payable", "tax_payable", 900_000, 1_300_000),
                 ("3000", "Share capital", "equity", 5_000_000, 5_000_000),
                 ("3100", "Retained earnings", "retained_earnings",
-                 8_200_000, 14_000_000)):
+                 8_200_000, 10_000_000)):
             c.execute(
                 "insert into public.accounts (org_id, code, name, line,"
                 " period_from, period_to, opening, closing)"
@@ -564,6 +572,13 @@ def test_books_balance_and_the_checks_are_reported(facts):
     assert data["checks"], "the statements came back with no checks"
     assert data["dividends"] == 1_000_000
     assert data["period"]["to"] == TODAY.isoformat()
+
+    # All three pass, which is the only way to know the checks are
+    # right rather than merely loud. The seed balances, its reserves
+    # move by profit less the dividend, and the indirect cash flow
+    # lands on the movement in cash.
+    failed = [c["name"] for c in data["checks"] if not c["passed"]]
+    assert not failed, f"the seeded books do not tie: {failed}"
 
 
 def test_freight_prices_the_uplift_on_the_invoice(facts):

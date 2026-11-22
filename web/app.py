@@ -1545,3 +1545,332 @@ def remove_member(user_id: str,
             {"ok": False,
              "error": "That person was not removed. Only an owner can."}, 403)
     return JSONResponse({"ok": True, "was": got[0]})
+
+
+# ──────────────────────────────────────────────── adding one record
+#
+# Everything in this product arrived one of two ways until now: a
+# spreadsheet import, or not at all. That is fine for the first
+# afternoon and wrong forever after -- a customer rings, a machine is
+# placed, a letter of credit is agreed, and re-importing a workbook to
+# record one of them is not a workflow anybody follows.
+#
+# One declarative table rather than a route per record. Each entry
+# names the columns it accepts and how to clean them, so adding a
+# record type is a dict entry and not another forty lines that have
+# their own ideas about whitespace and missing values. The policies
+# decide who may write; this decides what a column can contain.
+
+
+# The labels in RECORDS below appear inside a sentence -- "X is
+# needed", "X has to be a date" -- so they are nouns. The labels a
+# person reads on the form itself are in web/static/records.js and are
+# free to be conversational: "What it is" is a good field label and a
+# bad sentence subject, and "What it is is needed" was what came out
+# of sharing one string between the two.
+
+
+def _txt(v, limit=200):
+    s = str(v or "").strip()
+    return s[:limit] or None
+
+
+def _upper(v, limit=40):
+    s = _txt(v, limit)
+    return s.upper() if s else None
+
+
+def _lower(v, limit=200):
+    s = _txt(v, limit)
+    return s.lower() if s else None
+
+
+def _number(v):
+    if v in (None, ""):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        raise ValueError("has to be a number")
+
+
+def _whole(v):
+    n = _number(v)
+    return None if n is None else int(n)
+
+
+def _rate(v):
+    """A fraction, not a percentage.
+
+    Somebody typing 5 for five per cent is the commonest way to get a
+    payroll figure wrong by twenty times, so anything above 1 is
+    refused rather than quietly divided by a hundred -- which would be
+    the software deciding what they meant.
+    """
+    n = _number(v)
+    if n is None:
+        return None
+    if not (0 <= n <= 1):
+        raise ValueError("is a fraction between 0 and 1, so five per "
+                         "cent is 0.05")
+    return n
+
+
+def _flag(v):
+    return bool(v)
+
+
+def _day(v):
+    if v in (None, ""):
+        return None
+    from datetime import date as _date
+
+    try:
+        return _date.fromisoformat(str(v)[:10])
+    except ValueError:
+        raise ValueError("has to be a date, as YYYY-MM-DD")
+
+
+def _one_of(*allowed):
+    def check(v):
+        s = _lower(v, 40)
+        if s is None:
+            return None
+        if s not in allowed:
+            raise ValueError(f"has to be one of {', '.join(allowed)}")
+        return s
+    return check
+
+
+# name -> (table, {column: (label, cleaner, required)}, extra SQL bits)
+RECORDS: dict[str, dict] = {
+    "item": {
+        "table": "public.items",
+        "cols": {
+            "sku": ("Code", _txt, True),
+            "description": ("A description", _txt, True),
+            "category": ("Category", _txt, False),
+            "uom": ("Unit", _txt, False),
+            "barcode": ("Barcode", _txt, False),
+            "lead_time_days": ("Lead time", _number, False),
+            "lead_time_days_std": ("Lead-time variation", _number, False),
+            "is_clinical_critical": ("Clinically critical", _flag, False),
+        },
+        "unique": "sku",
+    },
+    "location": {
+        "table": "public.locations",
+        "cols": {
+            "code": ("Code", _upper, True),
+            "name": ("Name", _txt, True),
+            "city": ("City", _txt, False),
+            "is_warehouse": ("Warehouse", _flag, False),
+        },
+        "unique": "code",
+    },
+    "supplier": {
+        "table": "public.suppliers",
+        "cols": {
+            "code": ("Code", _upper, True),
+            "name": ("Name", _txt, True),
+            "country": ("Country", _upper, False),
+            "currency": ("Currency", _upper, False),
+            "lead_time_days": ("Lead time", _number, False),
+        },
+        "unique": "code",
+    },
+    "customer": {
+        "table": "public.customers",
+        "cols": {
+            "code": ("Code", _upper, True),
+            "name": ("Name", _txt, True),
+            "city": ("City", _txt, False),
+            "payment_terms_days": ("Terms", _whole, False),
+            "credit_limit": ("Credit limit", _number, False),
+            "is_public_sector": ("Public sector", _flag, False),
+            "is_intercompany": ("Inter-company", _flag, False),
+            "contact_name": ("Contact", _txt, False),
+            "contact_phone": ("Phone", _txt, False),
+            "contact_email": ("Email", _lower, False),
+        },
+        "unique": "code",
+    },
+    "commitment": {
+        "table": "public.commitments",
+        "cols": {
+            "label": ("A label", _txt, True),
+            "kind": ("Kind", _one_of("lc_settlement", "loan_repayment",
+                                     "payroll", "rent", "tax", "supplier",
+                                     "other"), True),
+            "due_date": ("Due", _day, True),
+            "amount": ("Amount", _number, True),
+            "is_recurring": ("Recurring", _flag, False),
+            "recurs_every_days": ("Recurrence", _whole, False),
+        },
+    },
+    "cash_balance": {
+        "table": "public.cash_balances",
+        "cols": {
+            "as_at": ("A date", _day, True),
+            "balance": ("Balance", _number, True),
+            "account_label": ("Account", _txt, False),
+        },
+        # A balance for a day already recorded is a correction, not a
+        # second account.
+        "upsert": ("org_id, as_at, account_label", ("balance",)),
+    },
+    "employee": {
+        "table": "public.employees",
+        "cols": {
+            "employee_no": ("Number", _txt, True),
+            "name": ("Name", _txt, True),
+            "department": ("Department", _txt, False),
+            "basic_monthly": ("Basic", _number, True),
+            "allowances_monthly": ("Allowances", _number, False),
+            "medical_monthly": ("Medical", _number, False),
+            "employer_pf_rate": ("Provident, employer", _rate, False),
+            "employee_pf_rate": ("Provident, employee", _rate, False),
+            "joined": ("Joined", _day, False),
+        },
+        "unique": "employee_no",
+    },
+    "opportunity": {
+        "table": "public.opportunities",
+        "cols": {
+            "reference": ("Reference", _txt, True),
+            "stage": ("Stage", _one_of("lead", "qualified", "quoted",
+                                       "tender_submitted", "won", "lost"),
+                      True),
+            "value": ("Value", _number, True),
+            "expected_close": ("Expected to close", _day, False),
+            "quantity": ("Quantity", _number, False),
+            "owner_name": ("Owner", _txt, False),
+            "source": ("Source", _txt, False),
+        },
+        # Looked up by the code a person knows rather than by an id
+        # they would have to find first.
+        "lookup": {
+            "customer_code": ("customer_id", "public.customers", "code"),
+            "item_sku": ("item_id", "public.items", "sku"),
+        },
+        "unique": "reference",
+    },
+    "interaction": {
+        "table": "public.interactions",
+        "cols": {
+            "happened_on": ("A date", _day, True),
+            "channel": ("Channel", _one_of("note", "call", "visit", "email",
+                                       "whatsapp", "meeting"), False),
+            "summary": ("A summary", _txt, True),
+            "next_step": ("Next step", _txt, False),
+            "next_step_on": ("Next-step date", _day, False),
+        },
+        "lookup": {
+            "customer_code": ("customer_id", "public.customers", "code"),
+        },
+        "author": "created_by",
+    },
+}
+
+
+@app.post("/api/record/{kind}")
+async def add_record(kind: str, request: Request,
+                     claims: Claims = Depends(require)) -> JSONResponse:
+    """Write one record, or say in words why not.
+
+    Every refusal is a sentence naming the field. A person filling in a
+    form should never be shown a constraint name, and a unique
+    violation in particular has an obvious meaning worth stating --
+    that code is already in use -- which `items_org_id_sku_key` does
+    not convey.
+    """
+    from engine.db.supabase import NotConfigured, database
+
+    spec = RECORDS.get(kind)
+    if spec is None:
+        raise HTTPException(404, f"There is no {kind} record to add.")
+
+    body = await request.json()
+    values, problems = {}, []
+    for col, (label, clean, required) in spec["cols"].items():
+        raw = body.get(col)
+        try:
+            got = clean(raw)
+        except ValueError as exc:
+            problems.append(f"{label} {exc}.")
+            continue
+        if got is None and required:
+            problems.append(f"{label} is needed.")
+            continue
+        if got is not None:
+            values[col] = got
+    if problems:
+        return JSONResponse({"ok": False, "problems": problems}, 400)
+
+    try:
+        with database().as_user(claims.user_id) as conn:
+            org = conn.execute(
+                "select id from public.organisations"
+                " order by created_at limit 1").fetchone()
+            if not org:
+                return JSONResponse(
+                    {"ok": False,
+                     "problems": ["Name your business first."]}, 409)
+            values["org_id"] = org[0]
+
+            # Codes a person knows, turned into ids they do not have to.
+            for field, (col, table, key) in (spec.get("lookup") or {}).items():
+                raw = _txt(body.get(field))
+                if not raw:
+                    continue
+                found = conn.execute(
+                    f"select id from {table} where upper({key}) = %s",
+                    (raw.upper(),)).fetchone()
+                if not found:
+                    return JSONResponse(
+                        {"ok": False,
+                         "problems": [f"No record here has the code "
+                                      f"{raw}."]}, 400)
+                values[col] = found[0]
+
+            if spec.get("author"):
+                values[spec["author"]] = claims.user_id
+
+            cols = list(values)
+            marks = ", ".join(["%s"] * len(cols))
+            sql = (f"insert into {spec['table']} ({', '.join(cols)})"
+                   f" values ({marks})")
+            if spec.get("upsert"):
+                target, updates = spec["upsert"]
+                sets = ", ".join(f"{c} = excluded.{c}" for c in updates)
+                sql += f" on conflict ({target}) do update set {sets}"
+            sql += " returning id"
+            try:
+                row = conn.execute(sql, tuple(values[c] for c in cols)
+                                   ).fetchone()
+            except Exception as exc:
+                text = str(exc)
+                if "duplicate key" in text or "unique" in text.lower():
+                    field = spec.get("unique")
+                    shown = values.get(field) if field else None
+                    return JSONResponse(
+                        {"ok": False,
+                         "problems": [f"{shown} is already in use."
+                                      if shown else
+                                      "That record already exists."]}, 409)
+                if "violates row-level security" in text:
+                    return JSONResponse(
+                        {"ok": False,
+                         "problems": ["Your role cannot add this."]}, 403)
+                if "violates check constraint" in text:
+                    return JSONResponse(
+                        {"ok": False,
+                         "problems": ["One of those values is not one "
+                                      "this app allows."]}, 400)
+                return JSONResponse(
+                    {"ok": False, "problems": ["That could not be saved."],
+                     "detail": text[:200]}, 400)
+    except NotConfigured:
+        return JSONResponse({"error": "the database is not configured"}, 503)
+
+    return JSONResponse({"ok": True, "id": str(row[0]), "kind": kind})

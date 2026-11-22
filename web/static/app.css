@@ -1582,3 +1582,449 @@ td.warn { color: var(--attention); }
   color: var(--text);
   font: 400 13.5px var(--sans);
 }
+
+/* ─────────────────────────────────────────────────────── the platform
+   Thirteen modules share one screen, so the furniture on it is defined
+   once. Nothing here introduces a colour: the four chromatic tokens
+   already name the four states money can be in, and a fifth hue for
+   "this is a note" would say that a note is a state of the business.
+
+   The figures above a table are tiles rather than the existing decks.
+   A deck is a decision -- it has a verdict and something to do about
+   it. A tile is a measurement, and dressing a measurement as a
+   decision is how a dashboard ends up with twelve things that all look
+   urgent. */
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 1px;
+  margin: 0 0 14px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.tile { padding: 11px 13px 10px; background: var(--surface); }
+
+.tile-v {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  line-height: 1.15;
+}
+
+.tile-k {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+/* A note is prose the engine attached to a figure, so it is set as
+   prose: full measure, no icon, no tint. The rule down its left is
+   enough to say it is not the table. */
+.note {
+  margin: 0 0 10px;
+  padding: 8px 0 8px 11px;
+  border-left: 2px solid var(--rule);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+  max-width: 78ch;
+}
+
+.note-warn { border-left-color: var(--attention); color: var(--text); }
+.note-quiet { font-size: 12px; color: var(--text-3); }
+
+.loading { padding: 40px 0; font-size: 12.5px; color: var(--text-3); }
+
+/* The three checks on the statements. They lead the screen, so they
+   are the only place a pass reads as plainly as a failure: a cash flow
+   that does not tie means a working-capital movement has been missed,
+   and that is not a footnote. */
+.checks {
+  display: grid;
+  gap: 1px;
+  margin: 0 0 14px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.check {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 9px;
+  padding: 10px 13px;
+  background: var(--surface);
+}
+
+.check-mark {
+  font-size: 13px;
+  line-height: 1.3;
+  text-align: center;
+  color: var(--transit);
+}
+
+.check.bad .check-mark { color: var(--urgent); }
+.check-name { font-size: 12.5px; font-weight: 500; color: var(--text); }
+.check-why { margin-top: 2px; font-size: 12px; color: var(--text-2); }
+
+.check-gap {
+  margin-top: 3px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--urgent);
+}
+
+/* The rail now groups thirteen destinations, so it needs headings. Set
+   small and quiet: a heading that competes with the items under it
+   makes the list harder to scan, not easier. */
+.rail-section {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 10px;
+  margin-top: 2px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* A module that is licensed but has no figures yet, and one that is
+   not licensed at all, are different answers with different remedies.
+   Marked rather than hidden, and marked faintly: a rail full of
+   warnings on a new account reads as a broken product. */
+.rail-dot {
+  margin-left: auto;
+  padding-right: 8px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity var(--t-fast);
+}
+
+.rail[data-pinned='1'] .rail-dot,
+.rail:hover .rail-dot { opacity: 1; }
+
+/* A customer past their credit limit. The point of a limit is being
+   told before the next order rather than after, so the row is marked
+   where somebody reading forty of them will see it. */
+tbody tr.st-out td:first-child {
+  box-shadow: inset 2px 0 0 var(--urgent);
+}
+
+@media (max-width: 760px) {
+  .tiles { grid-template-columns: repeat(2, 1fr); }
+  .tile-v { font-size: 15.5px; }
+}
+
+/* The explanation column carries the engine's own words for a week or
+   a row, so it is the one that absorbs the slack. Without it a table
+   of eight numbers stretches its first column across half the screen
+   and the figures end up in two unrelated clusters. */
+#v-m td[data-label='What is in it'] {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.45;
+  min-width: 22ch;
+}
+
+#v-m table td.num, #v-m table th.num { width: 1%; white-space: nowrap; }
+
+/* A dialog, because what is being added is almost always in service of
+   what is already on screen: a contact while looking at a customer, a
+   commitment while looking at the cash weeks. Navigating to a form
+   page loses the context that prompted it. */
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.modal-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(14, 17, 22, 0.44);
+}
+
+.modal-card {
+  position: relative;
+  width: min(560px, 100%);
+  max-height: min(86vh, 760px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  box-shadow: 0 18px 48px rgba(14, 17, 22, 0.18);
+  overflow: hidden;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.modal-head h2 { margin: 0; font-size: 14px; font-weight: 600; flex: 1; }
+
+.modal-blurb {
+  margin: 0;
+  padding: 11px 16px 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+  max-width: 62ch;
+}
+
+.modal-form { overflow: auto; padding: 14px 16px 0; }
+
+.fld-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
+}
+
+/* The fields that carry a sentence rather than a value get the full
+   width; cramming a note or a description into half a row makes it
+   unreadable for no gain. */
+.fld-textarea, .fld-check { grid-column: 1 / -1; }
+
+.fld label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.fld input, .fld select, .fld textarea {
+  width: 100%;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+}
+
+.fld input:focus, .fld select:focus, .fld textarea:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: -1px;
+  border-color: var(--focus);
+}
+
+.fld textarea { resize: vertical; line-height: 1.5; }
+
+.fld-check label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text);
+}
+
+.fld-check input { width: auto; }
+
+/* The hint is where a field explains itself. Several of these carry
+   the reason a figure matters -- that a lead time which slips three
+   weeks is normal here, that a fraction is not a percentage -- and
+   that is the moment somebody is deciding what to type. */
+.fld-hint {
+  margin: 4px 0 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-3);
+}
+
+.modal-problems {
+  margin: 0 0 12px;
+  padding: 9px 11px;
+  border-left: 2px solid var(--urgent);
+  background: var(--urgent-bg);
+  border-radius: 0 var(--r) var(--r) 0;
+}
+
+.modal-problems p { margin: 0; font-size: 12.5px; color: var(--text); }
+.modal-problems p + p { margin-top: 4px; }
+
+.modal-foot {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px 0;
+  background: var(--surface);
+  border-top: 1px solid var(--rule-2);
+}
+
+.modal-foot button {
+  padding: 7px 14px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  cursor: pointer;
+}
+
+.modal-foot button.primary {
+  color: var(--surface);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+.modal-foot button:disabled { opacity: 0.55; cursor: default; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+
+.actions button {
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  cursor: pointer;
+}
+
+.actions button:hover { border-color: var(--text-3); }
+
+@media (max-width: 620px) {
+  .fld-grid { grid-template-columns: 1fr; }
+}
+
+/* People, and the settings that were hidden. */
+.invite-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.invite-form input {
+  flex: 1 1 220px;
+  min-width: 180px;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+}
+
+.invite-form select {
+  /* Shrinkable rather than greedy: the role descriptions are long
+     enough that a 320px floor pushed the button onto its own line,
+     where a full-width black bar reads as the page's main action
+     rather than as one field's. */
+  flex: 2 1 240px;
+  min-width: 0;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+}
+
+.invite-form button {
+  flex: 0 0 auto;
+  padding: 7px 14px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--surface);
+  background: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: var(--r);
+  cursor: pointer;
+}
+
+.invite-form button:disabled { opacity: 0.55; cursor: default; }
+
+.change-list { display: grid; }
+
+.change-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 13px;
+  font-size: 12.5px;
+}
+
+.change-row + .change-row { border-top: 1px solid var(--rule-2); }
+.change-row > span:first-child { flex: 1; color: var(--text-2); }
+
+.change-row select {
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+}
+
+.change-row button {
+  padding: 5px 11px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  cursor: pointer;
+}
+
+/* Fifteen of the twenty-three settings are behind this. Closed by
+   default and plainly labelled, because the question each one asks
+   only makes sense once you know which module is asking it. */
+details.advanced {
+  margin-top: 6px;
+  border-top: 1px solid var(--rule);
+  padding-top: 12px;
+}
+
+details.advanced > summary {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+}
+
+details.advanced > summary::-webkit-details-marker { display: none; }
+
+details.advanced > summary::before {
+  content: '▸ ';
+  color: var(--text-3);
+}
+
+details.advanced[open] > summary::before { content: '▾ '; }
