@@ -553,14 +553,33 @@ def test_preview_reports_what_it_would_do_and_writes_nothing(
     signed_in, monkeypatch
 ):
     """The whole reason preview exists. An import is not undoable, so
-    the first anyone hears of what it does must be before it does it."""
+    the first anyone hears of what it does must be before it does it.
+
+    Preview reads now -- it compares the file against what is already
+    recorded, which is the question somebody actually has before
+    committing. So this pins the property that matters rather than the
+    one that used to stand in for it: every statement preview issues is
+    a read. Asserting that it opens no transaction at all would forbid
+    the comparison, and "no connection" was only ever a proxy for "no
+    writes".
+    """
     client, _ = signed_in
-    touched = []
+    statements = []
+
+    class Result:
+        def fetchall(self): return []
+        def fetchone(self): return None
+
+    class Conn:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+        def execute(self, sql, args=None):
+            statements.append(" ".join(str(sql).split()).lower())
+            return Result()
 
     class DB:
-        def as_user(self, _uid):
-            touched.append(1)
-            raise AssertionError("preview must not open a transaction")
+        def as_user(self, _uid): return Conn()
 
     import engine.db.supabase as sup
     monkeypatch.setattr(sup, "database", lambda: DB())
@@ -574,7 +593,19 @@ def test_preview_reports_what_it_would_do_and_writes_nothing(
     assert d["ok"] is True
     assert d["counts"]["items"] == 60
     assert d["counts"]["branches"] == 4
-    assert not touched
+
+    assert statements, "preview made no comparison against what is recorded"
+    for sql in statements:
+        assert sql.startswith("select"), f"preview wrote: {sql[:80]}"
+        for verb in ("insert ", "update ", "delete ", "truncate ",
+                     "drop ", "alter "):
+            assert verb not in sql, f"preview wrote: {sql[:80]}"
+
+    # And the comparison reached the response, so a future change that
+    # silently stops producing it fails here rather than showing an
+    # empty panel.
+    assert "against_recorded" in d
+    assert d["against_recorded"]["tables"]
 
 
 def test_a_file_that_is_not_a_workbook_is_refused_in_words(signed_in):

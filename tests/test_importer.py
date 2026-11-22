@@ -24,7 +24,7 @@ import pytest
 
 psycopg = pytest.importorskip("psycopg")
 
-from engine.importer import BadWorkbook, Plan, apply, plan
+from engine.importer import BadWorkbook, Plan, apply, inspect, plan
 
 DSN = os.environ.get("LANDED_TEST_DSN", "")
 pytestmark = pytest.mark.skipif(not DSN, reason="no LANDED_TEST_DSN")
@@ -376,3 +376,124 @@ def test_an_invoice_for_an_unknown_customer_is_fatal(book):
     p = plan(buf.getvalue())
     assert not p.ok
     assert any("GHOST" in x.message for x in p.fatal)
+
+
+# ------------------------------------- what the upload will actually do
+#
+# A preview that counts rows says how big the file is. What somebody
+# needs before pressing commit is whether this is the same file again.
+
+
+def test_an_untouched_organisation_sees_everything_as_new(book, org):
+    conn, cur, _ = org
+    got = inspect(cur, plan(book))
+    assert got["is_replay"] is False
+    assert got["totals"]["unchanged"] == 0
+    assert got["totals"]["new"] > 0
+
+
+def test_the_same_file_twice_is_recognised_as_a_replay(book, org):
+    """The common case, and it deserves a sentence rather than ten rows
+    of counts for the person to work out themselves."""
+    conn, cur, _ = org
+    apply(cur, plan(book))
+    conn.commit()
+
+    got = inspect(cur, plan(book))
+    assert got["is_replay"] is True
+    assert got["totals"]["new"] == 0
+    assert got["totals"]["changed"] == 0
+    assert "already recorded" in got["headline"]
+    for table in got["tables"]:
+        assert table["new"] == 0, f"{table['label']} saw new rows on a replay"
+        assert table["changed"] == 0, f"{table['label']} saw changes"
+
+
+def test_a_corrected_row_is_found_and_the_difference_is_shown(book, org):
+    """A corrected workbook is mostly unchanged rows with a couple of
+    edits buried in it. Counting them is not enough -- the screen has
+    to be able to say which field moved and from what."""
+    conn, cur, org_id = org
+    apply(cur, plan(book))
+    conn.commit()
+
+    cur.execute(
+        "update public.items set lead_time_days = lead_time_days + 11"
+        " where org_id = %s and sku = (select min(sku) from public.items"
+        "                               where org_id = %s)",
+        (org_id, org_id))
+    conn.commit()
+
+    got = inspect(cur, plan(book))
+    assert got["is_replay"] is False
+    items = [t for t in got["tables"] if t["name"] == "items"][0]
+    assert items["changed"] == 1
+    assert items["unchanged"] == 59
+    assert items["new"] == 0
+    example = items["examples"][0]
+    assert example["recorded"] != example["incoming"]
+
+
+def test_a_decimal_and_a_float_are_not_a_difference(book, org):
+    """Numbers come out of Postgres as Decimal and out of a spreadsheet
+    as float. Compared directly, every row reads as changed and the
+    preview becomes noise nobody reads."""
+    conn, cur, _ = org
+    apply(cur, plan(book))
+    conn.commit()
+
+    got = inspect(cur, plan(book))
+    orders = [t for t in got["tables"] if t["name"] == "orders"][0]
+    assert orders["changed"] == 0
+    assert orders["unchanged"] == orders["incoming"]
+
+
+def test_the_opening_ledger_can_only_ever_be_skipped(book, org):
+    """The ledger is append-only, so a recorded opening movement is
+    never updated. A different opening quantity is a new fact about
+    stock, and correcting it is a count, not an import."""
+    conn, cur, _ = org
+    got = inspect(cur, plan(book))
+    stock = [t for t in got["tables"] if t["name"] == "stock"][0]
+    assert stock["action"] == "skip"
+
+
+def test_a_replay_writes_no_movements_and_says_so(book, org):
+    """Before this, a second import raised a UniqueViolation from the
+    ledger's own index. Nothing was doubled, because the transaction
+    aborted -- but what reached the person was the text of a Postgres
+    error, and what reached the log looked like a bug rather than
+    somebody clicking twice."""
+    conn, cur, org_id = org
+    first = apply(cur, plan(book))
+    conn.commit()
+    assert first["movements"] > 0
+
+    second = apply(cur, plan(book))
+    conn.commit()
+    assert second["movements"] == 0
+    assert second["movements_already_recorded"] == first["movements"]
+
+    cur.execute("select count(*) from public.stock_movement"
+                " where org_id = %s", (org_id,))
+    assert cur.fetchone()[0] == first["movements"]
+
+
+def test_a_replay_does_not_double_what_is_on_order(book, org):
+    """po_lines had no constraint and no conflict clause. It did not
+    double only because the ledger aborted the transaction first --
+    luck, not design. The ordered quantity feeds the stock position and
+    the order sequencing, so doubling it would surface as the engine
+    recommending against stock that was never on order."""
+    conn, cur, org_id = org
+    apply(cur, plan(book))
+    conn.commit()
+    cur.execute("select count(*), sum(qty) from public.po_lines"
+                " where org_id = %s", (org_id,))
+    first = cur.fetchone()
+
+    apply(cur, plan(book))
+    conn.commit()
+    cur.execute("select count(*), sum(qty) from public.po_lines"
+                " where org_id = %s", (org_id,))
+    assert cur.fetchone() == first

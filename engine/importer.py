@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from decimal import Decimal
 
 REQUIRED_SHEETS = ("Branches", "Items", "Stock")
 OPTIONAL_SHEETS = ("Sales history", "On order", "Shipments", "Suppliers",
@@ -729,11 +730,42 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
         # Stock arrives as a ledger entry, not a balance. A stored
         # balance is a second number that can disagree with the
         # movements behind it, and then nobody can say which is wrong.
+        # `do nothing`, against the unique index on (org_id,
+        # client_ref). The ledger is append-only, so a replayed opening
+        # movement must not be written twice and must not be edited
+        # either -- ignoring it is the only correct outcome.
+        #
+        # Without the clause a second import raised a UniqueViolation
+        # that aborted the whole transaction. Nothing was doubled, so
+        # the figures were safe, but what reached the person was the
+        # text of a Postgres error and what reached the log looked like
+        # a bug rather than somebody clicking twice.
+        #
+        # The count is what was actually inserted, not what was
+        # offered, so a replay reports zero movements rather than
+        # claiming to have written rows it skipped.
+        before = run.execute(
+            "select count(*) from public.stock_movement"
+            " where org_id = %s and client_ref like 'import:opening:%%'",
+            (org,)).fetchone()[0]
         run.executemany(
             "insert into public.stock_movement (org_id, item_id, "
             "location_id, qty, unit_cost, reason, occurred_at, client_ref) "
-            "values (%s, %s, %s, %s, %s, 'opening', %s, %s)", movements)
-        made["movements"] = len(movements)
+            "values (%s, %s, %s, %s, %s, 'opening', %s, %s) "
+            # The index is partial -- `where client_ref is not null`,
+            # because only imported rows carry one -- and a partial
+            # unique index can only arbitrate a conflict when the
+            # statement repeats its predicate. Without the `where` the
+            # database answers that no constraint matches, which reads
+            # like a missing index rather than a missing clause.
+            "on conflict (org_id, client_ref) where client_ref is not null "
+            "do nothing", movements)
+        after = run.execute(
+            "select count(*) from public.stock_movement"
+            " where org_id = %s and client_ref like 'import:opening:%%'",
+            (org,)).fetchone()[0]
+        made["movements"] = after - before
+        made["movements_already_recorded"] = len(movements) - (after - before)
 
     history = []
     for h in p.history:
@@ -770,9 +802,19 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
             made["orders"] += 1
         lines.append((org, heads[o["po"]], iid, o["qty"], o["price"]))
     if lines:
+        # Against the natural key migration 0010 adds. Without it this
+        # table had no constraint and no conflict clause, and did not
+        # double only because the ledger aborted the transaction first
+        # -- luck, not design. A workbook with an empty stock sheet
+        # would have doubled every ordered quantity, which feeds the
+        # stock position and the order sequencing, so it would have
+        # surfaced as the engine recommending against stock that was
+        # never on order.
         run.executemany(
             "insert into public.po_lines (org_id, po_id, item_id, qty, "
-            "unit_price) values (%s, %s, %s, %s, %s)", lines)
+            "unit_price) values (%s, %s, %s, %s, %s) "
+            "on conflict (org_id, po_id, item_id) do update set "
+            "qty = excluded.qty, unit_price = excluded.unit_price", lines)
 
     # ---- customers, and what they owe
 
@@ -846,3 +888,232 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
         made["service_jobs"] = len(visits)
 
     return made
+
+
+# ----------------------------------------------------- what it will do
+#
+# A preview that counts rows tells somebody how big their file is. It
+# does not tell them the thing they actually want to know before
+# pressing commit, which is whether this is the same file again.
+#
+# So every table is compared against what is already recorded, on the
+# natural key the import matches on, and each incoming row comes back
+# as one of three things: new, already recorded and identical, or
+# already recorded and different. The third is the one worth seeing --
+# a corrected workbook is mostly unchanged rows with a handful of edits
+# buried in it, and "42 unchanged, 2 changed" is a different decision
+# from "44 unchanged".
+
+
+def _norm(v):
+    """One comparable form, so a float and a Decimal are not 'changed'.
+
+    Numbers out of Postgres are Decimal, out of a spreadsheet are
+    float, and comparing them directly reports every row as different.
+    Four places because that is what the columns hold.
+    """
+    if v is None or v == "":
+        return None
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return round(float(v), 4)
+    if isinstance(v, Decimal):
+        return round(float(v), 4)
+    if isinstance(v, (date, datetime)):
+        return v.isoformat()[:10]
+    return str(v).strip()
+
+
+def _cmp(row: tuple) -> tuple:
+    return tuple(_norm(v) for v in row)
+
+
+@dataclass(frozen=True)
+class TableDiff:
+    name: str
+    label: str
+    incoming: int
+    new: int
+    unchanged: int
+    changed: int
+    action: str
+    # A few examples, so the screen can show what changed rather than
+    # only how much. Capped because this goes down a wire.
+    examples: tuple = ()
+
+    @property
+    def existing(self) -> int:
+        return self.unchanged + self.changed
+
+    def as_dict(self) -> dict:
+        return {
+            "name": self.name, "label": self.label,
+            "incoming": self.incoming, "new": self.new,
+            "unchanged": self.unchanged, "changed": self.changed,
+            "existing": self.existing, "action": self.action,
+            "examples": list(self.examples),
+        }
+
+
+# Each table: how to key an incoming row, how to key and read a
+# recorded one, and which fields decide "changed". `action` says what
+# apply() will do with a row that already exists, so the preview
+# promises exactly what the commit does.
+def _specs(p: Plan):
+    return (
+        dict(name="branches", label="Branches", rows=p.branches,
+             action="update",
+             key=lambda r: (r["code"].upper(),),
+             vals=lambda r: (r["name"], r["city"]),
+             sql="select upper(code), name, city from public.locations"),
+        dict(name="suppliers", label="Suppliers", rows=p.suppliers,
+             action="update",
+             key=lambda r: (supplier_code(r["name"]),),
+             vals=lambda r: (r["name"],),
+             sql="select code, name from public.suppliers"),
+        dict(name="items", label="Items", rows=p.items,
+             action="update",
+             key=lambda r: (r["sku"],),
+             vals=lambda r: (r["description"], r["category"], r["lead"],
+                             r["lead_std"], bool(r["critical"])),
+             sql="select sku, description, category, lead_time_days,"
+                 " lead_time_days_std, is_clinical_critical"
+                 " from public.items"),
+        # The ledger is append-only, so a recorded opening movement can
+        # only ever be skipped. There is no such thing as a changed one:
+        # a different opening quantity is a new fact about stock, and
+        # correcting it is a count, not an import.
+        dict(name="stock", label="Opening stock", rows=p.stock,
+             action="skip",
+             key=lambda r: (f"import:opening:{r['sku']}:{r['branch']}",),
+             vals=lambda r: (),
+             sql="select client_ref from public.stock_movement"
+                 " where client_ref is not null"),
+        dict(name="history", label="Sales history", rows=p.history,
+             action="update",
+             key=lambda r: (r["sku"], r["branch"].upper(), r["period"]),
+             vals=lambda r: (r["qty"],),
+             sql="select i.sku, upper(l.code), d.period, d.quantity"
+                 "  from public.demand_history d"
+                 "  join public.items i on i.id = d.item_id"
+                 "  join public.locations l on l.id = d.location_id"),
+        dict(name="orders", label="On order", rows=p.orders,
+             action="update",
+             key=lambda r: (r["po"], r["sku"]),
+             vals=lambda r: (r["qty"], r["price"]),
+             sql="select po.po_number, i.sku, pl.qty, pl.unit_price"
+                 "  from public.po_lines pl"
+                 "  join public.purchase_orders po on po.id = pl.po_id"
+                 "  join public.items i on i.id = pl.item_id"),
+        dict(name="customers", label="Customers", rows=p.customers,
+             action="update",
+             key=lambda r: (r["code"],),
+             vals=lambda r: (r["name"], r["city"], bool(r["public"]),
+                             r["terms"]),
+             sql="select code, name, city, is_public_sector,"
+                 " payment_terms_days from public.customers"),
+        dict(name="invoices", label="Invoices", rows=p.invoices,
+             action="update",
+             key=lambda r: (r["no"],),
+             vals=lambda r: (r["amount"], r["paid"], r["due"]),
+             sql="select invoice_no, amount, amount_paid, due_date"
+                 " from public.invoices"),
+        dict(name="machines", label="Placed equipment", rows=p.machines,
+             action="update",
+             key=lambda r: (r["key"],),
+             vals=lambda r: (r["model"], r["capital"], r["months"],
+                             r["tests"], r["per_test"], r["margin"]),
+             sql="select machine_key, model, capital_cost, contract_months,"
+                 " expected_monthly_tests, revenue_per_test,"
+                 " reagent_margin_pct from public.machines"),
+        dict(name="jobs", label="Service jobs", rows=p.jobs,
+             action="update",
+             key=lambda r: (r["no"],),
+             vals=lambda r: (r["hours"], r["billed"], r["parts"],
+                             r["charged"], bool(r["warranty"]),
+                             bool(r["repeat"])),
+             sql="select job_no, labour_hours, labour_hours_billed,"
+                 " parts_cost, parts_charged, is_warranty, is_repeat_visit"
+                 " from public.service_jobs"),
+    )
+
+
+MAX_EXAMPLES = 8
+
+
+def inspect(conn, p: Plan) -> dict:
+    """Compare the plan against what is recorded, table by table.
+
+    Read-only, and it takes the same connection the commit will use, so
+    what it reports is what that caller can actually see: under
+    row-level security a table this role may not read comes back as
+    nothing recorded, which is the truthful answer for them.
+
+    A table whose query fails is reported as entirely new rather than
+    raising. The preview is advice; being unable to give it must not
+    stop somebody importing, and the commit's own conflict clauses are
+    what actually prevent a duplicate.
+    """
+    run = conn.cursor() if hasattr(conn, "cursor") else conn
+
+    tables, totals = [], {"new": 0, "unchanged": 0, "changed": 0}
+    for spec in _specs(p):
+        rows = spec["rows"]
+        recorded: dict[tuple, tuple] = {}
+        try:
+            n_key = len(spec["key"](rows[0])) if rows else 1
+            for got in run.execute(spec["sql"]).fetchall():
+                recorded[_cmp(got[:n_key])] = _cmp(got[n_key:])
+        except Exception:
+            recorded = {}
+
+        new = unchanged = changed = 0
+        examples: list[dict] = []
+        for r in rows:
+            key = _cmp(spec["key"](r))
+            if key not in recorded:
+                new += 1
+                continue
+            if _cmp(spec["vals"](r)) == recorded[key]:
+                unchanged += 1
+                continue
+            changed += 1
+            if len(examples) < MAX_EXAMPLES:
+                examples.append({
+                    "key": " / ".join(str(k) for k in key),
+                    "recorded": list(recorded[key]),
+                    "incoming": list(_cmp(spec["vals"](r))),
+                })
+
+        tables.append(TableDiff(
+            name=spec["name"], label=spec["label"], incoming=len(rows),
+            new=new, unchanged=unchanged, changed=changed,
+            action=spec["action"], examples=tuple(examples),
+        ))
+        totals["new"] += new
+        totals["unchanged"] += unchanged
+        totals["changed"] += changed
+
+    # The sentence worth putting at the top of the screen. A full
+    # replay is the common case -- somebody clicking twice, or
+    # re-uploading to check -- and it deserves to be said plainly
+    # rather than left for the person to work out from ten rows of
+    # counts.
+    if totals["new"] == 0 and totals["changed"] == 0:
+        headline = ("Every row in this file is already recorded. "
+                    "Committing it will change nothing.")
+    elif totals["unchanged"] == 0 and totals["changed"] == 0:
+        headline = "Nothing in this file is recorded yet."
+    else:
+        headline = (
+            f"{totals['new']:,} new, {totals['changed']:,} changed and "
+            f"{totals['unchanged']:,} already recorded. Committing "
+            f"updates the changed rows and leaves the rest alone.")
+
+    return {
+        "headline": headline,
+        "totals": totals,
+        "is_replay": totals["new"] == 0 and totals["changed"] == 0,
+        "tables": [t.as_dict() for t in tables],
+    }

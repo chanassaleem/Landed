@@ -419,15 +419,41 @@ async def _read_upload(request: Request) -> bytes:
 @app.post("/api/import/preview")
 async def import_preview(request: Request,
                          claims: Claims = Depends(require)) -> JSONResponse:
-    """Read the workbook and report what it would do. Writes nothing."""
-    from engine.importer import BadWorkbook, plan
+    """Read the workbook and report what it would do. Writes nothing.
+
+    Two halves. The plan is what is in the file and whether it is
+    coherent; the inspection is how it compares to what is already
+    recorded. The second is what somebody actually wants before
+    pressing commit, because the file they are holding is very often
+    one they have already imported -- a second click, or a corrected
+    version with two edits buried in five thousand unchanged rows.
+
+    The comparison needs the database, so it is skipped when the plan
+    is not worth committing anyway, and a failure to produce it never
+    blocks the import: the commit's own conflict clauses are what
+    actually prevent a duplicate, and this is advice.
+    """
+    from engine.importer import BadWorkbook, inspect, plan
 
     data = await _read_upload(request)
     try:
         p = plan(data)
     except BadWorkbook as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, 400)
-    return JSONResponse(p.as_dict())
+
+    payload = p.as_dict()
+    if p.ok:
+        from engine.db.supabase import NotConfigured, database
+
+        try:
+            with database().as_user(claims.user_id) as conn:
+                payload["against_recorded"] = inspect(conn, p)
+        except NotConfigured:
+            payload["against_recorded"] = None
+        except Exception as exc:
+            payload["against_recorded"] = None
+            payload["against_recorded_error"] = str(exc)[:200]
+    return JSONResponse(payload)
 
 
 @app.post("/api/import/commit")
