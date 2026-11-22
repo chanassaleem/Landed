@@ -40,7 +40,11 @@ create table public.item_machines (
   item_id    uuid not null references public.items (id) on delete cascade,
   machine_id uuid not null references public.machines (id) on delete cascade,
   created_at timestamptz not null default clock_timestamp(),
-  primary key (item_id, machine_id)
+  -- org_id leads the key the way it leads every other composite key
+  -- in this schema, so an org-scoped scan uses the primary index
+  -- rather than a second one. item_id is already org-bound by its
+  -- foreign key, so this neither widens nor narrows what is unique.
+  primary key (org_id, item_id, machine_id)
 );
 
 create index item_machines_machine_idx
@@ -48,11 +52,23 @@ create index item_machines_machine_idx
 
 alter table public.item_machines enable row level security;
 
+-- The same gate public.items carries, because this is a fact about an
+-- item and a licence that does not include stock should not let
+-- somebody read the catalogue sideways through its fitment.
 create policy im_read on public.item_machines for select
-  using (org_id in (select app.org_ids()));
-create policy im_write on public.item_machines for insert
-  with check ((select app.has_role(org_id, array['owner','manager','staff'])));
+  using (org_id in (select app.org_ids())
+         and (select app.has_module(org_id, 'stock')));
+
+-- Owner and manager, matching public.items. Fitment is catalogue data,
+-- not a movement, and it is easier to widen this later than to
+-- discover it was too wide.
+create policy im_insert on public.item_machines for insert
+  with check ((select app.has_role(org_id, array['owner','manager'])));
+
+-- No update policy: every column is either part of the key or set by
+-- the database. Changing which machine a reagent fits is a delete and
+-- an insert, which is also what it is in the world.
 create policy im_delete on public.item_machines for delete
-  using ((select app.has_role(org_id, array['owner','manager','staff'])));
+  using ((select app.has_role(org_id, array['owner','manager'])));
 
 commit;
