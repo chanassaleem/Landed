@@ -91,6 +91,14 @@ class Module:
     # rather than the feature it is. One paragraph, specific to this
     # trade: an importer's reasons are not a retailer's.
     why: str = ""
+    # Why a group-level module cannot be narrowed to one branch. The
+    # browser carried a single sentence for all six -- "a statement
+    # belongs to a company, one bank balance serves the lot, and a
+    # transfer has two ends" -- which meant that on any one of them at
+    # least two of the three reasons were about some other screen. The
+    # data-quality module was explaining itself in terms of bank
+    # balances.
+    whole_business: str = ""
 
     def ready(self, present: set[str]) -> bool:
         return all(r in present for r in self.needs)
@@ -221,6 +229,9 @@ MODULES: tuple[Module, ...] = (
              "that dips here is an order that does not get placed there. "
              "Seeing it eleven weeks out is the difference between "
              "rescheduling a payment and asking for one.",
+        whole_business=
+                 "One bank balance serves the whole business, so a Karachi "
+                 "cash position would be a number nobody holds.",
     ),
     Module(
         id="money",
@@ -245,6 +256,9 @@ MODULES: tuple[Module, ...] = (
              "somebody else, is the cheapest money in the business to get "
              "back — no import, no freight, no duty, no wait. It is also the "
              "figure most often wrong, because nobody enjoys the job.",
+        whole_business=
+                 "An ageing book is read against one credit limit per "
+                 "customer, and a customer buys from more than one branch.",
     ),
     Module(
         id="sell",
@@ -291,6 +305,9 @@ MODULES: tuple[Module, ...] = (
              "the auditor. If the stock figure here and the stock figure on "
              "the Stock screen differ, one of them is wrong, and this is the "
              "screen that tells you.",
+        whole_business=
+                 "A statement belongs to a company. There is no Lahore "
+                 "balance sheet unless somebody keeps one.",
     ),
     Module(
         id="customers",
@@ -333,6 +350,9 @@ MODULES: tuple[Module, ...] = (
              "cash view it is the floor under every other decision: an order "
              "that can only be funded by being late on salaries is not a "
              "funded order.",
+        whole_business=
+                 "Payroll is run and paid once, and the rates are set by the "
+                 "province rather than by the branch.",
     ),
     Module(
         id="equipment",
@@ -407,6 +427,10 @@ MODULES: tuple[Module, ...] = (
              "that says which assertions are thin. Software that quietly "
              "computes over a bad landed cost is worse than software "
              "that stops, because the first kind is believed.",
+        whole_business=
+                 "A duplicate or a contradiction is usually between two "
+                 "branches, so narrowing to one would hide exactly the "
+                 "faults worth finding.",
     ),
     Module(
         id="intelligence",
@@ -430,6 +454,10 @@ MODULES: tuple[Module, ...] = (
              "for. This is the one that reads them all and says which three "
              "things are worth the attention today, with the money attached "
              "so the order is arguable rather than asserted.",
+        whole_business=
+                 "The ranking reads every module at once, and the transfer "
+                 "that avoids an import is only visible from above both "
+                 "branches.",
     ),
 )
 
@@ -496,6 +524,7 @@ def catalogue(present: set[str] | None = None,
             # cannot load its figures can still say what it is for.
             "process": list(m.process),
             "why": m.why,
+            "whole_business": m.whole_business,
             "engine": m.engine,
             "section": m.section,
             "group_level": m.group_level,

@@ -1606,16 +1606,27 @@ td.warn { color: var(--attention); }
 
 .tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  /* Wider minimum, so a ten-tile module wraps to two full rows of
+     five rather than nine across and one orphan. */
+  grid-template-columns: repeat(auto-fit, minmax(176px, 1fr));
   gap: 1px;
   margin: 0 0 14px;
-  background: var(--rule);
+  /* The hairlines are the tiles' own edges, not this background
+     showing through the gaps. Through-the-gap only works while the
+     last row is full, and Books has ten tiles: the leftovers rendered
+     as a grey slab the width of four missing tiles. Same fault, same
+     fix as the home cards. */
+  background: var(--surface);
   border: 1px solid var(--rule);
   border-radius: var(--r-lg);
   overflow: hidden;
 }
 
-.tile { padding: 11px 13px 10px; background: var(--surface); }
+.tile {
+  padding: 11px 13px 10px;
+  outline: 0.5px solid var(--rule);
+  background: var(--surface);
+}
 
 .tile-v {
   font-size: 17px;

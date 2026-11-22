@@ -334,3 +334,28 @@ def test_the_process_reaches_the_browser():
     for row in platform.catalogue():
         assert row["process"], row["id"]
         assert row["why"], row["id"]
+
+
+def test_every_whole_business_module_says_why_it_is_whole_business():
+    """One sentence used to serve all six: "a statement belongs to a
+    company, one bank balance serves the lot, and a transfer has two
+    ends". On any given screen at least two thirds of that was about a
+    different screen, and the data-quality module explained itself in
+    terms of bank balances."""
+    for m in platform.MODULES:
+        if not m.group_level:
+            continue
+        assert m.whole_business, f"{m.id} does not say why"
+        assert len(m.whole_business) > 60, \
+            f"{m.id}: too short to be a reason"
+
+    said = [m.whole_business for m in platform.MODULES if m.group_level]
+    assert len(set(said)) == len(said), \
+        "two modules give the same reason, which means one of them is "\
+        "borrowing the other's"
+
+
+def test_the_reason_reaches_the_browser():
+    for row in platform.catalogue():
+        if row["group_level"]:
+            assert row["whole_business"], row["id"]

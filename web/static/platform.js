@@ -171,6 +171,23 @@
       notes: ['blocked_note'],
     },
     buy: {
+      views: [
+        { id: 'all', label: 'Everything',
+          blurb: 'Every line policy asked for.' },
+        { id: 'now', label: 'Place this week',
+          blurb: 'Funded, and short enough that waiting costs more '
+            + 'than ordering.',
+          keep: (r) => String(r.verdict).toLowerCase() === 'place_now' },
+        { id: 'refused', label: 'Cash will not fund',
+          blurb: 'Policy wants it and the next thirteen weeks cannot '
+            + 'pay for it. Finance it, split it, or accept the '
+            + 'stockout deliberately.',
+          keep: (r) => String(r.verdict).toLowerCase() === 'unfunded' },
+        { id: 'transfer', label: 'Move instead',
+          blurb: 'Another branch holds it above its own policy level, '
+            + 'so this needs no import at all.',
+          keep: (r) => String(r.verdict).toLowerCase() === 'by_transfer' },
+      ],
       cols: [
         ['item_key', 'SKU', 'text'],
         ['description', 'Item', 'text'],
@@ -192,6 +209,22 @@
       notes: ['caveat', 'engine_caveat', 'reason'],
     },
     freight: {
+      views: [
+        { id: 'all', label: 'Everything',
+          blurb: 'Every shipment, landed or not.' },
+        { id: 'landed', label: 'Costed',
+          blurb: 'Goods recorded against them, so the uplift on each '
+            + 'line is real.',
+          keep: (r) => r.goods_value > 0 },
+        { id: 'stranded', label: 'No goods yet',
+          blurb: 'Carrying costs with nothing to spread them across. '
+            + 'Either still at sea, or the receipt has not been '
+            + 'entered.',
+          keep: (r) => !(r.goods_value > 0) },
+        { id: 'water', label: 'In transit',
+          blurb: 'Shipped and not yet arrived.',
+          keep: (r) => String(r.status).toLowerCase() !== 'arrived' },
+      ],
       cols: [
         ['reference', 'Shipment', 'text'],
         ['supplier', 'Supplier', 'text'],
@@ -212,6 +245,23 @@
       notes: ['awaiting_note'],
     },
     demand: {
+      views: [
+        { id: 'all', label: 'Everything',
+          blurb: 'Every line with a forecast.' },
+        { id: 'measured', label: 'Accuracy known',
+          blurb: 'Enough history to measure the error on a holdout, '
+            + 'so the safety stock behind it means something.',
+          keep: (r) => r.mape !== null && r.mape !== undefined },
+        { id: 'unmeasured', label: 'Too little history',
+          blurb: 'Forecast from what there is, with no honest way to '
+            + 'say how wrong it might be. Decide these by hand.',
+          keep: (r) => r.mape === null || r.mape === undefined },
+        { id: 'lumpy', label: 'Lumpy or intermittent',
+          blurb: 'Sells in bursts, so an average is the wrong tool '
+            + 'and the method changes accordingly.',
+          keep: (r) => ['lumpy', 'intermittent', 'erratic']
+            .includes(String(r.demand_class).toLowerCase()) },
+      ],
       cols: [
         ['item_key', 'SKU', 'text'],
         ['location_id', 'Branch', 'text'],
@@ -229,6 +279,17 @@
       ],
     },
     cash: {
+      views: [
+        { id: 'all', label: 'Everything',
+          blurb: 'All thirteen weeks.' },
+        { id: 'under', label: 'Below the floor',
+          blurb: 'Weeks where the closing balance breaks the buffer. '
+            + 'These are what Ordering is refusing orders against.',
+          keep: (r) => r.closing < 0 },
+        { id: 'out', label: 'Money going out',
+          blurb: 'Weeks with a net outflow.',
+          keep: (r) => r.net < 0 },
+      ],
       cols: [
         ['week', 'Week', 'num'],
         ['starts', 'From', 'date'],
@@ -250,6 +311,21 @@
       notes: ['caveats'],
     },
     money: {
+      views: [
+        { id: 'all', label: 'Everything',
+          blurb: 'Every customer with a balance.' },
+        { id: 'overdue', label: 'Overdue',
+          blurb: 'Past their own terms.',
+          keep: (r) => r.overdue > 0 },
+        { id: 'late', label: 'Habitually late',
+          blurb: 'Late on average rather than late this once. The '
+            + 'ones to check before extending more credit.',
+          keep: (r) => r.weighted_avg_days_overdue > 30 },
+        { id: 'big', label: 'Worst exposure',
+          blurb: 'More than a tenth of the open book sitting with one '
+            + 'customer.',
+          keep: (r) => r.share_of_book > 0.1 },
+      ],
       cols: [
         ['customer_name', 'Customer', 'text'],
         ['invoice_count', 'Invoices', 'num'],
@@ -270,6 +346,16 @@
       ],
     },
     sell: {
+      views: [
+        { id: 'all', label: 'Everything',
+          blurb: 'Every invoice raised.' },
+        { id: 'open', label: 'Not yet paid',
+          blurb: 'Still outstanding, whatever the terms say.',
+          keep: (r) => r.outstanding > 0 },
+        { id: 'part', label: 'Part paid',
+          blurb: 'Something came in and something did not.',
+          keep: (r) => r.amount_paid > 0 && r.outstanding > 0 },
+      ],
       cols: [
         ['invoice_no', 'Invoice', 'text'],
         ['customer', 'Customer', 'text'],
@@ -288,6 +374,20 @@
       notes: ['note'],
     },
     customers: {
+      views: [
+        { id: 'all', label: 'Everything',
+          blurb: 'Everyone you deal with.' },
+        { id: 'owing', label: 'Owing you',
+          blurb: 'Carrying a balance right now.',
+          keep: (r) => r.outstanding > 0 },
+        { id: 'over', label: 'Over their limit',
+          blurb: 'Past the credit limit you set. Worth knowing before '
+            + 'the next order, not after the invoice ages.',
+          keep: (r) => r.credit_limit > 0 && r.outstanding > r.credit_limit },
+        { id: 'quiet', label: 'Not heard from',
+          blurb: 'No dealing recorded against them.',
+          keep: (r) => !r.last_contact },
+      ],
       cols: [
         ['code', 'Code', 'text'],
         ['name', 'Customer', 'text'],
@@ -308,6 +408,19 @@
       flag: (r) => (r.over_limit ? 'flagged' : ''),
     },
     equipment: {
+      views: [
+        { id: 'all', label: 'Everything',
+          blurb: 'Every machine placed.' },
+        { id: 'behind', label: 'Will not repay',
+          blurb: 'At the current pull, the capital does not come back '
+            + 'inside the contract. Renegotiate the volume or recover '
+            + 'the instrument.',
+          keep: (r) => ['behind', 'at_risk', 'never']
+            .includes(String(r.status).toLowerCase()) },
+        { id: 'unrecovered', label: 'Under half recovered',
+          blurb: 'Capital still sitting in somebody else\'s building.',
+          keep: (r) => r.recovery_pct !== null && r.recovery_pct < 0.5 },
+      ],
       cols: [
         ['machine_key', 'Machine', 'text'],
         ['model', 'Model', 'text'],
@@ -327,6 +440,19 @@
       ],
     },
     service: {
+      views: [
+        { id: 'all', label: 'Everything',
+          blurb: 'Every machine with jobs against it.' },
+        { id: 'unbilled', label: 'Work never billed',
+          blurb: 'Hours or parts that went out and were never charged '
+            + 'for.',
+          keep: (r) => r.labour_hours_unbilled > 0
+            || r.parts_uncharged > 0 },
+        { id: 'repeat', label: 'Coming back',
+          blurb: 'Repeat visits, which means the first one did not fix '
+            + 'the fault.',
+          keep: (r) => r.repeat_visits > 0 },
+      ],
       cols: [
         ['machine_key', 'Machine', 'text'],
         ['jobs', 'Jobs', 'num'],
@@ -347,6 +473,18 @@
       ],
     },
     intelligence: {
+      views: [
+        { id: 'all', label: 'Everything',
+          blurb: 'Every open tender and account.' },
+        { id: 'risk', label: 'Cannot supply',
+          blurb: 'Won or not, the stock will not be there in time. '
+            + 'Lost for want of goods rather than for want of price.',
+          keep: (r) => !!r.supply && String(r.supply).toLowerCase()
+            .includes('cannot') },
+        { id: 'likely', label: 'Better than even',
+          blurb: 'Odds above half, by what has actually closed.',
+          keep: (r) => r.odds > 0.5 },
+      ],
       cols: [
         ['opportunity_id', 'Reference', 'text'],
         ['customer_name', 'Customer', 'text'],
@@ -368,6 +506,17 @@
       notes: ['caveat', 'reason'],
     },
     quality: {
+      views: [
+        { id: 'all', label: 'Everything',
+          blurb: 'Every check that found something.' },
+        { id: 'blocks', label: 'Makes a figure wrong',
+          blurb: 'A number on another screen is wrong because of this. '
+            + 'Fix these before acting on anything.',
+          keep: (r) => String(r.severity).toLowerCase() === 'blocks' },
+        { id: 'warns', label: 'Worth looking at',
+          blurb: 'Not wrong, but not safe to lean on either.',
+          keep: (r) => String(r.severity).toLowerCase() === 'warns' },
+      ],
       cols: [
         ['severity', 'How bad', 'state'],
         ['dataset', 'Where', 'said'],
@@ -389,6 +538,16 @@
       flag: (r) => (r.severity === 'blocks' ? 'flagged' : ''),
     },
     people: {
+      views: [
+        { id: 'all', label: 'Everything',
+          blurb: 'Everyone on the payroll.' },
+        { id: 'taxed', label: 'Paying tax',
+          blurb: 'Above the threshold this year.',
+          keep: (r) => r.tax_monthly > 0 },
+        { id: 'untaxed', label: 'Below the threshold',
+          blurb: 'Earning under the point where income tax starts.',
+          keep: (r) => !(r.tax_monthly > 0) },
+      ],
       key: 'slips',
       cols: [
         ['name', 'Name', 'text'],
@@ -603,10 +762,14 @@
     const bar = el('div', 'scope');
 
     if (!mod.can_narrow && !payload.can_narrow) {
+      /* The module's own reason, from the registry. One sentence used
+         to serve all six -- a statement, a bank balance and a
+         transfer -- so on any given screen at least two thirds of it
+         was about a different screen, and Checks explained itself in
+         terms of bank balances. */
       bar.append(el('span', 'scope-note',
-        'Whole business. This one cannot be shown for a single branch: '
-        + 'a statement belongs to a company, one bank balance serves '
-        + 'the lot, and a transfer has two ends.'));
+        `Whole business. ${mod.whole_business
+          || 'This one cannot be shown for a single branch.'}`));
       return bar;
     }
 
