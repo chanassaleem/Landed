@@ -219,7 +219,7 @@ def evaluate(
 
     for index, c, amount in expand_commitments(commitments, as_of, count):
         pay_commit[index] += amount
-        lines[index].append(f"{c.label}: {money(amount)}")
+        lines[index].append(f"{c.label}: {money(amount, thresholds.currency, thresholds.number_scale)}")
 
     weekly_service = _service_weekly_run_rate(jobs, as_of)
     if weekly_service > 0:
@@ -255,11 +255,11 @@ def evaluate(
 
         week_lines = list(lines[i])
         if receipts_ar[i] > 0:
-            week_lines.insert(0, f"Collections expected: {money(receipts_ar[i])}")
+            week_lines.insert(0, f"Collections expected: {money(receipts_ar[i], thresholds.currency, thresholds.number_scale)}")
         if receipts_reagent[i] > 0:
-            week_lines.insert(1, f"Reagent pull: {money(receipts_reagent[i])}")
+            week_lines.insert(1, f"Reagent pull: {money(receipts_reagent[i], thresholds.currency, thresholds.number_scale)}")
         if pay_service[i] > 0:
-            week_lines.append(f"Service parts run rate: {money(pay_service[i])}")
+            week_lines.append(f"Service parts run rate: {money(pay_service[i], thresholds.currency, thresholds.number_scale)}")
 
         weeks.append(
             CashWeek(
@@ -306,12 +306,12 @@ def evaluate(
         )
         if past_180 > 0:
             caveats.append(
-                f"That assumption carries {money(past_180)} already past 180 "
+                f"That assumption carries {money(past_180, thresholds.currency, thresholds.number_scale)} already past 180 "
                 f"days. Set a collection rate to model less than full recovery."
             )
     if beyond_horizon > 0:
         caveats.append(
-            f"{money(beyond_horizon)} is expected after this {count} week "
+            f"{money(beyond_horizon, thresholds.currency, thresholds.number_scale)} is expected after this {count} week "
             f"horizon, on current payment behaviour, so it is not in these "
             f"figures."
         )
@@ -335,22 +335,22 @@ def evaluate(
 
     if not known:
         reason = (
-            f"Cash moves by {money(total_in - total_out)} across "
-            f"{count} weeks: {money(total_in)} in, {money(total_out)} out. "
+            f"Cash moves by {money(total_in - total_out, thresholds.currency, thresholds.number_scale)} across "
+            f"{count} weeks: {money(total_in, thresholds.currency, thresholds.number_scale)} in, {money(total_out, thresholds.currency, thresholds.number_scale)} out. "
             f"The worst point is week {lowest_index + 1}."
         )
     elif negatives:
         reason = (
-            f"Cash drops below the {money(thresholds.cash_buffer)} floor in "
+            f"Cash drops below the {money(thresholds.cash_buffer, thresholds.currency, thresholds.number_scale)} floor in "
             f"{negatives} of {count} weeks, worst in week {lowest_index + 1} at "
-            f"{money(lowest)}. There is no headroom for new orders until that "
+            f"{money(lowest, thresholds.currency, thresholds.number_scale)}. There is no headroom for new orders until that "
             f"is fixed."
         )
     else:
         reason = (
-            f"Cash stays above the {money(thresholds.cash_buffer)} floor all "
-            f"{count} weeks, bottoming at {money(lowest)} in week "
-            f"{lowest_index + 1}. That leaves {money(headroom)} for new orders."
+            f"Cash stays above the {money(thresholds.cash_buffer, thresholds.currency, thresholds.number_scale)} floor all "
+            f"{count} weeks, bottoming at {money(lowest, thresholds.currency, thresholds.number_scale)} in week "
+            f"{lowest_index + 1}. That leaves {money(headroom, thresholds.currency, thresholds.number_scale)} for new orders."
         )
 
     return CashResult(

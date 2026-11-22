@@ -229,8 +229,8 @@ def evaluate(
         if placed_in is None:
             shortfall = c["value"] - max(remaining_budget) if remaining_budget else c["value"]
             note = (
-                f"{money(c['value'])} cannot be funded in the next {weeks} weeks; "
-                f"the best week is short by {money(max(0.0, shortfall))}."
+                f"{money(c['value'], thresholds.currency, thresholds.number_scale)} cannot be funded in the next {weeks} weeks; "
+                f"the best week is short by {money(max(0.0, shortfall), thresholds.currency, thresholds.number_scale)}."
             )
             if c["clinical"]:
                 note += (
@@ -249,7 +249,7 @@ def evaluate(
         verdict = OrderVerdict.PLACE_NOW if placed_in == 0 else OrderVerdict.SCHEDULED
         if placed_in == 0:
             note = (
-                f"{qty(c['quantity'])} units at {money(c['value'])}, funded this "
+                f"{qty(c['quantity'])} units at {money(c['value'], thresholds.currency, thresholds.number_scale)}, funded this "
                 f"week."
             )
             if days is not None:
@@ -261,7 +261,7 @@ def evaluate(
         else:
             note = (
                 f"Funded from week {placed_in + 1}, not before: placing it now "
-                f"would take cash below the {money(thresholds.cash_buffer)} floor."
+                f"would take cash below the {money(thresholds.cash_buffer, thresholds.currency, thresholds.number_scale)} floor."
             )
             if days is not None and days < lead + placed_in * 7:
                 note += " It will run out before this order lands."
@@ -300,23 +300,23 @@ def evaluate(
         reason = "Nothing is below its reorder point, so there is nothing to sequence."
     elif not budget_known:
         reason = (
-            f"{money(requested)} of orders are due across {len(candidates)} lines. "
+            f"{money(requested, thresholds.currency, thresholds.number_scale)} of orders are due across {len(candidates)} lines. "
             f"Without an opening bank balance they cannot be sequenced, only listed."
         )
     else:
         reason = (
-            f"Of {money(requested)} that policy asks for, {money(placed)} can be "
-            f"placed this week and {money(scheduled)} fits in later weeks. "
-            f"{money(unfunded)} does not fit in {weeks} weeks at all."
+            f"Of {money(requested, thresholds.currency, thresholds.number_scale)} that policy asks for, {money(placed, thresholds.currency, thresholds.number_scale)} can be "
+            f"placed this week and {money(scheduled, thresholds.currency, thresholds.number_scale)} fits in later weeks. "
+            f"{money(unfunded, thresholds.currency, thresholds.number_scale)} does not fit in {weeks} weeks at all."
         )
         if transfer_value > 0:
             reason += (
-                f" A further {money(transfer_value)} comes off the book because a "
+                f" A further {money(transfer_value, thresholds.currency, thresholds.number_scale)} comes off the book because a "
                 f"transfer already covers it."
             )
         if clinical_unfunded > 0:
             reason += (
-                f" {money(clinical_unfunded)} of what cannot be funded is "
+                f" {money(clinical_unfunded, thresholds.currency, thresholds.number_scale)} of what cannot be funded is "
                 f"clinically critical."
             )
 

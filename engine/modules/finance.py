@@ -332,13 +332,15 @@ def _label(line, move):
 
 
 def _money(v):
-    sign = "-" if v < 0 else ""
-    v = abs(v)
-    if v >= 1_000_000:
-        return f"{sign}PKR {v / 1_000_000:.1f}M"
-    if v >= 1_000:
-        return f"{sign}PKR {v / 1_000:.0f}K"
-    return f"{sign}PKR {v:,.0f}"
+    """One formatter, so a figure reads the same everywhere.
+
+    This was a private copy of engine/fmt.money with the scale
+    hard-coded to millions -- one of four such copies, which is
+    how the same amount came to appear in two notations on one
+    screen.
+    """
+    from engine.fmt import money
+    return money(v)
 
 
 def _reason(revenue, gross, pat, cfo, net, cash_open, cash_close, ties):

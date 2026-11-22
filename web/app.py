@@ -793,6 +793,14 @@ def thresholds_for(settings: dict):
             "target_cover_months", 3.0):
         clean.pop("excess_cover_months", None)
         clean.pop("target_cover_months", None)
+    # How the engine writes money into the sentences it produces. Not
+    # one of SETTABLE's numeric thresholds, but it belongs on the same
+    # object: the modules that write those sentences already receive
+    # Thresholds and nothing else about the organisation.
+    if (settings or {}).get("currency"):
+        clean["currency"] = str(settings["currency"])
+    if (settings or {}).get("scale"):
+        clean["number_scale"] = str(settings["scale"])
     return Thresholds(**clean)
 
 
@@ -1215,6 +1223,76 @@ def list_modules(claims: Claims = Depends(require)) -> JSONResponse:
             present=present, role=role,
             licensed=licensed if licensed else None),
         "present": sorted(present),
+    })
+
+
+# Which screen an insight sends you to. The engine names the domain it
+# came from, which is the shape of the problem; the rail names modules,
+# which is where somebody goes to do something about it. Transfers are
+# the one that is not a rename: a transfer is two branches of stock, so
+# it belongs on the stock screen and there is no module of its own.
+INSIGHT_MODULE = {
+    "stock": "stock",
+    "transfers": "stock",
+    "purchasing": "buy",
+    "forecast": "demand",
+    "cash": "cash",
+    "receivables": "money",
+    "equipment": "equipment",
+    "service": "service",
+    "data": "quality",
+}
+
+
+@app.get("/api/today")
+def read_today(claims: Claims = Depends(require)) -> JSONResponse:
+    """What is worth a morning, across every module, in money order.
+
+    The ranking has existed in engine/report.py since the beginning
+    and went into the command-line report and nowhere else. It is the
+    only thing that reads all fourteen modules at once and says which
+    one to open first.
+
+    Whole business, never a branch: the point of the list is that it
+    sees across branches as well as across modules -- the transfer
+    that avoids an import is visible only from above both ends.
+    """
+    from engine.db.supabase import NotConfigured, database
+    from engine.platform import for_role
+    from web.facts import Facts
+    from web.modules import insights
+
+    try:
+        with database().as_user(claims.user_id) as conn:
+            role, licensed, settings = _standing(conn, claims)
+            allowed = {m.id for m in for_role(role)
+                       if not licensed or m.id in licensed}
+            facts = Facts(
+                conn,
+                thresholds=thresholds_for(settings),
+                currency=str(settings.get("currency") or "PKR"),
+                branch=None,
+            )
+            rows = insights(facts)
+            # A role that may not open the books should not be handed
+            # a line about them on the way in. The gate is the same
+            # one the rail uses, read through the domain the insight
+            # came from.
+            rows = [r for r in rows
+                    if INSIGHT_MODULE.get(r.get("domain")) in allowed]
+            balance_known = facts.opening_balance is not None
+    except NotConfigured:
+        return JSONResponse({"error": "the database is not configured"}, 503)
+    except Exception as exc:
+        return JSONResponse(
+            {"error": "the database is unreachable", "detail": str(exc)[:200]},
+            503)
+
+    return JSONResponse({
+        "currency": str(settings.get("currency") or "PKR"),
+        "balance_known": balance_known,
+        "insights": [dict(r, module=INSIGHT_MODULE.get(r.get("domain")))
+                     for r in rows],
     })
 
 

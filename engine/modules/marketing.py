@@ -306,11 +306,15 @@ def _supply(o, position, days):
 
 
 def _money(v):
-    if abs(v) >= 1_000_000:
-        return f"PKR {v / 1_000_000:.1f}M"
-    if abs(v) >= 1_000:
-        return f"PKR {v / 1_000:.0f}K"
-    return f"PKR {v:,.0f}"
+    """One formatter, so a figure reads the same everywhere.
+
+    This was a private copy of engine/fmt.money with the scale
+    hard-coded to millions -- one of four such copies, which is
+    how the same amount came to appear in two notations on one
+    screen.
+    """
+    from engine.fmt import money
+    return money(v)
 
 
 def _reason(rows, open_value, weighted, win_rate, closed_n, spend,

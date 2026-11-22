@@ -346,17 +346,7 @@ def _freight(f) -> dict:
 
 
 def _demand(f) -> dict:
-    from engine.modules.forecast import evaluate
-
-    results = []
-    for block in f.blocks:
-        results.extend(evaluate(
-            block.items,
-            [d for d in f.demand
-             if d.location_id == block.location_id],
-            block.classes, f.thresholds, f.as_of,
-        ))
-    rows = report._forecast_rows(results)
+    rows = f.forecasts
     return {
         "rows": rows,
         "totals": {
@@ -392,11 +382,8 @@ def _cash(f) -> dict:
 
 
 def _money(f) -> dict:
-    from engine.modules.receivables import evaluate
-
     revenue, basis = f.monthly_revenue
-    r = evaluate(f.invoices, f.thresholds, f.as_of,
-                 monthly_revenue=revenue) if f.invoices else None
+    r = f.receivables
     return {
         "rows": report._customer_rows(r) if r else [],
         "revenue_basis": basis,
@@ -575,11 +562,7 @@ def _people(f) -> dict:
 
 
 def _equipment(f) -> dict:
-    from engine.modules.machines import evaluate
-
-    results = evaluate(f.placements, f.thresholds, f.as_of) \
-        if f.placements else ()
-    rows = report._machine_rows(results)
+    rows = f.machines
     capital = sum(r["capital_cost"] for r in rows)
     recovered = sum(r["net_recovered"] for r in rows)
     return {
@@ -597,9 +580,7 @@ def _equipment(f) -> dict:
 
 
 def _service(f) -> dict:
-    from engine.modules.service import evaluate
-
-    r = evaluate(f.jobs, f.thresholds, f.as_of) if f.jobs else None
+    r = f.service
     return {
         "rows": jsonable(getattr(r, "by_machine", ())) if r else [],
         "totals": {
@@ -656,11 +637,7 @@ def _quality(f) -> dict:
     """
     from engine import sanity
 
-    findings = sanity.check(
-        items=f.items, demand=f.demand, invoices=f.invoices,
-        jobs=f.jobs, placements=f.placements,
-        commitments=f.commitments, as_of=f.as_of,
-    )
+    findings = f.findings
     return {
         "rows": jsonable(findings),
         "totals": sanity.summary(findings),
@@ -866,3 +843,23 @@ def headline(module_id: str, data: dict | None) -> dict | None:
     if h.get("value") is None:
         return None
     return h
+
+
+def insights(f) -> list[dict]:
+    """The ranked cross-module list: everything worth a morning, in
+    money order.
+
+    engine/report.py has produced this since the beginning and it went
+    into the command-line report and stopped there. It is the only
+    thing in the engine that reads every module at once and says which
+    of fourteen screens to open first, which makes it the single most
+    useful output the product has and the one nobody could see.
+
+    It is a list of judgements, not a list of figures, so it ranks: a
+    blocking data fault comes above any amount of money, because
+    acting on a confidently wrong number is worse than acting on none.
+    """
+    return report._rank_insights(
+        f.stock, f.transfers, f.receivables, f.service, f.machines,
+        f.cash, f.sequencing, f.thresholds, f.forecasts, f.findings,
+    )

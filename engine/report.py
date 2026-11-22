@@ -453,7 +453,7 @@ def _rank_insights(
         out.append(
             _insight(
                 ALARM, "purchasing",
-                f"{money(sequencing.value_unfunded)} of required orders cannot "
+                f"{money(sequencing.value_unfunded, thresholds.currency, thresholds.number_scale)} of required orders cannot "
                 f"be funded in {sequencing.horizon_weeks} weeks",
                 sequencing.reason,
                 sequencing.value_unfunded,
@@ -466,7 +466,7 @@ def _rank_insights(
                 _insight(
                     ALARM, "purchasing",
                     "Clinically critical stock is among what cannot be funded",
-                    f"{money(sequencing.clinical_unfunded)} of the unfunded book "
+                    f"{money(sequencing.clinical_unfunded, thresholds.currency, thresholds.number_scale)} of the unfunded book "
                     f"is flagged clinically critical. A stockout here stops a "
                     f"hospital testing, so the decision belongs to someone who "
                     f"can authorise financing.",
@@ -478,7 +478,7 @@ def _rank_insights(
             out.append(
                 _insight(
                     WATCH, "purchasing",
-                    f"{money(sequencing.value_placed_now)} of orders are funded "
+                    f"{money(sequencing.value_placed_now, thresholds.currency, thresholds.number_scale)} of orders are funded "
                     f"and ready to place",
                     "Ranked by what a stockout costs per rupee committed, with "
                     "clinical items first and anything a transfer already "
@@ -492,8 +492,8 @@ def _rank_insights(
             _insight(
                 ALARM, "cash",
                 "Policy is asking for more stock than you hold",
-                f"Suggested orders of {money(order_value)} against "
-                f"{money(stock_value)} of stock on hand. Enter an opening bank "
+                f"Suggested orders of {money(order_value, thresholds.currency, thresholds.number_scale)} against "
+                f"{money(stock_value, thresholds.currency, thresholds.number_scale)} of stock on hand. Enter an opening bank "
                 f"balance and the engine will say which of these can actually "
                 f"be placed.",
                 order_value - stock_value,
@@ -562,7 +562,7 @@ def _rank_insights(
                 _insight(
                     WATCH, "receivables",
                     "Annual cost of carrying the overdue book",
-                    f"{money(ar.overdue)} overdue at "
+                    f"{money(ar.overdue, thresholds.currency, thresholds.number_scale)} overdue at "
                     f"{thresholds.cost_of_capital_annual:.0%}. This is an interest "
                     f"cost, not a collections statistic.",
                     ar.financing_cost_annual,

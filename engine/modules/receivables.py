@@ -29,6 +29,7 @@ from collections import defaultdict
 from datetime import date
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from engine.fmt import money
 from engine.schema import (
     AgeBucket,
     CustomerExposure,
@@ -147,13 +148,16 @@ def evaluate(
 
         if len(ents) > 1 and c_over > 0:
             why = (
-                f"PKR {c_over/1e6:.1f}M overdue across {len(ents)} entities, "
+                f"{money(c_over, thresholds.currency, thresholds.number_scale)} overdue across "
+                f"{len(ents)} entities, "
                 f"worst {worst} days. No single entity sees this total."
             )
         elif worst >= 180:
-            why = f"PKR {c_over/1e6:.1f}M is more than 180 days past due."
+            why = (f"{money(c_over, thresholds.currency, thresholds.number_scale)} is more "
+                   f"than 180 days past due.")
         elif c_over > 0:
-            why = f"PKR {c_over/1e6:.1f}M overdue, worst {worst} days."
+            why = (f"{money(c_over, thresholds.currency, thresholds.number_scale)} overdue, "
+                   f"worst {worst} days.")
         else:
             why = "Nothing past due."
 

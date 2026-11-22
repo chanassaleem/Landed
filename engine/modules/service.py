@@ -28,6 +28,7 @@ from datetime import date
 from statistics import mean
 from typing import Dict, Iterable, List, Optional
 
+from engine.fmt import money
 from engine.schema import ServiceJob, ServiceResult, Thresholds
 
 
@@ -116,10 +117,12 @@ def evaluate(
         if unbilled_hours > 0:
             parts.append(f"{unbilled_hours:,.0f} engineer hours were never billed")
         if uncharged_parts > 0:
-            parts.append(f"PKR {uncharged_parts/1e6:.2f}M of parts were fitted free")
+            parts.append(f"{money(uncharged_parts, thresholds.currency, thresholds.number_scale)} "
+                         f"of parts were fitted free")
         why = (
             " and ".join(parts)
-            + f", costing PKR {total_lost/1e6:.2f}M across {len(billable)} billable jobs."
+            + f", costing {money(total_lost, thresholds.currency, thresholds.number_scale)} "
+            + f"across {len(billable)} billable jobs."
         )
         if repeat_rate and repeat_rate > 0.2:
             why += (

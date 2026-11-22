@@ -369,3 +369,75 @@ class Facts:
                 self.stock, self.cash, self.transfers,
                 self.thresholds, self.as_of) if self.stock else None
         return self._cache["sequencing"]
+
+    # ------------------------------------------------- shared results
+    #
+    # Five module results that were each computed inside the runner
+    # that printed them. The ranked cross-module list needs all five
+    # at once, and computing them a second time to rank them would
+    # mean the home screen and the ranking could disagree about the
+    # same business on the same request. They are cached here like
+    # everything else, so a request that reads one module pays for one
+    # and a request that reads all of them pays once each.
+
+    @property
+    def receivables(self):
+        """What is owed, aged. None when there are no invoices."""
+        if "receivables" not in self._cache:
+            from engine.modules.receivables import evaluate
+            revenue, _basis = self.monthly_revenue
+            self._cache["receivables"] = evaluate(
+                self.invoices, self.thresholds, self.as_of,
+                monthly_revenue=revenue) if self.invoices else None
+        return self._cache["receivables"]
+
+    @property
+    def service(self):
+        """Service jobs and what they cost. None when there are none."""
+        if "service" not in self._cache:
+            from engine.modules.service import evaluate
+            self._cache["service"] = evaluate(
+                self.jobs, self.thresholds, self.as_of) \
+                if self.jobs else None
+        return self._cache["service"]
+
+    @property
+    def machines(self):
+        """Placements, as rows. Empty when nothing is placed."""
+        if "machines" not in self._cache:
+            from engine import report
+            from engine.modules.machines import evaluate
+            results = evaluate(self.placements, self.thresholds, self.as_of) \
+                if self.placements else ()
+            self._cache["machines"] = report._machine_rows(results)
+        return self._cache["machines"]
+
+    @property
+    def forecasts(self):
+        """A forecast per line per branch, as rows."""
+        if "forecasts" not in self._cache:
+            from engine import report
+            from engine.modules.forecast import evaluate
+            results = []
+            for block in self.blocks:
+                results.extend(evaluate(
+                    block.items,
+                    [d for d in self.demand
+                     if d.location_id == block.location_id],
+                    block.classes, self.thresholds, self.as_of,
+                ))
+            self._cache["forecasts"] = report._forecast_rows(results)
+        return self._cache["forecasts"]
+
+    @property
+    def findings(self):
+        """What the sanity checks say is wrong with the figures."""
+        if "findings" not in self._cache:
+            from engine import sanity
+            self._cache["findings"] = sanity.check(
+                items=self.items, demand=self.demand,
+                invoices=self.invoices, jobs=self.jobs,
+                placements=self.placements,
+                commitments=self.commitments, as_of=self.as_of,
+            )
+        return self._cache["findings"]

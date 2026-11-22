@@ -112,6 +112,16 @@ class Thresholds:
     # spread evenly across this catch-up window instead.
     overdue_catchup_weeks: int = 4
 
+    # How money is written into the sentences the engine produces. Not a
+    # display setting: the engine writes "PKR 6.6M is past due" into an
+    # insight, and on a Pakistani screen that sits next to a headline
+    # reading 66.0L. Same number, two notations, one of them unreadable
+    # to the reader it was written for. The browser keeps its own
+    # formatter for figures in a column, which is a typesetting problem
+    # the server cannot see; this is for money inside a sentence.
+    currency: str = "PKR"
+    number_scale: str = "indian"
+
     # Module 9. How long after an order is placed the money actually leaves.
     # In this market a letter of credit is opened at close to the full value
     # before the goods ship, so the cash goes at week zero, not on arrival.

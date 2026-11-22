@@ -33,8 +33,8 @@ def machine(key="MX-1", **kw):
     return MachinePlacement(**base)
 
 
-def one(**kw):
-    return evaluate([machine(**kw)], T, AS_OF)[0]
+def one(thresholds=None, **kw):
+    return evaluate([machine(**kw)], thresholds or T, AS_OF)[0]
 
 
 def test_elapsed_months_use_thirty_day_months():
@@ -132,7 +132,32 @@ def test_downtime_is_priced_as_lost_reagent_margin():
         reagent_revenue_to_date=4_000_000,
     )
     assert r.revenue_lost_to_downtime == pytest.approx(42_000)
-    assert "42K" in r.reason
+    # Lower-case k: the default Thresholds is the Pakistani one, and
+    # the reason now reads in the notation the reader of this product
+    # actually uses. It used to say 42K here and 42k in the column
+    # beside it.
+    assert "42k" in r.reason
+
+
+def test_a_reason_reads_in_the_notation_the_reader_uses():
+    """The same amount, two businesses, two notations.
+
+    This is the bug the scale exists to prevent: a Pakistani screen
+    showing 66.0L in a column and PKR 6.6M in the sentence under it,
+    which a reader has to stop and reconcile.
+    """
+    from dataclasses import replace
+
+    shared = dict(actual_monthly_tests=900, revenue_per_test=400,
+                  reagent_margin_pct=0.35, downtime_days_ytd=10,
+                  reagent_revenue_to_date=4_000_000)
+    here = one(**shared)
+    assert "PKR 42k" in here.reason
+
+    abroad = one(thresholds=replace(
+        Thresholds(), currency="AED", number_scale="western"), **shared)
+    assert "AED 42K" in abroad.reason
+    assert "PKR" not in abroad.reason
 
 
 def test_no_downtime_costs_nothing_and_is_not_mentioned():

@@ -759,35 +759,84 @@ function renderToday() {
     card.append(el('p', null, c.body));
     const b = el('button', 'act', c.action);
     b.type = 'button';
-    b.addEventListener('click', () => { S.segment = c.segment; renderLine(); renderAll(); go(c.goto); });
+    b.addEventListener('click', () => {
+      S.segment = c.segment; renderLine(); renderAll(); go(c.goto);
+    });
     card.append(b);
     d.append(card);
   });
 
-  const soon = rows()
-    .filter((r) => r.cover !== null && r.cover < 3)
-    .sort((a, b) => a.cover - b.cover)
-    .slice(0, 8);
+  loadInsights();
+}
 
-  $('soon').textContent = '';
-  if (!soon.length) {
-    $('soon').append(empty(
-      'Nothing runs out inside three months',
-      'Every line that has demand history has more than three months of cover at its branch.'));
+/* The ranked cross-module list.
+ *
+ * It replaces a table of what runs out inside three months, which was
+ * one module's opinion on one screen. This reads all fourteen and
+ * ranks them against each other in money, with one exception: a
+ * blocking data fault comes first whatever the amount, because acting
+ * on a confidently wrong figure is worse than acting on none.
+ */
+const INSIGHT_TONE = { alarm: 'urgent', caution: 'attention', watch: 'transit' };
+
+async function loadInsights() {
+  const host = $('insights');
+  if (!host) return;
+  host.textContent = '';
+  host.append(el('p', 'loading', 'Reading every module…'));
+
+  let d;
+  try {
+    const r = await fetch('/api/today');
+    d = await r.json();
+    if (!r.ok) throw new Error(d.detail || d.error || `Status ${r.status}.`);
+  } catch (e) {
+    host.textContent = '';
+    host.append(empty('The list could not be read', e.message));
     return;
   }
-  $('soon').append(table(
-    [['Item', ''], ['Branch', ''], ['Cover', 'num'], ['On hand', 'num'],
-     ['Reorder at', 'num'], ['Order now', 'num'], ['State', '']],
-    soon.map((r) => [
-      cell(r.description, 'lead'),
-      cell(r.branch, 'dim'),
-      coverCell(r),
-      cell(qty(r.on_hand), 'num'),
-      cell(qty(r.reorder_point), 'num'),
-      cell(r.suggested ? qty(r.suggested) : '—', 'num'),
-      stateCell(r.state),
-    ]), soon));
+
+  const rows = d.insights || [];
+  host.textContent = '';
+  if (!rows.length) {
+    host.append(empty('Nothing is asking for you',
+      'No module has anything above its threshold. That is not the same '
+      + 'as everything being right -- the checks find what they look for.'));
+    return;
+  }
+
+  const cur = d.currency || 'PKR';
+  /* One unit across the whole list, because the ranking is a
+     comparison: a lakh next to a crore has to look like a lakh. */
+  const u = unit(rows.map((r) => Math.abs(r.value || 0)));
+
+  const list = el('div', 'insights');
+  rows.forEach((r) => {
+    const row = el('div', `insight i-${INSIGHT_TONE[r.severity] || 'transit'}`);
+
+    const main = el('div', 'insight-main');
+    main.append(el('h3', null, r.title));
+    if (r.detail) main.append(el('p', 'insight-detail', r.detail));
+    if (r.action) main.append(el('p', 'insight-action', r.action));
+    row.append(main);
+
+    const side = el('div', 'insight-side');
+    /* A data fault has no money attached and inventing a zero for it
+       would put it at the bottom of a column it is deliberately at
+       the top of. */
+    if (r.value) {
+      side.append(el('div', 'insight-value', `${cur} ${inUnit(r.value, u)}`));
+    }
+    if (r.module) {
+      const b = el('button', 'btn', 'Open');
+      b.type = 'button';
+      b.addEventListener('click', () => { location.hash = `#m/${r.module}`; });
+      side.append(b);
+    }
+    row.append(side);
+    list.append(row);
+  });
+  host.append(list);
 }
 
 /* Named views, because a filter is a mechanism and a view is a

@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from engine.modules.classify import key_for
+from engine.fmt import money
 from engine.schema import (
     ClassificationResult,
     InventoryResult,
@@ -218,7 +219,9 @@ def suggest(
                     why = (
                         f"{rb.location_id} runs out while {db.location_id} holds "
                         f"{dres.months_cover:.1f} months of cover. "
-                        f"A transfer avoids PKR {value/1e6:.2f}M of imports."
+                        f"A transfer avoids "
+                        f"{money(value, thresholds.currency, thresholds.number_scale)} "
+                        f"of imports."
                     )
                 else:
                     why = (

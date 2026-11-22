@@ -82,14 +82,14 @@ def evaluate(
             status = PaybackStatus.RAMPING
             why = (
                 f"Placed {elapsed:.0f} months ago. Too early to judge payback: "
-                f"{money(net)} recovered of {money(m.capital_cost)} so far. "
+                f"{money(net, thresholds.currency, thresholds.number_scale)} recovered of {money(m.capital_cost, thresholds.currency, thresholds.number_scale)} so far. "
                 f"Reassess after {thresholds.placement_min_months_to_judge} months."
             )
         elif rate is None or rate <= 0:
             status = PaybackStatus.STALLED
             why = (
                 f"No net recovery in {elapsed:.0f} months. "
-                f"{money(m.capital_cost)} of capital is sitting in this placement "
+                f"{money(m.capital_cost, thresholds.currency, thresholds.number_scale)} of capital is sitting in this placement "
                 f"with nothing coming back."
             )
         elif payback is not None and payback > m.contract_months:
@@ -98,7 +98,7 @@ def evaluate(
             why = (
                 f"At the current pull this pays back in {payback:.0f} months "
                 f"against a {m.contract_months} month contract. "
-                f"About {money(shortfall)} will never be recovered "
+                f"About {money(shortfall, thresholds.currency, thresholds.number_scale)} will never be recovered "
                 f"unless volume rises or the contract is extended."
             )
         elif payback is not None and payback <= thresholds.payback_target_months:
@@ -124,7 +124,7 @@ def evaluate(
         if downtime_lost > 0 and m.downtime_days_ytd > 0:
             why += (
                 f" {m.downtime_days_ytd:.0f} days down this year cost about "
-                f"{money(downtime_lost)} of reagent margin."
+                f"{money(downtime_lost, thresholds.currency, thresholds.number_scale)} of reagent margin."
             )
 
         out.append(
