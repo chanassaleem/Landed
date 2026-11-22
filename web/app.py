@@ -1256,3 +1256,292 @@ def read_module(module_id: str,
             {"error": "that module could not be read",
              "detail": str(exc)[:300]}, 500)
     return JSONResponse(payload)
+
+
+# ───────────────────────────────────────────────── people in the business
+#
+# An organisation has had one member since migration 0001: whoever
+# created it. These five routes are the rest of it.
+#
+# No email is sent. Sending one needs the Supabase admin key, which is
+# server-side only and would make inviting somebody depend on a
+# credential this app deliberately does not hold at request time. So an
+# invite is a row, and the person inviting shares the sign-up link
+# themselves -- which is also honest about what happens next, because
+# the invite is claimed by a trigger when that address signs up. The
+# response says so rather than letting somebody wait for a mail that
+# was never going to arrive.
+
+ROLES = ("owner", "manager", "staff", "accountant")
+
+ROLE_BLURB = {
+    "owner": "Everything, including the books, payroll and who else is here.",
+    "manager": "Stock, buying, cash, customers and the pipeline. Not the "
+               "books or payroll.",
+    "accountant": "The books, payroll, cash and what you are owed. Not the "
+                  "pipeline.",
+    "staff": "Stock, shipments, customers and service. No money.",
+}
+
+
+@app.get("/api/users")
+def list_users(claims: Claims = Depends(require)) -> JSONResponse:
+    """Who is in this organisation, and who has been asked.
+
+    Members and pending invites in one response because they are one
+    list on the screen: somebody invited yesterday who has not signed
+    up yet is part of the answer to "who has access".
+    """
+    from engine.db.supabase import NotConfigured, database
+    from engine.platform import for_role
+
+    try:
+        with database().as_user(claims.user_id) as conn:
+            role, _licensed, _settings = _standing(conn, claims)
+            branches = {
+                str(i): {"code": c, "name": n}
+                for i, c, n in conn.execute(
+                    "select id, code, name from public.locations"
+                    " where is_active order by code").fetchall()
+            }
+            members = [
+                {
+                    "user_id": str(r[0]),
+                    "role": r[1],
+                    # Addresses come from auth.users, which a tenant
+                    # cannot read, so a member who is not the caller
+                    # shows as their role and branches until they are
+                    # invited again. Said plainly rather than shown as
+                    # a blank.
+                    "email": claims.email if str(r[0]) == str(
+                        claims.user_id) else None,
+                    "is_you": str(r[0]) == str(claims.user_id),
+                    "locations": [str(x) for x in (r[2] or [])],
+                    "status": r[3],
+                    "since": r[4].isoformat() if r[4] else None,
+                }
+                for r in conn.execute(
+                    "select user_id, role, location_ids, status, created_at"
+                    "  from public.memberships order by created_at"
+                ).fetchall()
+            ]
+            invites = [
+                {
+                    "id": str(r[0]), "email": r[1], "role": r[2],
+                    "locations": [str(x) for x in (r[3] or [])],
+                    "invited": r[4].isoformat() if r[4] else None,
+                    "expires": r[5].isoformat() if r[5] else None,
+                    "expired": r[6],
+                }
+                for r in conn.execute(
+                    "select id, email, role, location_ids, created_at,"
+                    "       expires_at, expires_at <= clock_timestamp()"
+                    "  from public.invites"
+                    " where accepted_at is null and revoked_at is null"
+                    " order by created_at desc"
+                ).fetchall()
+            ]
+    except NotConfigured:
+        return JSONResponse({"error": "the database is not configured"}, 503)
+    except Exception as exc:
+        return JSONResponse(
+            {"error": "the people list could not be read",
+             "detail": str(exc)[:200]}, 503)
+
+    return JSONResponse({
+        "role": role,
+        "can_invite": role in ("owner", "manager"),
+        "can_change": role == "owner",
+        "members": members,
+        "invites": invites,
+        "branches": branches,
+        "roles": [
+            {"id": r, "blurb": ROLE_BLURB[r],
+             "modules": [m.id for m in for_role(r)]}
+            for r in ROLES
+        ],
+    })
+
+
+@app.post("/api/invite")
+async def create_invite(request: Request,
+                        claims: Claims = Depends(require)) -> JSONResponse:
+    """Ask somebody into this organisation, with a role and a branch scope.
+
+    The address is folded here as well as constrained in the schema,
+    because the fold is what makes the invite findable when they sign
+    up -- GoTrue does not normalise it, so an invite to `Ahmed@x.test`
+    matched against a stored `Ahmed@x.test` would be dead on arrival
+    with no error anywhere to explain why they have a login and no
+    organisation.
+    """
+    from engine.db.supabase import database
+
+    body = await request.json()
+    email = str(body.get("email", "")).strip().lower()
+    role = str(body.get("role", "")).strip().lower()
+    locations = body.get("locations") or []
+
+    problems = []
+    if "@" not in email or email.startswith("@") or email.endswith("@"):
+        problems.append("That does not look like an email address.")
+    if role not in ROLES:
+        problems.append(f"Role has to be one of {', '.join(ROLES)}.")
+    if not isinstance(locations, list):
+        problems.append("Branches have to be a list.")
+    if problems:
+        return JSONResponse({"ok": False, "problems": problems}, 400)
+
+    with database().as_user(claims.user_id) as conn:
+        # Checked here so the answer is a sentence rather than a
+        # constraint name. The policies refuse it as well, which is
+        # what actually enforces it.
+        standing, _licensed, _settings = _standing(conn, claims)
+        if standing not in ("owner", "manager"):
+            return JSONResponse(
+                {"ok": False,
+                 "problems": [f"A {standing} cannot invite people."]}, 403)
+        if role == "owner" and standing != "owner":
+            return JSONResponse(
+                {"ok": False,
+                 "problems": ["Only an owner can make somebody an owner."]},
+                403)
+        try:
+            row = conn.execute(
+                "insert into public.invites (org_id, email, role,"
+                " location_ids, invited_by)"
+                " values ((select id from public.organisations"
+                "           order by created_at limit 1), %s, %s, %s,"
+                "         auth.uid())"
+                " returning id, expires_at",
+                (email, role, locations),
+            ).fetchone()
+        except Exception as exc:
+            text = str(exc)
+            if "invites_live_idx" in text:
+                return JSONResponse(
+                    {"ok": False,
+                     "problems": [f"{email} has already been invited and "
+                                  f"has not answered yet."]}, 409)
+            return JSONResponse(
+                {"ok": False, "problems": ["That invite could not be "
+                                           "written."],
+                 "detail": text[:200]}, 400)
+
+    return JSONResponse({
+        "ok": True, "id": str(row[0]),
+        "expires": row[1].isoformat() if row[1] else None,
+        # The one thing somebody has to be told, because nothing else
+        # will tell them.
+        "note": f"No email was sent. Ask {email} to sign up at this "
+                f"address with that exact email, and they will land in "
+                f"this organisation.",
+    })
+
+
+@app.post("/api/invite/{invite_id}/revoke")
+def revoke_invite(invite_id: str,
+                  claims: Claims = Depends(require)) -> JSONResponse:
+    """Withdraw an invite that has not been accepted.
+
+    Revoked rather than deleted, so the record of having invited
+    somebody survives withdrawing it -- and the live-invite index is
+    scoped to unrevoked rows, so the same address can be invited again
+    afterwards.
+    """
+    from engine.db.supabase import database
+
+    with database().as_user(claims.user_id) as conn:
+        got = conn.execute(
+            "update public.invites set revoked_at = clock_timestamp()"
+            " where id = %s and accepted_at is null and revoked_at is null"
+            " returning email",
+            (invite_id,),
+        ).fetchone()
+    if not got:
+        return JSONResponse(
+            {"ok": False,
+             "error": "That invite is not open, or is not yours to withdraw."},
+            404)
+    return JSONResponse({"ok": True, "email": got[0]})
+
+
+@app.post("/api/users/{user_id}/role")
+async def change_member(user_id: str, request: Request,
+                        claims: Claims = Depends(require)) -> JSONResponse:
+    """Change somebody's role or which branches they see.
+
+    An owner cannot act on their own membership: the policies refuse
+    it, because the only owner of an organisation demoting themselves
+    loses it permanently with nobody left who can let them back in. The
+    refusal is translated into a sentence here.
+    """
+    from engine.db.supabase import database
+
+    body = await request.json()
+    role = str(body.get("role", "")).strip().lower()
+    locations = body.get("locations")
+    if role and role not in ROLES:
+        return JSONResponse(
+            {"ok": False,
+             "problems": [f"Role has to be one of {', '.join(ROLES)}."]}, 400)
+
+    if str(user_id) == str(claims.user_id):
+        return JSONResponse(
+            {"ok": False,
+             "problems": ["You cannot change your own role. Ask another "
+                          "owner, so an organisation can never be left "
+                          "with nobody who can administer it."]}, 400)
+
+    sets, args = [], []
+    if role:
+        sets.append("role = %s")
+        args.append(role)
+    if isinstance(locations, list):
+        sets.append("location_ids = %s")
+        args.append(locations)
+    if not sets:
+        return JSONResponse(
+            {"ok": False, "problems": ["Nothing to change."]}, 400)
+
+    with database().as_user(claims.user_id) as conn:
+        got = conn.execute(
+            f"update public.memberships set {', '.join(sets)}"
+            " where user_id = %s returning role, location_ids",
+            (*args, user_id),
+        ).fetchone()
+    if not got:
+        return JSONResponse(
+            {"ok": False,
+             "problems": ["That change was refused. Only an owner can "
+                          "change a membership."]}, 403)
+    return JSONResponse({"ok": True, "role": got[0],
+                         "locations": [str(x) for x in (got[1] or [])]})
+
+
+@app.delete("/api/users/{user_id}")
+def remove_member(user_id: str,
+                  claims: Claims = Depends(require)) -> JSONResponse:
+    """Take somebody out of this organisation.
+
+    Their account survives; only the membership goes. Nothing they
+    wrote is removed, because a ledger that loses rows when a person
+    leaves is not a ledger.
+    """
+    from engine.db.supabase import database
+
+    if str(user_id) == str(claims.user_id):
+        return JSONResponse(
+            {"ok": False,
+             "error": "You cannot remove yourself. Ask another owner."}, 400)
+
+    with database().as_user(claims.user_id) as conn:
+        got = conn.execute(
+            "delete from public.memberships where user_id = %s"
+            " returning role", (user_id,),
+        ).fetchone()
+    if not got:
+        return JSONResponse(
+            {"ok": False,
+             "error": "That person was not removed. Only an owner can."}, 403)
+    return JSONResponse({"ok": True, "was": got[0]})
