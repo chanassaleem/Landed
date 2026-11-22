@@ -429,3 +429,68 @@ def test_the_browser_only_offers_the_fields_the_server_accepts():
     assert "stock_value" not in EDITABLE_ITEM_FIELDS
     assert "description" in EDITABLE_ITEM_FIELDS
     assert "list_price" in EDITABLE_ITEM_FIELDS
+
+
+# --------------------------------------------------- the home screen
+#
+# Fourteen modules in one request. The things worth pinning are that
+# it is one request, that a module which throws does not take the
+# screen with it, and that every module has a headline -- a fifteenth
+# should not be able to ship as a blank card.
+
+
+def test_home_answers_for_every_module_the_role_may_see(api):
+    client, _org = api
+    r = client.get("/api/home")
+    assert r.status_code == 200, r.text[:300]
+    d = r.json()
+
+    from engine.platform import for_role
+    expected = {m.id for m in for_role("owner")}
+    assert {c["id"] for c in d["cards"]} == expected
+    assert d["sections"], "the cards have nowhere to be grouped"
+
+
+def test_every_module_can_produce_a_headline():
+    """Not whether it does on this data -- whether one is defined.
+
+    A module with no entry returns None for its figure, which renders
+    as a permanently blank card nobody notices is broken.
+    """
+    from engine.platform import MODULES
+    from web.modules import HEADLINES
+
+    missing = [m.id for m in MODULES if m.id not in HEADLINES]
+    assert not missing, f"no headline defined for {missing}"
+
+
+def test_a_module_that_throws_does_not_blank_the_screen(api, monkeypatch):
+    client, _org = api
+    # Stock has to be past "waiting" before it can get as far as
+    # throwing, or this tests the short circuit instead of the guard.
+    add(client, "item", sku="BRK-1", description="Reagent")
+    import web.modules as mods
+
+    real = mods.run
+
+    def explode(module_id, facts):
+        if module_id == "stock":
+            raise RuntimeError("a record this code did not expect")
+        return real(module_id, facts)
+
+    monkeypatch.setattr("web.modules.run", explode)
+    r = client.get("/api/home")
+    assert r.status_code == 200
+    cards = {c["id"]: c for c in r.json()["cards"]}
+    assert cards["stock"]["state"] == "broken", cards["stock"]
+    assert "did not expect" in cards["stock"]["detail"]
+    # and the rest still answered rather than going down with it
+    assert all(c["state"] != "broken"
+               for k, c in cards.items() if k != "stock")
+
+
+def test_home_does_not_narrow_to_a_branch_by_default(api):
+    """Home is the whole business. A summary narrowed to one branch
+    without saying so is not a summary."""
+    client, _org = api
+    assert client.get("/api/home").json()["branch"] is None

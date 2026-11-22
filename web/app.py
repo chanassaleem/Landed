@@ -1218,6 +1218,84 @@ def list_modules(claims: Claims = Depends(require)) -> JSONResponse:
     })
 
 
+@app.get("/api/home")
+def read_home(branch: str = "",
+              claims: Claims = Depends(require)) -> JSONResponse:
+    """Every module the role may see, in one figure each.
+
+    One request rather than fourteen, and one Facts instance rather
+    than fourteen, because Facts reads each record type once and
+    lazily -- so the whole home screen costs roughly what the most
+    expensive single module costs, not fourteen times it.
+
+    A module that throws is reported as a module that threw. Fourteen
+    runners over whatever happens to be in the database is exactly the
+    situation where one bad record should not blank the home screen,
+    and a card that says it could not be read is more useful than a
+    card that is quietly missing.
+    """
+    from engine.db.supabase import NotConfigured, database
+    from engine.platform import BY_ID, SECTIONS, for_role
+    from web.facts import Facts
+    from web.modules import headline, run
+
+    try:
+        with database().as_user(claims.user_id) as conn:
+            role, licensed, settings = _standing(conn, claims)
+            from engine.db import snapshot
+            present = snapshot.present(conn)
+            wanted = (branch or "").strip().upper()
+            allowed = [m for m in for_role(role)
+                       if not licensed or m.id in licensed]
+            facts_all = Facts(
+                conn,
+                thresholds=thresholds_for(settings),
+                currency=str(settings.get("currency") or "PKR"),
+                branch=None,
+            )
+            facts_one = Facts(
+                conn,
+                thresholds=thresholds_for(settings),
+                currency=str(settings.get("currency") or "PKR"),
+                branch=wanted or None,
+            ) if wanted else facts_all
+
+            cards = []
+            for m in allowed:
+                card = {
+                    "id": m.id, "name": m.name, "title": m.title,
+                    "blurb": m.blurb, "section": m.section,
+                    "group_level": m.group_level,
+                    "missing": list(m.missing(present)),
+                }
+                if m.missing(present):
+                    card["state"] = "waiting"
+                    cards.append(card)
+                    continue
+                facts = facts_all if m.group_level else facts_one
+                try:
+                    payload = run(m.id, facts)
+                    card["head"] = headline(m.id, payload.get("data"))
+                    card["state"] = "ready" if card["head"] else "waiting"
+                except Exception as exc:  # noqa: BLE001 - reported, not raised
+                    card["state"] = "broken"
+                    card["detail"] = str(exc)[:160]
+                cards.append(card)
+    except NotConfigured:
+        return JSONResponse({"error": "the database is not configured"}, 503)
+    except Exception as exc:
+        return JSONResponse(
+            {"error": "the database is unreachable", "detail": str(exc)[:200]},
+            503)
+
+    return JSONResponse({
+        "currency": str(settings.get("currency") or "PKR"),
+        "branch": wanted or None,
+        "sections": [{"id": i, "label": l} for i, l in SECTIONS],
+        "cards": cards,
+    })
+
+
 @app.get("/api/module/{module_id}")
 def read_module(module_id: str, branch: str = "",
                 claims: Claims = Depends(require)) -> JSONResponse:

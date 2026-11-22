@@ -722,3 +722,147 @@ def run(module_id: str, facts) -> dict:
     # runner reads, not when the module is looked up.
     payload["refused"] = sorted(facts.refused)
     return payload
+
+
+# ----------------------------------------------------------- the headline
+#
+# What a module says about itself in one figure, for the home screen.
+#
+# Kept here, beside the runners, rather than in the browser. A headline
+# is a claim about what the module is for -- that Ordering is about what
+# can be funded rather than what policy asked for, that Service is about
+# margin lost rather than jobs done -- and that claim belongs with the
+# arithmetic it reads, not with the markup that prints it.
+#
+# `second` is the figure that stops the first being read wrongly. Stock
+# worth a crore is good news until you see how much of it is standing
+# still; a pipeline of fifty million means nothing without the win rate
+# behind it.
+
+
+def _n(d: dict, *path, default=None):
+    for k in path:
+        if not isinstance(d, dict):
+            return default
+        d = d.get(k, default)
+    return d if d is not None else default
+
+
+HEADLINES: dict[str, Any] = {
+    "stock": lambda d: {
+        "value": _n(d, "totals", "stock_value"), "kind": "money",
+        "label": "on the shelf",
+        "second": _n(d, "totals", "excess_value"),
+        "second_label": "standing still", "second_kind": "money",
+    },
+    "buy": lambda d: {
+        "value": _n(d, "totals", "place_now"), "kind": "money",
+        "label": "to place now",
+        "second": _n(d, "totals", "unfunded"),
+        "second_label": "policy wants, cash will not fund",
+        "second_kind": "money",
+    },
+    "freight": lambda d: {
+        "value": _n(d, "totals", "uplift_pct"), "kind": "pct",
+        "label": "on top of the invoice",
+        "second": _n(d, "totals", "landed_costs"),
+        "second_label": "freight, duty and clearing", "second_kind": "money",
+    },
+    "demand": lambda d: {
+        "value": _n(d, "totals", "measured"), "kind": "count",
+        "label": "lines with a forecast",
+        "second": _n(d, "totals", "lines"),
+        "second_label": "lines in all", "second_kind": "count",
+    },
+    "cash": lambda d: {
+        "value": _n(d, "totals", "lowest_balance"), "kind": "money",
+        "label": "lowest point in thirteen weeks",
+        "second": _n(d, "totals", "weeks_negative"),
+        "second_label": "weeks under", "second_kind": "count",
+    },
+    "money": lambda d: {
+        "value": _n(d, "totals", "outstanding"), "kind": "money",
+        "label": "owed to you",
+        "second": _n(d, "totals", "overdue"),
+        "second_label": "overdue", "second_kind": "money",
+    },
+    "sell": lambda d: {
+        "value": _n(d, "totals", "billed"), "kind": "money",
+        "label": "billed",
+        "second": _n(d, "totals", "collected"),
+        "second_label": "collected", "second_kind": "money",
+    },
+    "books": lambda d: {
+        # The books have no single figure, and inventing one would be
+        # the wrong answer: what somebody wants to know is whether they
+        # tie.
+        "value": sum(1 for c in (d.get("checks") or []) if _tied(c)),
+        "kind": "count", "label": "checks that tie",
+        "second": len(d.get("checks") or []),
+        "second_label": "checks in all", "second_kind": "count",
+    },
+    "customers": lambda d: {
+        "value": _n(d, "totals", "customers"), "kind": "count",
+        "label": "customers",
+        "second": _n(d, "totals", "over_limit"),
+        "second_label": "over their limit", "second_kind": "count",
+    },
+    "people": lambda d: {
+        "value": _n(d, "totals", "employer_cost_monthly"), "kind": "money",
+        "label": "a month, all in",
+        "second": _n(d, "totals", "headcount"),
+        "second_label": "on the payroll", "second_kind": "count",
+    },
+    "equipment": lambda d: {
+        "value": _n(d, "totals", "capital_deployed"), "kind": "money",
+        "label": "capital placed with customers",
+        "second": _n(d, "totals", "recovery_pct"),
+        "second_label": "recovered so far", "second_kind": "pct",
+    },
+    "service": lambda d: {
+        "value": _n(d, "totals", "value_lost"), "kind": "money",
+        "label": "margin lost to service",
+        "second": _n(d, "totals", "jobs"),
+        "second_label": "jobs", "second_kind": "count",
+    },
+    "quality": lambda d: {
+        "value": _n(d, "totals", "total"), "kind": "count",
+        "label": "things to check",
+        "second": _n(d, "totals", "blocks"),
+        "second_label": "that stop an answer", "second_kind": "count",
+    },
+    "intelligence": lambda d: {
+        "value": _n(d, "totals", "weighted_value"), "kind": "money",
+        "label": "pipeline, weighted",
+        "second": _n(d, "totals", "open_count"),
+        "second_label": "open", "second_kind": "count",
+    },
+}
+
+
+def _tied(check) -> bool:
+    """A finance check that holds.
+
+    The checks arrive as whatever jsonable() made of them, which is a
+    dict for a dataclass and an object for anything else, so this reads
+    both rather than assuming one.
+    """
+    if isinstance(check, dict):
+        for k in ("ok", "tied", "passed", "holds"):
+            if k in check:
+                return bool(check[k])
+        return False
+    return bool(getattr(check, "ok", False))
+
+
+def headline(module_id: str, data: dict | None) -> dict | None:
+    """One figure for the home screen, or None if there is nothing yet."""
+    if not data or module_id not in HEADLINES:
+        return None
+    try:
+        h = HEADLINES[module_id](data)
+    except Exception:
+        return None
+    if h.get("value") is None:
+        return None
+    return h

@@ -204,37 +204,6 @@ const VIEWS = [
    Named by the job rather than by the table, because nobody has a
    "stock_movement" problem -- they have money sitting in the wrong
    place. */
-const MODULES = [
-  {
-    id: 'stock', go: 'today', state: 'on',
-    title: 'What you are holding',
-    blurb: 'Every line at every branch, what it is worth, what runs out '
-      + 'first and what to order. The part that pays for itself.',
-    figure: (d) => ({
-      value: (d.line.on_shelf || 0) + (d.line.idle || 0)
-             + (d.line.running_out || 0),
-      label: 'on the shelf',
-    }),
-  },
-  {
-    id: 'buy', go: 'shipments', state: 'on',
-    title: 'What is on its way',
-    blurb: 'Orders placed, goods at sea, what is sitting at the port, and '
-      + 'the freight and duty that land on top of the invoice.',
-    figure: (d) => ({
-      value: (d.line.on_order || 0) + (d.line.on_water || 0)
-             + (d.line.at_port || 0),
-      label: 'between supplier and shelf',
-    }),
-  },
-  {
-    id: 'cash', go: 'cash', state: 'soon',
-    title: 'What it costs you',
-    blurb: 'What you owe and when, what is owed to you, and whether the '
-      + 'next order can be paid for. Needs your bank balance first.',
-    figure: () => null,
-  },
-];
 
 /* The money line belongs to the screens it filters, not to the chrome.
    It made no sense sitting above the import screen. */
@@ -1573,7 +1542,6 @@ let orgName = null;
 function renderHome() {
   const host = $('modules');
   if (!host) return;
-  host.textContent = '';
 
   /* The business's own name, not the product's. Somebody opening this
      at seven in the morning knows what they bought; what they want to
@@ -1590,33 +1558,111 @@ function renderHome() {
   } else if (orgName) {
     $('home-org').textContent = orgName;
   }
-  const u = unit(MODULES.map((m) => (m.figure(S.data) || {}).value || 0));
 
-  MODULES.forEach((m) => {
-    const card = el('button', `module m-${m.state}`);
-    card.type = 'button';
-    const fig = m.figure(S.data);
+  host.textContent = '';
+  host.append(el('p', 'loading', 'Reading every module…'));
+  loadHome(host);
+}
 
-    const head = el('div', 'module-head');
-    head.append(el('h2', null, m.title));
-    if (m.state === 'soon') head.append(el('span', 'tag', 'not set up'));
-    card.append(head);
+/* Home is the fourteen modules, each in one figure.
 
-    if (fig && fig.value) {
-      const n = el('div', 'module-figure',
-        `${S.data.currency} ${inUnit(fig.value, u)}`);
-      card.append(n);
-      card.append(el('p', 'module-label', fig.label));
-    } else {
-      card.append(el('div', 'module-figure dim', '—'));
-      card.append(el('p', 'module-label',
-        m.state === 'soon' ? 'nothing here yet' : 'no figures yet'));
-    }
+   It used to be three hand-written cards -- holding, on its way, and
+   a cash card permanently marked "not set up" -- from before the
+   platform existed. They routed to screens that have since been
+   replaced, and the third was a promise rather than a card.
 
-    card.append(el('p', 'module-blurb', m.blurb));
-    card.addEventListener('click', () => go(m.go));
-    host.append(card);
+   One request does all fourteen. The server runs them over a single
+   Facts instance, so the whole screen costs roughly what the most
+   expensive single module costs rather than fourteen times it. */
+async function loadHome(host) {
+  let d;
+  try {
+    /* No branch. Home is the whole business by design: the branch
+       filter belongs to the data on a module screen, not to the
+       screen that says where the money is overall, and a home page
+       narrowed to Karachi would quietly stop being a summary. */
+    const r = await fetch('/api/home');
+    d = await r.json();
+    if (!r.ok) throw new Error(d.detail || d.error || `Status ${r.status}.`);
+  } catch (e) {
+    host.textContent = '';
+    host.append(empty('The modules could not be read', e.message));
+    return;
+  }
+
+  host.textContent = '';
+  const cur = d.currency || 'PKR';
+  const cards = d.cards || [];
+
+  /* Scaled together, so a crore on one card and a crore on another
+     are the same length of number. Scaling each card to itself would
+     make the biggest figure on the screen look like the smallest. */
+  const u = unit(cards.map((c) => (c.head && c.head.kind === 'money'
+                                   ? Math.abs(c.head.value) : 0)));
+
+  (d.sections || []).forEach((sec) => {
+    const mine = cards.filter((c) => c.section === sec.id);
+    if (!mine.length) return;
+    host.append(el('h2', 'home-section', sec.label));
+    const grid = el('div', 'modules');
+    mine.forEach((c) => grid.append(homeCard(c, cur, u)));
+    host.append(grid);
   });
+}
+
+function homeFigure(h, which, cur, u) {
+  const v = which === 'second' ? h.second : h.value;
+  const kind = which === 'second' ? h.second_kind : h.kind;
+  if (v === null || v === undefined) return '—';
+  if (kind === 'money') {
+    /* A zero renders as a dash by house style, and "PKR —" reads as a
+       missing figure rather than as nothing to do. The currency goes
+       with a number or not at all. */
+    const n = inUnit(v, u);
+    return n === '—' ? '—' : `${cur} ${n}`;
+  }
+  if (kind === 'pct') return pct(v);
+  return qty(v);
+}
+
+function homeCard(c, cur, u) {
+  const card = el('button', `module m-${c.state}`);
+  card.type = 'button';
+
+  const head = el('div', 'module-head');
+  head.append(el('h2', null, c.name));
+  if (c.state === 'waiting') head.append(el('span', 'tag', 'no figures yet'));
+  if (c.state === 'broken') head.append(el('span', 'tag', 'could not read'));
+  card.append(head);
+
+  if (c.head) {
+    card.append(el('div', 'module-figure',
+      homeFigure(c.head, 'value', cur, u)));
+    card.append(el('p', 'module-label', c.head.label));
+    if (c.head.second !== null && c.head.second !== undefined) {
+      /* The figure that stops the first being read wrongly. Stock
+         worth a crore is good news until you see how much of it is
+         standing still. */
+      const sec = el('p', 'module-second');
+      sec.append(el('span', 'module-second-n',
+        homeFigure(c.head, 'second', cur, u)));
+      sec.append(el('span', null, ` ${c.head.second_label}`));
+      card.append(sec);
+    }
+  } else {
+    card.append(el('div', 'module-figure dim', '—'));
+    card.append(el('p', 'module-label',
+      c.state === 'broken' ? (c.detail || 'something went wrong')
+      : (c.missing || []).length
+        ? `needs ${c.missing.map(said).join(', ')}`
+        : 'nothing here yet'));
+  }
+
+  card.append(el('p', 'module-blurb', `${c.title}. ${c.blurb}`));
+  card.addEventListener('click', () => {
+    location.hash = `#m/${c.id}`;
+  });
+  return card;
 }
 
 /* --------------------------------------------------------- settings */
