@@ -1715,10 +1715,15 @@ td.warn { color: var(--attention); }
 .rail[data-pinned='1'] .rail-dot,
 .rail:hover .rail-dot { opacity: 1; }
 
-/* A customer past their credit limit. The point of a limit is being
-   told before the next order rather than after, so the row is marked
-   where somebody reading forty of them will see it. */
-tbody tr.st-out td:first-child {
+/* A customer past their credit limit, or a data fault that makes a
+   figure wrong. The point of either is being told before acting, so
+   the row is marked where somebody reading forty of them will see it.
+
+   Its own class rather than `.st-out`, which is the stock state for a
+   line running out: reusing it turned every cell in the row red,
+   which is louder than a marker and says the row is in a state it is
+   not. */
+tbody tr.flagged td:first-child {
   box-shadow: inset 2px 0 0 var(--urgent);
 }
 
@@ -2028,3 +2033,9 @@ details.advanced > summary::before {
 }
 
 details.advanced[open] > summary::before { content: '▾ '; }
+
+#v-m table td.tight, #v-m table th.tight,
+#v-people table td.tight, #v-people table th.tight {
+  width: 1%;
+  white-space: nowrap;
+}

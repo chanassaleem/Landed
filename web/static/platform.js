@@ -77,6 +77,11 @@
   const NUMERIC = new Set(['money', 'qty', 'num', 'pct', 'months', 'hours',
     'days']);
 
+  /* Dates are left-aligned like text but must not wrap: "Sep 21, 26"
+     broken over three lines makes a row twice as tall as its
+     neighbours and the column impossible to scan. */
+  const TIGHT = new Set(['date']);
+
   /* -------------------------------------------------------- the modules
      Each column is [key, label, format]. Each tile is [key, label,
      format] read from `totals`. `note` names the keys whose text has
@@ -237,7 +242,7 @@
         ['outstanding', 'Owed in total', 'money'],
       ],
       /* The one row that should never be a surprise. */
-      flag: (r) => (r.over_limit ? 'st-out' : ''),
+      flag: (r) => (r.over_limit ? 'flagged' : ''),
     },
     equipment: {
       cols: [
@@ -318,7 +323,7 @@
       /* A blocking fault means a number on another screen is wrong,
          not merely unwelcome, so it is marked the way an overdrawn
          customer is. */
-      flag: (r) => (r.severity === 'blocks' ? 'st-out' : ''),
+      flag: (r) => (r.severity === 'blocks' ? 'flagged' : ''),
     },
     people: {
       key: 'slips',
@@ -374,7 +379,8 @@
     const t = el('table');
     const head = el('tr');
     spec.cols.forEach(([, label, fmt]) => {
-      head.append(el('th', NUMERIC.has(fmt) ? 'num' : '', label));
+      head.append(el('th',
+        NUMERIC.has(fmt) ? 'num' : (TIGHT.has(fmt) ? 'tight' : ''), label));
     });
     const thead = el('thead');
     thead.append(head);
@@ -388,7 +394,8 @@
         if (f) tr.classList.add(f);
       }
       spec.cols.forEach(([key, label, fmt]) => {
-        const td = el('td', NUMERIC.has(fmt) ? 'num' : '',
+        const td = el('td',
+          NUMERIC.has(fmt) ? 'num' : (TIGHT.has(fmt) ? 'tight' : ''),
           (FMT[fmt] || FMT.text)(r[key]));
         td.dataset.label = label;
         tr.append(td);
