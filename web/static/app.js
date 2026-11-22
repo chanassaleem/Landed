@@ -1752,6 +1752,22 @@ async function renderSettings() {
     form.append(more);
   }
 
+  /* Your data, out, in the shape it came in. Worth being on the
+     settings screen rather than buried: a business about to put its
+     stock, its cash position and its payroll into somebody else's
+     software should be able to see the way out before it needs it. */
+  const out = el('div', 'detail-block');
+  out.append(el('h3', null, 'Your data'));
+  out.append(el('p', 'drop-sub',
+    'Everything this business has, as the same workbook the import '
+    + 'reads \u2014 so it opens in Excel, and it imports back. Nothing '
+    + 'here is locked in.'));
+  const dl = el('a', 'btn', 'Download everything');
+  dl.href = '/api/export.xlsx';
+  dl.setAttribute('download', '');
+  out.append(dl);
+  form.append(out);
+
   const err = el('p', 'gate-error');
   err.hidden = true;
   form.append(err);

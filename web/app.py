@@ -1896,3 +1896,57 @@ async def add_record(kind: str, request: Request,
         return JSONResponse({"error": "the database is not configured"}, 503)
 
     return JSONResponse({"ok": True, "id": str(row[0]), "kind": kind})
+
+
+@app.get("/api/export.xlsx")
+def export_workbook(claims: Claims = Depends(require)) -> Response:
+    """This organisation's own data, in the shape the import reads.
+
+    A business about to put its stock, its cash position and its
+    payroll into somebody else's software asks, reasonably, how it
+    gets them out again. "Export to CSV" is a thin answer when the
+    thing being exported is twenty tables that reference each other,
+    so the export is the import workbook: same sheets, same headers,
+    same codes in the same columns.
+
+    Which makes the claim checkable rather than reassuring. An export
+    that can be imported has been checked, and
+    tests/test_export.py round-trips it: export, import, and the
+    preview reports that every row is already recorded.
+
+    Read through the signed-in person's own connection, so it holds
+    exactly what they are allowed to see. Built as the service role it
+    would be a quiet way around every policy in the schema.
+    """
+    from datetime import date as _date
+
+    from engine import exporter
+    from engine.db.supabase import NotConfigured, database
+
+    try:
+        with database().as_user(claims.user_id) as conn:
+            body = exporter.to_bytes(conn)
+            name = conn.execute(
+                "select name from public.organisations"
+                " order by created_at limit 1").fetchone()
+    except NotConfigured:
+        return JSONResponse({"error": "the database is not configured"}, 503)
+    except Exception as exc:
+        return JSONResponse(
+            {"error": "the export could not be built",
+             "detail": str(exc)[:300]}, 500)
+
+    slug = "".join(
+        ch if ch.isalnum() else "-"
+        for ch in (name[0] if name else "landed").lower()).strip("-")
+    stamp = _date.today().isoformat()
+    return Response(
+        content=body,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument"
+            ".spreadsheetml.sheet"),
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="{slug or "landed"}-{stamp}.xlsx"',
+        },
+    )

@@ -579,3 +579,158 @@ def test_landed_cost_is_not_visible_to_another_importer(db, world):
     with as_user(db, world["bilal"]):
         rows = db.execute("select count(*) from public.landed_cost").fetchone()[0]
     assert rows == 0
+
+
+# ------------------------------------------- the tables added since 0008
+#
+# Ten tables arrived with migrations 0009 to 0012 -- the statements,
+# commitments, bank balances, payroll, the pipeline, contacts and
+# dealings -- and none of them was in this file. Each carries a policy
+# and every policy was written carefully, which is exactly the state a
+# missing one hides in.
+#
+# Two tests. The structural one catches the table somebody adds next
+# year and forgets; the behavioural one proves the policies on these
+# ten actually refuse, because a policy can be present, syntactically
+# valid, and let everything through.
+
+
+def test_every_tenant_table_has_row_level_security_and_a_read_policy(db):
+    """A table with an org_id and no policy is a table that leaks.
+
+    Structural rather than per-table on purpose: a test naming the
+    tables has to be remembered, and the one that matters is the one
+    added after everybody stopped thinking about this.
+    """
+    rows = db.execute(
+        "select c.relname, c.relrowsecurity,"
+        "       (select count(*) from pg_policy p"
+        "         where p.polrelid = c.oid"
+        "           and p.polcmd in ('r', '*')) as read_policies"
+        "  from pg_class c"
+        "  join pg_namespace n on n.oid = c.relnamespace"
+        " where n.nspname = 'public' and c.relkind = 'r'"
+        "   and exists (select 1 from pg_attribute a"
+        "                where a.attrelid = c.oid"
+        "                  and a.attname = 'org_id'"
+        "                  and not a.attisdropped)"
+        " order by c.relname"
+    ).fetchall()
+    assert rows, "no tenant tables found, so this test proves nothing"
+
+    unguarded = [r[0] for r in rows if not r[1]]
+    assert not unguarded, f"row-level security is off on: {unguarded}"
+
+    unread = [r[0] for r in rows if r[2] == 0]
+    assert not unread, f"no read policy on: {unread}"
+
+
+def test_one_importer_cannot_read_the_others_money_or_people(db):
+    """The behavioural half, on the tables added since 0008.
+
+    A trial balance, a payroll and a pipeline are the three things a
+    competitor would most like to see, and all three arrived without a
+    test in this file.
+    """
+    anwar = new_user(db, f"anwar-{uuid.uuid4().hex[:6]}@a.test")
+    bilal = new_user(db, f"bilal-{uuid.uuid4().hex[:6]}@b.test")
+    org_a, loc_a = new_org(db, anwar, "Importer A")
+    org_b, _loc_b = new_org(db, bilal, "Importer B")
+
+    with as_user(db, anwar) as c:
+        cust = c.execute(
+            "insert into public.customers (org_id, code, name)"
+            " values (%s, 'SECRET', 'A big hospital') returning id",
+            (org_a,)).fetchone()[0]
+        c.execute(
+            "insert into public.accounts (org_id, code, name, line,"
+            " period_from, period_to, opening, closing)"
+            " values (%s,'4000','Sales','revenue','2026-01-01',"
+            "'2026-12-31',0,48000000)", (org_a,))
+        c.execute(
+            "insert into public.equity_movements (org_id, kind, moved_on,"
+            " amount) values (%s,'dividend','2026-06-30',1000000)",
+            (org_a,))
+        c.execute(
+            "insert into public.commitments (org_id, label, kind,"
+            " due_date, amount) values (%s,'LC Roche','lc_settlement',"
+            "'2026-12-01',5250000)", (org_a,))
+        c.execute(
+            "insert into public.cash_balances (org_id, as_at, balance)"
+            " values (%s,'2026-11-30',3250000)", (org_a,))
+        c.execute(
+            "insert into public.employees (org_id, employee_no, name,"
+            " basic_monthly) values (%s,'E-1','Imran Shah',185000)",
+            (org_a,))
+        c.execute(
+            "insert into public.opportunities (org_id, customer_id,"
+            " reference, stage, value)"
+            " values (%s,%s,'TND-1','tender_submitted',9800000)",
+            (org_a, cust))
+        c.execute(
+            "insert into public.marketing_spend (org_id, label, spent_on,"
+            " amount) values (%s,'Conference','2026-09-01',450000)",
+            (org_a,))
+        contact = c.execute(
+            "insert into public.contacts (org_id, customer_id, name)"
+            " values (%s,%s,'Dr Farooq') returning id",
+            (org_a, cust)).fetchone()[0]
+        c.execute(
+            "insert into public.interactions (org_id, customer_id,"
+            " contact_id, happened_on, summary, created_by)"
+            " values (%s,%s,%s,'2026-11-01','Discussed the tender',%s)",
+            (org_a, cust, contact, anwar))
+
+    tables = ("accounts", "equity_movements", "commitments",
+              "cash_balances", "employees", "opportunities",
+              "marketing_spend", "contacts", "interactions")
+
+    with as_user(db, anwar):
+        mine = {t: db.execute(
+            f"select count(*) from public.{t}").fetchone()[0]
+            for t in tables}
+    assert all(n > 0 for n in mine.values()), \
+        f"the owner cannot see their own rows: {mine}"
+
+    with as_user(db, bilal):
+        theirs = {t: db.execute(
+            f"select count(*) from public.{t}").fetchone()[0]
+            for t in tables}
+    leaked = {t: n for t, n in theirs.items() if n}
+    assert not leaked, f"another importer can read: {leaked}"
+
+
+def test_a_stranger_cannot_write_into_somebody_elses_books(db):
+    """Reading is half of it. A policy that refuses a select and
+    allows an insert lets somebody put a liability in another
+    company's accounts.
+    """
+    anwar = new_user(db, f"own-{uuid.uuid4().hex[:6]}@a.test")
+    outsider = new_user(db, f"out-{uuid.uuid4().hex[:6]}@z.test")
+    org_a, _loc = new_org(db, anwar, "Importer A")
+
+    # One transaction per attempt. A refused statement aborts its
+    # transaction, so a second attempt inside the same block fails
+    # with "current transaction is aborted" -- which looks like a pass
+    # and proves nothing about the policy.
+    attempts = (
+        ("insert into public.accounts (org_id, code, name, line,"
+         " period_from, period_to) values (%s,'9999','Theirs',"
+         "'payables','2026-01-01','2026-12-31')", (org_a,)),
+        ("insert into public.commitments (org_id, label, kind,"
+         " due_date, amount) values (%s,'Fake','other',"
+         "'2026-12-01',1)", (org_a,)),
+        ("insert into public.employees (org_id, employee_no, name,"
+         " basic_monthly) values (%s,'X-1','Nobody',1)", (org_a,)),
+    )
+    for sql, args in attempts:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            with as_user(db, outsider) as c:
+                c.execute(sql, args)
+
+    # And nothing landed.
+    with as_user(db, anwar) as c:
+        for table in ("accounts", "commitments", "employees"):
+            assert c.execute(
+                f"select count(*) from public.{table}").fetchone()[0] == 0, (
+                f"an outsider wrote into {table}")
