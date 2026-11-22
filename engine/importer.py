@@ -114,6 +114,8 @@ class Plan:
                 "history": len(self.history),
                 "orders": len(self.orders),
                 "shipment_costs": len(self.shipments),
+                "receipts": len(self.receipts),
+                "fitment": len(self.fitment),
                 "customers": len(self.customers),
                 "invoices": len(self.invoices),
                 "machines": len(self.machines),
@@ -128,6 +130,41 @@ class Plan:
                 "contacts": len(self.contacts),
                 "dealings": len(self.dealings),
             },
+            # What the preview shows, in order, named here rather than
+            # in the browser. The browser kept its own list of seven
+            # labels against the eighteen counts above, so a person
+            # uploading employees, invoices, machines or a pipeline
+            # saw none of them confirmed -- and the two sheets added
+            # most recently were invisible for the same reason. A list
+            # the server owns cannot drift from the counts beside it.
+            "summary": [
+                {"label": label, "rows": n}
+                for label, n in (
+                    ("Branches", len(self.branches)),
+                    ("Suppliers", len(self.suppliers)),
+                    ("Items", len(self.items)),
+                    ("Stock lines", len(self.stock)),
+                    ("Months of history", len(self.history)),
+                    ("Open orders", len(self.orders)),
+                    ("Shipment costs", len(self.shipments)),
+                    ("Goods received", len(self.receipts)),
+                    ("Fitment", len(self.fitment)),
+                    ("Customers", len(self.customers)),
+                    ("Invoices", len(self.invoices)),
+                    ("Placed equipment", len(self.machines)),
+                    ("Service jobs", len(self.jobs)),
+                    ("Trial balance", len(self.accounts)),
+                    ("Dividends", len(self.dividends)),
+                    ("Committed payments", len(self.commitments)),
+                    ("Bank balances", len(self.bank)),
+                    ("Employees", len(self.employees)),
+                    ("Pipeline", len(self.pipeline)),
+                    ("Marketing spend", len(self.spend)),
+                    ("Contacts", len(self.contacts)),
+                    ("Dealings", len(self.dealings)),
+                )
+                if n
+            ],
             "months": [self.months[0], self.months[-1]] if self.months else [],
             "value": round(sum(s["qty"] * s["cost"] for s in self.stock), 2),
             "problems": [
@@ -1868,6 +1905,26 @@ def _specs(p: Plan):
                  "  from public.po_lines pl"
                  "  join public.purchase_orders po on po.id = pl.po_id"
                  "  join public.items i on i.id = pl.item_id"),
+        # Receipts move stock and change a valuation, so a preview
+        # that leaves them out is hiding the rows that matter most.
+        # Skip rather than update: a receipt is an event, and the GRN
+        # number is what says it is the same event.
+        dict(name="receipts", label="Goods received", rows=p.receipts,
+             action="skip",
+             key=lambda r: (r["grn"], r["sku"]),
+             vals=lambda r: (),
+             sql="select g.grn_number, i.sku"
+                 "  from public.grn_lines gl"
+                 "  join public.goods_receipts g on g.id = gl.grn_id"
+                 "  join public.items i on i.id = gl.item_id"),
+        dict(name="fitment", label="Fitment", rows=p.fitment,
+             action="skip",
+             key=lambda r: (r["sku"], r["machine"]),
+             vals=lambda r: (),
+             sql="select i.sku, m.machine_key"
+                 "  from public.item_machines im"
+                 "  join public.items i on i.id = im.item_id"
+                 "  join public.machines m on m.id = im.machine_id"),
         dict(name="customers", label="Customers", rows=p.customers,
              action="update",
              key=lambda r: (r["code"],),

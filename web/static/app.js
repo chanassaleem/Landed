@@ -1247,7 +1247,14 @@ function counts() {
     // and take the rest of the render down with it.
     const a = document.querySelector(`.rail a[data-view="${view}"]`);
     if (!a) return;
-    a.querySelector('.count').textContent = n ? String(n) : '';
+    // And the badge inside it. The guard above stopped one level
+    // short: the rail is built from the server's module list, so an
+    // entry can exist without the span -- and this threw, inside
+    // boot(), which is awaited after a successful import. The write
+    // had already happened; what the person saw was "Cannot set
+    // properties of null" under the heading "Not ready yet".
+    const badge = a.querySelector('.count');
+    if (badge) badge.textContent = n ? String(n) : '';
     a.dataset.alarm = alarm ? '1' : '0';
   };
   set('today', out, out > 0);
@@ -2029,12 +2036,12 @@ function importReport(d) {
   head.append(v);
   host.append(head);
 
-  const rows = [
-    ['Branches', c.branches], ['Suppliers', c.suppliers],
-    ['Items', c.items], ['Stock lines', c.stock],
-    ['Months of history', c.history], ['Open orders', c.orders],
-    ['Shipment costs', c.shipment_costs],
-  ].filter(([, n]) => n !== undefined);
+  /* Whatever the server says is in the file. This was a list of
+     seven labels written here against eighteen counts sent from
+     there, so most sheets a person filled in were never confirmed
+     back to them -- and a sheet added later was invisible until
+     somebody remembered to edit this array too. */
+  const rows = (d.summary || []).map((r) => [r.label, r.rows]);
 
   host.append(table(
     [['What', ''], ['Rows', 'num']],

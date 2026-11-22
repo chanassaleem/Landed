@@ -579,3 +579,38 @@ def test_a_shipment_with_costs_and_no_goods_is_reported(imported, books):
         "goods still at sea is normal and must not fail the import"
     assert "Goods received" in said[0].message, \
         "the message does not say where to fix it"
+
+
+def test_the_uplift_ignores_shipments_with_no_goods(imported):
+    """Three of five shipments carrying costs and no goods made the
+    Landing screen read 80.3% on top of the invoice. That is not this
+    business's uplift and it is not anybody's -- it is a total divided
+    by a denominator missing most of its terms.
+
+    The excluded shipments are counted rather than hidden, because the
+    reason the figure moved is the thing worth knowing: freight is
+    sitting against goods nobody has booked in.
+    """
+    from web.facts import Facts
+    from web.modules import run
+
+    con, owner = imported[0], imported[1]
+    with as_user(con, owner) as c:
+        d = run("freight", Facts(c))["data"]
+
+    t = d["totals"]
+    assert t["shipments"] > t["shipments_landed"], \
+        "the sample has no shipment still at sea, so this proves nothing"
+    assert t["awaiting_goods"] == t["shipments"] - t["shipments_landed"]
+    assert t["uplift_pct"] is not None
+
+    # The honest figure, recomputed from the rows the screen shows.
+    landed = [r for r in d["rows"] if r["goods_value"] > 0]
+    want = (sum(r["landed_costs"] for r in landed)
+            / sum(r["goods_value"] for r in landed))
+    assert abs(t["uplift_pct"] - round(want, 4)) < 1e-6
+
+    # And it is a freight bill, not an artefact.
+    assert 0.02 < t["uplift_pct"] < 1.5, t["uplift_pct"]
+    assert d["awaiting_note"], "nothing says why shipments were left out"
+    assert "Goods received" in d["awaiting_note"]

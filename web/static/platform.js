@@ -206,8 +206,10 @@
         ['goods_value', 'Goods value', 'money'],
         ['landed_costs', 'Freight, duty, clearing', 'money'],
         ['uplift_pct', 'On top of the invoice', 'pct'],
-        ['shipments', 'Shipments', 'num'],
+        ['shipments_landed', 'Shipments with goods', 'num'],
+        ['awaiting_goods', 'Awaiting goods', 'num'],
       ],
+      notes: ['awaiting_note'],
     },
     demand: {
       cols: [
@@ -361,7 +363,7 @@
         ['win_rate', 'Win rate', 'pct'],
         ['cost_per_win', 'Cost per win', 'money'],
         ['spend', 'Spent', 'money'],
-        ['at_risk_supply', 'Cannot supply', 'money'],
+        ['at_risk_supply_value', 'Cannot supply', 'money'],
       ],
       notes: ['caveat', 'reason'],
     },

@@ -331,6 +331,21 @@ def _freight(f) -> dict:
 
     goods_total = sum(r["goods_value"] for r in rows)
     cost_total = sum(r["landed_costs"] for r in rows)
+
+    # The headline uplift is measured only over shipments whose goods
+    # are recorded. A shipment still at sea, or one whose receipt has
+    # not been entered, contributes a cost and no denominator -- and
+    # with three of five in that state the screen read 80.3% on top of
+    # the invoice, which is not this business's uplift and is not
+    # anybody's.
+    #
+    # The excluded ones are counted rather than hidden, because the
+    # reason the figure moved is itself the thing worth knowing: it
+    # means freight is sitting against goods nobody has booked in.
+    landed = [r for r in rows if r["goods_value"] > 0]
+    landed_goods = sum(r["goods_value"] for r in landed)
+    landed_costs = sum(r["landed_costs"] for r in landed)
+    waiting = len(rows) - len(landed)
     return {
         "rows": rows,
         "breakdown": breakdown,
@@ -338,10 +353,20 @@ def _freight(f) -> dict:
         "totals": {
             "goods_value": round(goods_total, 2),
             "landed_costs": round(cost_total, 2),
-            "uplift_pct": round(cost_total / goods_total, 4)
-            if goods_total else None,
+            # Over the shipments that have goods, not over all of them.
+            "uplift_pct": round(landed_costs / landed_goods, 4)
+            if landed_goods else None,
             "shipments": len(rows),
+            "shipments_landed": len(landed),
+            "awaiting_goods": waiting,
         },
+        "awaiting_note": (
+            f"{waiting} of {len(rows)} shipments carry costs with no goods "
+            f"recorded against them, so they are left out of the uplift "
+            f"above. Either they are still at sea, or what arrived has "
+            f"not been entered on the Goods received sheet \u2014 and "
+            f"until it is, their freight and duty reach no item."
+        ) if waiting else None,
     }
 
 
@@ -615,6 +640,16 @@ def _intelligence(f) -> dict:
         return {"rows": [], "totals": {}}
     full = jsonable(r)
     rows = full.pop("pipeline", []) or full.pop("rows", [])
+    # at_risk_supply is a list of opportunities, not a figure, and the
+    # tile beside it was formatting the list as money -- which is how
+    # "Cannot supply: NaN" reached the screen. The useful number is
+    # what those opportunities are worth, which is the thing somebody
+    # would act on: pipeline that will be lost for want of stock
+    # rather than for want of a better price.
+    at_risk = full.get("at_risk_supply") or []
+    full["at_risk_supply_value"] = round(
+        sum(float(a.get("value") or 0) for a in at_risk), 2)
+    full["at_risk_supply_count"] = len(at_risk)
     return {"rows": rows, "totals": full,
             "cash_known": f.cash is not None}
 
