@@ -31,7 +31,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Callable
 
-from engine import report
+from engine import report, scope as scoping
 from engine.db import snapshot
 from engine.schema import Thresholds
 
@@ -50,15 +50,38 @@ class Facts:
     """
 
     def __init__(self, conn, thresholds: Thresholds | None = None,
-                 as_of: date | None = None, currency: str = "PKR") -> None:
+                 as_of: date | None = None, currency: str = "PKR",
+                 branch: str | None = None) -> None:
         self.conn = conn
         self.thresholds = thresholds or Thresholds()
         self.as_of = as_of or date.today()
         self.currency = currency
+        # Narrowing happens here, before any module runs, which is the
+        # only place it can be right. engine/scope.py sets out why at
+        # length: a row filter in the page narrows the list and not the
+        # figures above it, and several figures cannot be recovered
+        # from filtered rows at all -- safety stock comes from a
+        # location's own history, collection days are a ratio against
+        # revenue, and forecast error is measured per line.
+        self.scope = scoping.read(None, branch or None)
         self._cache: dict[str, Any] = {}
         self.refused: set[str] = set()
 
     # ---------------------------------------------------------- plumbing
+
+    def _narrow(self, name: str, rows):
+        """The rows this scope can see, and nothing else.
+
+        Two record types narrow by company only: a trial balance
+        belongs to a company, and there is no Karachi balance sheet
+        unless somebody keeps one. Filtering its rows would invent one.
+        """
+        if not self.scope.active:
+            return rows
+        if name in scoping.ENTITY_ONLY:
+            return scoping.filter_records(
+                rows, scoping.Scope(entity=self.scope.entity))
+        return scoping.filter_records(rows, self.scope)
 
     def _get(self, name: str, read: Callable[[], Any], empty: Any) -> Any:
         """Read once, remember, and turn a refusal into an empty answer.
@@ -89,57 +112,97 @@ class Facts:
         )
 
     @property
-    def items(self):
+    def group_items(self):
         s = self.snapshot
         return list(s.items) if s else []
 
     @property
-    def demand(self):
+    def group_demand(self):
         s = self.snapshot
         return list(s.demand) if s else []
 
     @property
-    def invoices(self):
+    def items(self):
+        return self._narrow("items", self.group_items)
+
+    @property
+    def demand(self):
+        return self._narrow("demand", self.group_demand)
+
+    @property
+    def group_invoices(self):
         return self._get("invoices",
                          lambda: snapshot.read_invoices(self.conn), [])
 
     @property
-    def jobs(self):
+    def invoices(self):
+        return self._narrow("invoices", self.group_invoices)
+
+    @property
+    def group_jobs(self):
         return self._get("jobs",
                          lambda: snapshot.read_jobs(self.conn), [])
 
     @property
-    def placements(self):
+    def jobs(self):
+        return self._narrow("jobs", self.group_jobs)
+
+    @property
+    def group_placements(self):
         return self._get("placements",
                          lambda: snapshot.read_machines(self.conn), [])
 
     @property
-    def commitments(self):
+    def placements(self):
+        return self._narrow("placements", self.group_placements)
+
+    @property
+    def group_commitments(self):
         return self._get(
             "commitments",
             lambda: snapshot.read_commitments(self.conn, self.as_of), [])
 
     @property
-    def accounts(self):
+    def commitments(self):
+        return self._narrow("commitments", self.group_commitments)
+
+    @property
+    def group_accounts(self):
         return self._get(
             "accounts",
             lambda: snapshot.read_accounts(self.conn, self.as_of), [])
 
     @property
-    def employees(self):
+    def accounts(self):
+        return self._narrow("accounts", self.group_accounts)
+
+    @property
+    def group_employees(self):
         return self._get("employees",
                          lambda: snapshot.read_employees(self.conn), [])
 
     @property
-    def opportunities(self):
+    def employees(self):
+        return self._narrow("employees", self.group_employees)
+
+    @property
+    def group_opportunities(self):
         return self._get("opportunities",
                          lambda: snapshot.read_opportunities(self.conn), [])
 
     @property
-    def marketing_spend(self):
+    def opportunities(self):
+        return self._narrow("opportunities", self.group_opportunities)
+
+    @property
+    def group_marketing_spend(self):
         return self._get(
             "marketing_spend",
             lambda: snapshot.read_marketing_spend(self.conn), [])
+
+    @property
+    def marketing_spend(self):
+        return self._narrow("marketing_spend", self.group_marketing_spend)
 
     @property
     def opening_balance(self):
@@ -236,11 +299,37 @@ class Facts:
         return self._cache["stock"]
 
     @property
+    def group_blocks(self):
+        """Every branch's blocks, whatever the scope.
+
+        A transfer has a sender and a receiver. Narrow the facts to one
+        branch and the module can no longer see the other side of the
+        move it exists to suggest, so it would return nothing and look
+        like there was nothing to move.
+        """
+        if not self.scope.active:
+            return self.blocks
+        if "group_blocks" not in self._cache:
+            self._cache["group_blocks"] = report.build_blocks(
+                self.group_items, self.group_demand,
+                self.thresholds, self.as_of)
+        return self._cache["group_blocks"]
+
+    @property
     def transfers(self):
+        """Computed across the group, then narrowed to the moves this
+        branch is party to -- in or out, because a branch cares about
+        stock arriving as much as about stock leaving."""
         if "transfers" not in self._cache:
             from engine.modules.redeploy import suggest
-            self._cache["transfers"] = report._transfer_rows(
-                suggest(self.blocks, self.thresholds))
+            rows = report._transfer_rows(
+                suggest(self.group_blocks, self.thresholds))
+            if self.scope.active and self.scope.location:
+                here = self.scope.location
+                rows = [t for t in rows
+                        if here in (t.get("from_location"),
+                                    t.get("to_location"))]
+            self._cache["transfers"] = rows
         return self._cache["transfers"]
 
     @property
@@ -248,13 +337,18 @@ class Facts:
         """Module 8. Deliberately excludes new orders; see sequencing."""
         if "cash" not in self._cache:
             from engine.modules.cash import evaluate
-            have = (self.invoices or self.commitments
-                    or self.placements or self.jobs)
+            # On the group, always. One bank balance serves the whole
+            # business: running thirteen weeks for one branch against
+            # the group's opening balance would invent a balance that
+            # branch does not have, and splitting the balance between
+            # branches is a treasury decision nobody has made.
+            have = (self.group_invoices or self.group_commitments
+                    or self.group_placements or self.group_jobs)
             self._cache["cash"] = evaluate(
-                invoices=self.invoices,
-                commitments=self.commitments,
-                placements=self.placements,
-                jobs=self.jobs,
+                invoices=self.group_invoices,
+                commitments=self.group_commitments,
+                placements=self.group_placements,
+                jobs=self.group_jobs,
                 thresholds=self.thresholds,
                 as_of=self.as_of,
                 opening_balance=self.opening_balance,

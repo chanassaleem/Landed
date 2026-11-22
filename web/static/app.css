@@ -2039,3 +2039,77 @@ details.advanced[open] > summary::before { content: '▾ '; }
   width: 1%;
   white-space: nowrap;
 }
+
+/* The hover card behind a one-word label.
+   
+   Enterprise navigation is one word per destination, because somebody
+   who uses this every day is looking for a word and not reading a
+   sentence. The sentence is not thrown away: it is here, a hover or a
+   tab key away, for whoever has not met the word before. */
+.tip {
+  position: fixed;
+  z-index: 70;
+  max-width: 272px;
+  padding: 9px 11px;
+  background: var(--ink);
+  color: #FFFFFF;
+  border-radius: var(--r);
+  box-shadow: 0 8px 24px rgba(14, 17, 22, 0.22);
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-3px);
+  transition: opacity var(--t-fast), transform var(--t-fast);
+}
+
+.tip[data-on='1'] { opacity: 1; transform: none; }
+.tip b { display: block; font-weight: 600; margin-bottom: 2px; }
+.tip span { display: block; color: #C7CDD8; }
+
+[data-theme='dark'] .tip {
+  background: #F4F5F7;
+  color: var(--ink);
+}
+[data-theme='dark'] .tip span { color: #4A5160; }
+
+/* With one word instead of a sentence, the rail no longer needs to be
+   as wide when it opens. */
+.rail:hover,
+.rail[data-pinned='1'] { width: 164px; }
+
+/* The scope line. On every module screen, always, because a figure
+   read without knowing its scope can be misread in either direction
+   -- and the modules that cannot be narrowed have to say so rather
+   than offer a control that quietly does nothing. */
+.scope {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--rule-2);
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.scope-k {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.scope-note { color: var(--text-3); }
+
+.scope .picker {
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+}

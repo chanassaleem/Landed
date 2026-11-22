@@ -725,3 +725,99 @@ def test_the_clean_seed_is_restored(facts):
     """Guards the guard above: a fault left behind would quietly make
     every later run of this file report a problem that is not real."""
     assert run_module(facts, "quality")["totals"]["total"] == 0
+
+
+# ----------------------------------------------- narrowing to one branch
+#
+# A global branch selector used to narrow one screen client-side and
+# silently not narrow the other thirteen. Scope belongs before the
+# modules run: narrow the facts, then compute, so every figure is
+# computed on exactly the rows the screen is showing.
+
+
+def scoped(seeded, branch):
+    from web.facts import Facts
+
+    con, owner, _org = seeded
+    with as_user(con, owner) as c:
+        yield Facts(c, as_of=TODAY, branch=branch)
+
+
+def test_narrowing_moves_the_rows_and_the_totals_together(seeded):
+    """The whole reason this is not a row filter in the page.
+
+    Filtered rows under an unfiltered total means the table and the
+    number above it disagree, and the number is the one people quote.
+    """
+    from web.modules import run
+
+    whole = next(scoped(seeded, None))
+    khi = next(scoped(seeded, "KHI"))
+
+    a = run("stock", whole)["data"]
+    b = run("stock", khi)["data"]
+    assert b["totals"]["branches"] == 1
+    assert a["totals"]["branches"] == 2
+    assert len(b["rows"]) < len(a["rows"])
+    assert b["totals"]["stock_value"] < a["totals"]["stock_value"]
+    assert b["totals"]["stock_value"] == pytest.approx(
+        sum(r["stock_value"] for r in b["rows"]), rel=1e-6)
+
+
+def test_a_narrowed_module_recomputes_rather_than_filters(seeded):
+    """Safety stock comes from a location's own demand history, so it
+    cannot be recovered by adding up rows that already went through
+    the engine. Narrowing has to happen before the module runs."""
+    from web.modules import run
+
+    khi = next(scoped(seeded, "KHI"))
+    rows = run("stock", khi)["data"]["rows"]
+    assert rows and all(r["location_id"] == "KHI" for r in rows)
+    assert all(r["reorder_point"] > 0 for r in rows), \
+        "the policy was not recomputed for this branch"
+
+
+def test_the_cash_view_stays_on_the_group(seeded):
+    """One bank balance serves the business. Thirteen weeks for one
+    branch against the group's opening balance would invent a balance
+    that branch does not have."""
+    from web.modules import run
+
+    whole = run("cash", next(scoped(seeded, None)))["data"]
+    khi = run("cash", next(scoped(seeded, "KHI")))["data"]
+    assert khi["opening_balance"] == whole["opening_balance"]
+    assert khi["totals"]["payments"] == whole["totals"]["payments"]
+
+
+def test_transfers_are_computed_across_the_group(seeded):
+    """A transfer has a sender and a receiver. Narrow the facts to one
+    branch and the module cannot see the other side of the move it
+    exists to suggest -- it would return nothing and look like there
+    was nothing worth moving."""
+    import dataclasses
+
+    from web.facts import Facts
+
+    con, owner, _org = seeded
+    loose = dataclasses.replace(Facts(con).thresholds,
+                                target_cover_months=1.5)
+    with as_user(con, owner) as c:
+        whole = Facts(c, thresholds=loose, as_of=TODAY)
+        assert whole.transfers, "the seed should produce a transfer"
+    with as_user(con, owner) as c:
+        khi = Facts(c, thresholds=loose, as_of=TODAY, branch="KHI")
+        moves = khi.transfers
+    assert moves, "narrowing to one branch lost the transfer entirely"
+    assert all("KHI" in (t["from_location"], t["to_location"])
+               for t in moves)
+
+
+def test_a_branch_that_holds_nothing_narrows_to_nothing(seeded):
+    """Not to everything. A filter that silently matches nothing and
+    falls back to the whole group is worse than an empty screen."""
+    from web.modules import run
+
+    nowhere = next(scoped(seeded, "ZZZ"))
+    data = run("stock", nowhere)["data"]
+    assert data["rows"] == []
+    assert data["totals"]["stock_value"] == 0

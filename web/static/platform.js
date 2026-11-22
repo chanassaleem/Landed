@@ -499,6 +499,51 @@
     return out;
   }
 
+  /* Remembered across modules, so picking a branch on one screen and
+     moving to the next keeps it. Not stored between sessions: a scope
+     somebody set last week and has forgotten is how a figure gets
+     quoted out of context. */
+  let branch = '';
+
+  function scopeBar(mod, payload) {
+    const bar = el('div', 'scope');
+
+    if (!mod.can_narrow && !payload.can_narrow) {
+      bar.append(el('span', 'scope-note',
+        'Whole business. This one cannot be shown for a single branch: '
+        + 'a statement belongs to a company, one bank balance serves '
+        + 'the lot, and a transfer has two ends.'));
+      return bar;
+    }
+
+    const list = (window.LANDED_MODULES || {}).branches || [];
+    if (!list.length) return bar;
+
+    bar.append(el('span', 'scope-k', 'Branch'));
+    const sel = el('select', 'picker');
+    sel.setAttribute('aria-label', 'Branch');
+    const all = el('option', '', 'Every branch');
+    all.value = '';
+    sel.append(all);
+    list.forEach((b) => {
+      const o = el('option', '', `${b.code} — ${b.name}`);
+      o.value = b.code;
+      sel.append(o);
+    });
+    sel.value = payload.branch || '';
+    sel.addEventListener('change', () => {
+      branch = sel.value;
+      open(mod);
+    });
+    bar.append(sel);
+
+    bar.append(el('span', 'scope-note', payload.branch
+      ? 'Every figure here was worked out from this branch\u2019s rows '
+        + 'alone, not filtered from the group total.'
+      : 'Every branch.'));
+    return bar;
+  }
+
   async function open(mod) {
     if (!bind()) return;
     const wrap = host();
@@ -516,8 +561,8 @@
     wrap.textContent = '';
     const sec = el('div', 'section');
     const head = el('div', 'section-head');
-    head.append(el('h2', '', mod.title));
-    head.append(el('p', '', mod.blurb));
+    head.append(el('h2', '', mod.name));
+    head.append(el('p', '', `${mod.title}. ${mod.blurb}`));
     sec.append(head);
     wrap.append(sec);
 
@@ -527,7 +572,10 @@
 
     let payload;
     try {
-      const res = await fetch(`/api/module/${mod.id}`);
+      const url = branch
+        ? `/api/module/${mod.id}?branch=${encodeURIComponent(branch)}`
+        : `/api/module/${mod.id}`;
+      const res = await fetch(url);
       const text = await res.text();
       payload = text ? JSON.parse(text) : {};
       if (!res.ok) {
@@ -557,10 +605,19 @@
     }
 
     if ((payload.missing || []).length) {
+      body.append(scopeBar(mod, payload));
       body.append(waiting(mod, payload.missing));
       return;
     }
     const data = payload.data || {};
+
+    /* The scope line goes in before anything that can return early.
+       Placed after the generic table instead, it covered twelve
+       modules and missed the statements -- which is the one that most
+       needs to say "whole business", because a balance sheet for one
+       branch is a thing somebody could believe in. A screen silent
+       about its scope can be misread in either direction. */
+    body.append(scopeBar(mod, payload));
 
     if (mod.id === 'books') { body.append(statements(data)); return; }
 
@@ -569,27 +626,6 @@
       body.append(L.empty('Nothing to draw yet',
         'This module has figures but no table defined for them.'));
       return;
-    }
-
-    /* The branch selector narrows the stock screen, client-side, by
-       filtering rows. It does not narrow a module screen, and it must
-       not pretend to: these tiles are engine totals -- collection
-       days, the financing cost of the ageing book, a payback rate --
-       and none of them can be recomputed from a filtered list of
-       rows. Filtering the rows and leaving the tiles alone would put
-       one branch's lines under the whole group's figures, which is
-       worse than not filtering at all.
-
-       So it says which it is. Narrowing a module properly means the
-       server doing it, and that is work that has not been done. */
-    const branch = ($('branch') || {}).value;
-    if (branch && branch !== 'ALL') {
-      body.append(note(mod.group_level
-        ? `These figures cover the whole business. ${branch} cannot be `
-          + 'separated out here: a statement belongs to a company, and a '
-          + 'transfer has two ends.'
-        : `These figures cover every branch, not just ${branch}. The `
-          + 'branch selector narrows the stock screen only.', 'warn'));
     }
 
     (spec.notes || []).forEach((key) => {
@@ -969,6 +1005,53 @@
     return sec;
   }
 
+  /* --------------------------------------------------------- hover card
+
+     One element, moved, rather than one inside each rail item. The
+     rail clips its overflow -- that is what makes it collapse to a
+     strip of icons -- so a tip nested inside an item is cut off at
+     the edge. A single fixed-position card parented to the body
+     escapes that, and there is only ever one visible.
+
+     Shown on focus as well as hover: the rail is reachable by
+     keyboard, and an explanation only a mouse can get at is not an
+     explanation. */
+
+  let tipEl = null;
+
+  function tip(target, heading, body) {
+    if (!tipEl) {
+      tipEl = el('div', 'tip');
+      tipEl.setAttribute('role', 'tooltip');
+      document.body.append(tipEl);
+    }
+    tipEl.textContent = '';
+    tipEl.append(el('b', '', heading));
+    if (body) tipEl.append(el('span', '', body));
+    const box = target.getBoundingClientRect();
+    tipEl.style.top = `${Math.round(box.top)}px`;
+    tipEl.style.left = `${Math.round(box.right + 10)}px`;
+    tipEl.dataset.on = '1';
+    /* Nudged up if it would run off the bottom. Measured after it is
+       shown, because an element with display:none has no height. */
+    const own = tipEl.getBoundingClientRect();
+    if (own.bottom > window.innerHeight - 8) {
+      tipEl.style.top =
+        `${Math.round(window.innerHeight - own.height - 8)}px`;
+    }
+  }
+
+  function untip() {
+    if (tipEl) tipEl.dataset.on = '0';
+  }
+
+  function explains(node, heading, body) {
+    node.addEventListener('mouseenter', () => tip(node, heading, body));
+    node.addEventListener('focus', () => tip(node, heading, body));
+    node.addEventListener('mouseleave', untip);
+    node.addEventListener('blur', untip);
+  }
+
   /* ----------------------------------------------------------- the rail */
 
   /* Stock keeps its own screen: the money band, the named views, the
@@ -1040,11 +1123,11 @@
         const a = el('a');
         a.href = `#m/${m.id}`;
         a.dataset.module = m.id;
-        a.title = m.state === 'locked'
-          ? `${m.title} — not licensed`
-          : m.title;
         a.append(L.icon(L.ICON[m.id] || L.ICON.items));
-        a.append(el('span', 'rail-label', m.title));
+        a.append(el('span', 'rail-label', m.name));
+        explains(a, m.title, m.state === 'locked'
+          ? `${m.blurb} Not licensed for this business.`
+          : m.blurb);
         if (m.state !== 'ready') {
           a.append(el('span', 'rail-dot', m.state === 'locked' ? '·' : '○'));
         }
@@ -1076,5 +1159,5 @@
   }
 
   window.LANDED_PLATFORM = { buildRail, open, decorateStock, renderPeople,
-    SPEC, FMT, plainTable, tile, note };
+    explains, SPEC, FMT, plainTable, tile, note };
 }());

@@ -54,6 +54,14 @@ class Module:
     """
 
     id: str
+    # One word, for the rail and the heading. A sentence reads well the
+    # first time and scans badly every time after: somebody looking for
+    # the receivables does not want to read "What you are owed" among
+    # thirteen other sentences, they want to find the word and click
+    # it. The sentence is not thrown away -- `title` is what the hover
+    # card says, so the explanation is still there for whoever has not
+    # met the word before.
+    name: str
     title: str
     # What the person gets, in their words, not the module's.
     blurb: str
@@ -85,6 +93,7 @@ class Module:
 MODULES: tuple[Module, ...] = (
     Module(
         id="stock",
+        name="Stock",
         title="What you hold",
         blurb="Every line at every branch, what it is worth, what runs "
               "out first, and what to move instead of buying.",
@@ -95,6 +104,7 @@ MODULES: tuple[Module, ...] = (
     ),
     Module(
         id="buy",
+        name="Ordering",
         title="What to order",
         blurb="What policy asks for, what the next thirteen weeks can "
               "fund, and which orders to place in what order.",
@@ -106,6 +116,7 @@ MODULES: tuple[Module, ...] = (
     ),
     Module(
         id="freight",
+        name="Landing",
         title="What it costs to land",
         blurb="Freight, duty and clearing spread across a shipment by "
               "value, weight or volume, so a price is the real one.",
@@ -115,6 +126,7 @@ MODULES: tuple[Module, ...] = (
     ),
     Module(
         id="demand",
+        name="Forecast",
         title="What you will sell",
         blurb="A forecast per line per branch, by the method that "
               "line's demand pattern actually justifies.",
@@ -124,6 +136,7 @@ MODULES: tuple[Module, ...] = (
     ),
     Module(
         id="cash",
+        name="Cash",
         title="What you can pay",
         blurb="Thirteen weeks of money in and out, timed by how your "
               "customers actually pay rather than when they promised.",
@@ -136,6 +149,7 @@ MODULES: tuple[Module, ...] = (
     ),
     Module(
         id="money",
+        name="Owed",
         title="What you are owed",
         blurb="The ageing book, each customer's real exposure across "
               "the group, and what the delay is costing in interest.",
@@ -147,6 +161,7 @@ MODULES: tuple[Module, ...] = (
     ),
     Module(
         id="sell",
+        name="Sales",
         title="What you sold",
         blurb="Invoices raised, against true landed cost, so the "
               "margin on the line is the margin you kept.",
@@ -157,6 +172,7 @@ MODULES: tuple[Module, ...] = (
     ),
     Module(
         id="books",
+        name="Books",
         title="Your statements",
         blurb="Profit, balance sheet and a cash flow derived from both "
               "rather than typed in, with the three checks that tie.",
@@ -168,6 +184,7 @@ MODULES: tuple[Module, ...] = (
     ),
     Module(
         id="customers",
+        name="Customers",
         title="Who you deal with",
         blurb="Customers and suppliers, their contacts, their terms "
               "and their credit limit, and every dealing recorded.",
@@ -177,6 +194,7 @@ MODULES: tuple[Module, ...] = (
     ),
     Module(
         id="people",
+        name="Payroll",
         title="Who you employ",
         blurb="Payroll with the statutory deductions worked out at the "
               "rates you set, never at rates assumed for you.",
@@ -188,6 +206,7 @@ MODULES: tuple[Module, ...] = (
     ),
     Module(
         id="equipment",
+        name="Equipment",
         title="What you placed",
         blurb="Instruments placed with a customer, the capital in "
               "each, and whether it pays back inside its contract.",
@@ -197,6 +216,7 @@ MODULES: tuple[Module, ...] = (
     ),
     Module(
         id="service",
+        name="Service",
         title="What you serviced",
         blurb="Jobs, the hours and parts that went in against what "
               "was billed, and the repeat visits nobody counts.",
@@ -206,6 +226,7 @@ MODULES: tuple[Module, ...] = (
     ),
     Module(
         id="quality",
+        name="Checks",
         title="Is this right",
         blurb="What is wrong with your figures before you act on them: "
               "duplicates, impossible dates, costs out by a hundred.",
@@ -222,6 +243,7 @@ MODULES: tuple[Module, ...] = (
     ),
     Module(
         id="intelligence",
+        name="Pipeline",
         title="What to do next",
         blurb="Tenders and accounts being worked, weighted by odds "
               "actually observed, checked against stock and cash.",
@@ -288,6 +310,7 @@ def catalogue(present: set[str] | None = None,
             state = "waiting"
         out.append({
             "id": m.id,
+            "name": m.name,
             "title": m.title,
             "blurb": m.blurb,
             "engine": m.engine,

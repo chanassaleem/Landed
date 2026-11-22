@@ -1178,8 +1178,24 @@ function counts() {
   set('items', new Set(S.data.stock.map((r) => r.sku)).size, false);
 }
 
+/* The branch picker, built into the stock screen's own filter row
+   rather than into the top bar.
+
+   In the chrome it looked like it narrowed the product and narrowed
+   one screen: somebody picking Karachi read Karachi's stock above the
+   whole group's cash, receivables and payback, and nothing said so.
+   A filter belongs next to the figures it moves. */
 function branches() {
-  const sel = $('branch');
+  let sel = $('branch');
+  if (!sel) {
+    const host = document.querySelector('#v-stock .filters');
+    if (!host) return;
+    sel = el('select');
+    sel.id = 'branch';
+    sel.className = 'picker';
+    sel.setAttribute('aria-label', 'Branch');
+    host.prepend(sel);
+  }
   sel.textContent = '';
   S.data.branches.forEach((b) => {
     const o = el('option', null, b === 'ALL' ? 'All branches' : b);

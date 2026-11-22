@@ -1194,6 +1194,12 @@ def list_modules(claims: Claims = Depends(require)) -> JSONResponse:
             role, licensed, _ = _standing(conn, claims)
             from engine.db import snapshot
             present = snapshot.present(conn)
+            branches = [
+                {"code": c, "name": n}
+                for c, n in conn.execute(
+                    "select code, name from public.locations"
+                    " where is_active order by code").fetchall()
+            ]
     except NotConfigured:
         return JSONResponse({"error": "the database is not configured"}, 503)
     except Exception as exc:
@@ -1203,6 +1209,7 @@ def list_modules(claims: Claims = Depends(require)) -> JSONResponse:
 
     return JSONResponse({
         "role": role,
+        "branches": branches,
         "sections": [{"id": i, "label": l} for i, l in SECTIONS],
         "modules": catalogue(
             present=present, role=role,
@@ -1212,7 +1219,7 @@ def list_modules(claims: Claims = Depends(require)) -> JSONResponse:
 
 
 @app.get("/api/module/{module_id}")
-def read_module(module_id: str,
+def read_module(module_id: str, branch: str = "",
                 claims: Claims = Depends(require)) -> JSONResponse:
     """One module's figures.
 
@@ -1238,12 +1245,27 @@ def read_module(module_id: str,
             if licensed and module_id not in licensed:
                 raise HTTPException(
                     402, f"This organisation has not licensed {module_id}.")
+            # A group-level module ignores the branch rather than
+            # pretending to honour it. There is no Karachi balance
+            # sheet unless somebody keeps one, one bank balance serves
+            # the whole business, and a transfer has two ends -- so
+            # narrowing those would not make them more accurate, it
+            # would make them wrong. The response says which happened,
+            # so the screen can state its scope instead of implying
+            # one.
+            module = BY_ID[module_id]
+            wanted = (branch or "").strip().upper()
+            applied = wanted if (wanted and not module.group_level) else ""
             facts = Facts(
                 conn,
                 thresholds=thresholds_for(settings),
                 currency=str(settings.get("currency") or "PKR"),
+                branch=applied or None,
             )
             payload = run(module_id, facts)
+            payload["branch"] = applied or None
+            payload["branch_asked"] = wanted or None
+            payload["can_narrow"] = not module.group_level
     except NotConfigured:
         return JSONResponse({"error": "the database is not configured"}, 503)
     except HTTPException:
