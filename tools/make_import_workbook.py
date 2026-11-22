@@ -287,6 +287,17 @@ def build(key: str, seed: int) -> Workbook:
                 "lead_std": max(1, int(lead * rng.uniform(0.08, 0.3))),
                 "critical": "yes" if rng.random() < 0.22 else "",
                 "cost": round(rng.uniform(*spec["cost"]), -1),
+                # A selling price on most lines but not all, because a
+                # real catalogue has gaps and the product should be
+                # seen coping with them rather than only with a
+                # complete one. Consumables carry a fatter markup than
+                # instruments, which is the shape of this trade.
+                "price": None if rng.random() < 0.15 else round(
+                    rng.uniform(*spec["cost"])
+                    * (rng.uniform(1.45, 2.3) if category == "Reagents"
+                       else rng.uniform(1.18, 1.6)), -1),
+                "generic": "yes" if category in ("Consumables",
+                                                 "Disposables") else "",
                 "pattern": rng.choice(spec["pattern_mix"]),
                 "base": rng.uniform(2, 40) if key == "meridian"
                         else rng.uniform(0.4, 4),
@@ -355,25 +366,44 @@ def build(key: str, seed: int) -> Workbook:
         sup = next((s for s in suppliers if s[0] == it["supplier"]),
                    suppliers[0])
         ordered = today - timedelta(days=rng.randint(5, 70))
+        # The price is in the supplier's currency, which means dividing
+        # the rupee cost by the rate rather than carrying the same
+        # number under a different label.
+        #
+        # This generator did carry the same number: a supplier invoiced
+        # 10,120 USD for an item worth 10,120 PKR. Nothing multiplied
+        # price by rate, so it never showed -- until migration 0013
+        # made the ledger do exactly that, at which point an imported
+        # workbook would have valued stock 282 times too high. Found
+        # by the first receipt that went through the whole chain.
+        fx = {"USD": 282.0, "EUR": 305.0}.get(sup[2], 1.0)
         orders.append({
             "po": f"PO-{today.year}-{1000+n}",
             "supplier": sup[0], "branch": code, "sku": it["sku"],
             "qty": max(1, int(it["base"] * rng.uniform(3, 10))),
-            "price": round(it["cost"] * rng.uniform(0.8, 0.95), -1),
+            "price": round(it["cost"] * rng.uniform(0.8, 0.95) / fx, 2),
             "currency": sup[2],
-            "fx": 282.0 if sup[2] == "USD" else 305.0,
+            "fx": fx,
             "ordered": ordered.isoformat(),
             "expected": (ordered + timedelta(days=it["lead"])).isoformat(),
             "status": rng.choice(["placed", "placed", "part_received"]),
         })
 
-    # ---- shipments and their costs
-    shipments = []
+    # ---- shipments, their costs, and what was received off them
+    #
+    # Two of the four have landed and two are still at sea, because
+    # both states have to be visible: an arrived shipment is where
+    # landed cost becomes a real unit cost, and one in transit is
+    # money that is committed and not yet on a shelf.
+    shipments, receipts = [], []
     for n in range(4):
-        po = orders[n]["po"]
+        order = orders[n]
+        po = order["po"]
         ref = f"SHP-{today.year}-{200+n}"
-        etd = today - timedelta(days=rng.randint(2, 30))
-        eta = etd + timedelta(days=rng.randint(18, 45))
+        arrived = n < 2
+        etd = today - timedelta(days=rng.randint(40, 70) if arrived
+                                else rng.randint(2, 20))
+        eta = etd + timedelta(days=rng.randint(18, 34))
         for cost_type, basis, amount in (
             ("Ocean freight", "value", rng.randint(80_000, 260_000)),
             ("Customs duty", "value", rng.randint(120_000, 420_000)),
@@ -386,6 +416,29 @@ def build(key: str, seed: int) -> Workbook:
                 "cost_type": cost_type, "amount": amount,
                 "allocate_by": basis,
             })
+        if not arrived:
+            continue
+        # Received the day it cleared, which is the day the cost
+        # becomes a cost. Weight and volume are per line because two
+        # of the four charges are spread on them.
+        qty = order["qty"]
+        receipts.append({
+            "grn": f"GRN-{today.year}-{700+n}",
+            "shipment": ref,
+            "po": po,
+            "branch": order["branch"],
+            "sku": order["sku"],
+            "qty": qty,
+            "price": order["price"],
+            "currency": order["currency"],
+            "fx": order["fx"],
+            "received": (eta + timedelta(days=rng.randint(1, 4))).isoformat(),
+            "weight": round(qty * rng.uniform(0.4, 2.2), 2),
+            "volume": round(qty * rng.uniform(0.002, 0.012), 4),
+            "batch": f"B{rng.randint(1000, 9999)}",
+            "expiry": (today + timedelta(
+                days=rng.randint(240, 900))).isoformat(),
+        })
 
     # ---- customers, and what they owe
     customers, invoices = [], []
@@ -661,7 +714,24 @@ def build(key: str, seed: int) -> Workbook:
         "note": "Interim dividend",
     }] if dividend else []
 
+    # ---- which reagent runs on which analyser
+    #
+    # Only reagents, and only onto machines, because that is the real
+    # relationship: a box of gloves fits everything and is marked
+    # generic instead. Some reagents fit two analysers, which is the
+    # case a column on the item could not have represented.
+    fitment = []
+    reagents = [i for i in items if i["category"] == "Reagents"]
+    for it in reagents:
+        if not machines or rng.random() < 0.2:
+            continue
+        for m in rng.sample(machines, k=min(len(machines),
+                                            1 if rng.random() < 0.7 else 2)):
+            fitment.append({"sku": it["sku"], "machine": m["key"]})
+
     extra = {
+        "receipts": receipts,
+        "fitment": fitment,
         "accounts": accounts, "dividends": dividends,
         "period": (year_start.isoformat(), today.isoformat()),
         "commitments": commitments, "bank": bank,
@@ -729,7 +799,8 @@ def render(spec, branches, suppliers, items, stock, history, orders,
         ("Items                every line you carry. Once each, not "
          "once per branch.", BODY),
         ("Stock                what is on the shelf today, per item per "
-         "branch.", BODY),
+         "branch. Your count BEFORE", BODY),
+        ("                     anything on Goods received.", BODY),
         ("Sales history        what you sold each month. Months run "
          "across the top.", BODY),
         ("", BODY),
@@ -738,6 +809,14 @@ def render(spec, branches, suppliers, items, stock, history, orders,
          "arrived.", BODY),
         ("Shipments            what is in transit, and the freight and "
          "duty on it.", BODY),
+        ("Goods received       what actually arrived off those "
+         "shipments. This is the sheet that", BODY),
+        ("                     turns freight and duty into a cost per "
+         "unit -- without it the costs", BODY),
+        ("                     have no goods to spread across, and "
+         "every price falls back to the", BODY),
+        ("                     supplier's invoice.", BODY),
+        ("Fitment              which analyser each reagent runs on.", BODY),
         ("Suppliers            who you buy from. Skipped, they are "
          "created from the names on Items.", BODY),
         ("", BODY),
@@ -808,17 +887,26 @@ def render(spec, branches, suppliers, items, stock, history, orders,
     ws = wb.create_sheet("Items")
     head(ws, ["sku", "description", "category", "supplier_name", "uom",
               "lead_time_days", "lead_time_days_std",
-              "is_clinical_critical"],
-         [16, 34, 16, 24, 10, 15, 18, 18],
+              "is_clinical_critical", "list_price", "is_generic"],
+         [16, 34, 16, 24, 10, 15, 18, 18, 14, 12],
          required=("sku", "description", "lead_time_days"))
     for r, it in enumerate(items, 2):
         put(ws, r, [it["sku"], it["description"], it["category"],
                     it["supplier"], it["uom"], it["lead"], it["lead_std"],
-                    it["critical"]],
-            formats={6: QTY, 7: QTY})
+                    it["critical"], it.get("price"), it.get("generic")],
+            formats={6: QTY, 7: QTY, 9: MONEY})
     ws.cell(len(items) + 3, 1,
             "lead_time_days is order to shelf. lead_time_days_std is how "
             "much that varies -- blank means steady.").font = NOTE
+    ws.cell(len(items) + 4, 1,
+            "list_price is what you sell it for. Against the landed cost "
+            "it gives the margin on the line, which is not the").font = NOTE
+    ws.cell(len(items) + 5, 1,
+            "same as the margin on the invoice. is_generic means it fits "
+            "anything -- gloves, tips -- so an empty Fitment").font = NOTE
+    ws.cell(len(items) + 6, 1,
+            "row for it is a fact rather than something nobody has "
+            "filled in yet.").font = NOTE
 
     # -------------------------------------------------------------- Stock
     ws = wb.create_sheet("Stock")
@@ -904,6 +992,48 @@ def render(spec, branches, suppliers, items, stock, history, orders,
             "cost says how it is spread. allocate_by: value, weight, "
             "volume or qty.").font = NOTE
 
+    # ----------------------------------------------------- Goods received
+    #
+    # The sheet that makes landed cost real.
+    #
+    # A shipment and its costs on their own allocate to nothing: the
+    # cost of freight is spread across the goods it carried, and
+    # without the goods there is no denominator. This sheet is the
+    # goods. Each row is a receipt line, tied to the shipment it came
+    # off, and it is what turns PKR 620,000 of freight and duty into a
+    # unit cost on a shelf.
+    #
+    # It posts a stock movement, so the Stock sheet is the count
+    # BEFORE these arrived. Listing the same goods in both counts them
+    # twice.
+    ws = wb.create_sheet("Goods received")
+    head(ws, ["grn_number", "shipment_ref", "po_number", "branch_code",
+              "sku", "qty", "unit_price", "currency", "fx_rate",
+              "received_at", "weight_kg", "volume_cbm", "batch",
+              "expiry_date"],
+         [17, 16, 16, 13, 16, 10, 13, 10, 11, 14, 12, 13, 12, 13],
+         required=("grn_number", "branch_code", "sku", "qty"))
+    for r, g in enumerate(extra.get("receipts", []), 2):
+        put(ws, r, [g["grn"], g["shipment"], g["po"], g["branch"], g["sku"],
+                    g["qty"], g["price"], g["currency"], g["fx"],
+                    g["received"], g["weight"], g["volume"], g["batch"],
+                    g["expiry"]],
+            formats={6: QTY, 7: MONEY, 9: '#,##0.00',
+                     11: '#,##0.00', 12: '#,##0.0000'})
+    _ng = len(extra.get("receipts", []))
+    ws.cell(_ng + 3, 1,
+            "unit_price is what the supplier charged for the goods, before "
+            "freight, in the currency you were invoiced.").font = NOTE
+    ws.cell(_ng + 4, 1,
+            "Leave currency and fx_rate blank to take them from the "
+            "purchase order. weight_kg and volume_cbm are").font = NOTE
+    ws.cell(_ng + 5, 1,
+            "per line, because two of the four usual charges are spread "
+            "on them rather than on value.").font = NOTE
+    ws.cell(_ng + 6, 1,
+            "This adds stock. The Stock sheet is your count BEFORE these "
+            "landed -- do not list the same goods twice.").font = NOTE
+
     # ---------------------------------------------------------- Customers
     ws = wb.create_sheet("Customers")
     head(ws, ["customer_code", "customer_name", "city", "is_public_sector",
@@ -961,6 +1091,27 @@ def render(spec, branches, suppliers, items, stock, history, orders,
     ws.cell(len(machines) + 4, 1,
             "point of the record for one you placed free. No other system "
             "you own holds this.").font = NOTE
+
+    # ------------------------------------------------------------ Fitment
+    #
+    # Which analyser consumes which reagent. One row per pairing, not a
+    # column on the item, because a reagent commonly fits several
+    # machines and a column would force somebody to pick one and be
+    # wrong.
+    ws = wb.create_sheet("Fitment")
+    head(ws, ["sku", "machine_key"], [16, 15],
+         required=("sku", "machine_key"))
+    for r, f in enumerate(extra.get("fitment", []), 2):
+        put(ws, r, [f["sku"], f["machine"]])
+    _nf = len(extra.get("fitment", []))
+    ws.cell(_nf + 3, 1,
+            "This is what makes a slow-moving reagent readable: dead "
+            "stock, or the only consumable for a machine you").font = NOTE
+    ws.cell(_nf + 4, 1,
+            "placed last month. List a SKU once per machine it fits. "
+            "Leave a generic item out and tick is_generic").font = NOTE
+    ws.cell(_nf + 5, 1,
+            "on the Items sheet instead.").font = NOTE
 
     # ------------------------------------------------------- Service jobs
     ws = wb.create_sheet("Service jobs")

@@ -87,11 +87,34 @@ def imported(books):
     con.close()
 
 
+
+def fresh_org(con, label):
+    """A second organisation in the same schema.
+
+    Not a second schema. Dropping and rebuilding public here would
+    wipe the module-scoped `imported` fixture out from under every
+    test that runs after this one -- which is exactly what the first
+    version of these tests did, and it showed up as an unrelated
+    failure three tests later. Tenancy is per organisation, so a new
+    organisation is both the cleaner isolation and the more honest
+    one: it is what a second customer actually is.
+    """
+    who = uuid.uuid4()
+    con.execute("insert into auth.users (id, email) values (%s,%s)",
+                (who, f"{label}-{who.hex[:8]}@roundtrip.test"))
+    with as_user(con, who) as c:
+        c.execute("insert into public.organisations (name, created_by)"
+                  " values (%s, %s)", (f"{label} Co", who))
+    return who
+
+
 def counts(con, owner):
     """Row counts for every table the workbook fills."""
     tables = ("locations", "suppliers", "items", "stock_movement",
               "demand_history", "purchase_orders", "po_lines",
-              "shipments", "shipment_costs", "customers", "invoices",
+              "shipments", "shipment_costs", "goods_receipts",
+              "grn_lines", "shipment_lines", "item_machines",
+              "customers", "invoices",
               "machines", "service_jobs", "accounts", "equity_movements",
               "commitments", "cash_balances", "employees",
               "opportunities", "marketing_spend", "contacts",
@@ -313,3 +336,192 @@ def test_the_capital_equipment_example_imports_as_cleanly(books):
         made = apply(c, plan(books["indus-medical-systems"]))
     con.close()
     assert made["employees"] and made["pipeline"] and made["accounts"]
+
+
+# ------------------------------------ the chain a customer actually has
+#
+# These are the tests that were missing, and their absence hid a hole
+# big enough to make the product pointless.
+#
+# A complete workbook produced four shipments, sixteen cost lines and
+# ZERO rows in public.landed_cost. The valuation tests passed because
+# they wrote goods receipts straight into the database; the round-trip
+# tests passed because they only ever counted shipments and costs.
+# Between the two, nothing checked that an imported shipment ever
+# reached an imported item -- so every figure that reads a landed unit
+# cost quietly fell back to the supplier's invoice price, which is the
+# one thing this product exists not to do.
+
+
+def test_an_imported_shipment_reaches_the_goods_it_carried(imported):
+    """Shipment, receipt, line, allocation. Each link or the rest is
+    arithmetic over nothing."""
+    con, owner = imported[0], imported[1]
+    n = counts(con, owner)
+    assert n["shipments"] >= 1
+    assert n["shipment_costs"] >= 1
+    assert n["goods_receipts"] >= 1, "nothing was received"
+    assert n["grn_lines"] >= 1, "a receipt with no lines carries no goods"
+    assert n["shipment_lines"] >= 1, \
+        "the goods are not attached to the shipment, so no cost can spread"
+
+    with as_user(con, owner) as c:
+        landed = c.execute(
+            "select count(*) from public.landed_cost").fetchone()[0]
+    assert landed >= 1, (
+        "shipments and costs imported but public.landed_cost is empty: "
+        "every landed unit cost falls back to the invoice price")
+
+
+def test_the_landed_cost_is_above_the_invoice_cost_and_plausibly_so(imported):
+    """The product's whole claim, measured.
+
+    Freight, duty and clearing add a fifth to a half in this trade. A
+    nil uplift means the costs are not reaching the goods; a tenfold
+    one means a currency is being applied twice.
+    """
+    con, owner = imported[0], imported[1]
+    with as_user(con, owner) as c:
+        rows = c.execute(
+            "select i.sku, gl.unit_price * gl.fx_rate as fob,"
+            "       lc.landed_unit_cost"
+            "  from public.landed_cost lc"
+            "  join public.grn_lines gl on gl.id = lc.grn_line_id"
+            "  join public.items i on i.id = gl.item_id").fetchall()
+    assert rows, "nothing to measure"
+    for sku, fob, landed in rows:
+        assert landed > fob, f"{sku}: landed {landed} is not above FOB {fob}"
+        uplift = float(landed) / float(fob) - 1
+        assert 0.02 < uplift < 1.5, (
+            f"{sku}: {uplift:.1%} uplift is not a freight bill. "
+            f"FOB {fob}, landed {landed}")
+
+
+def test_a_foreign_invoice_is_converted_once(imported):
+    """The failure this guards is specific and was real.
+
+    The sample generator priced a euro order at the rupee figure --
+    the supplier invoiced 10,120 EUR for an item worth 10,120 PKR --
+    and nothing multiplied price by rate until migration 0013, at
+    which point an imported workbook valued stock 305 times too high.
+    A per-unit cost in the millions is the symptom.
+    """
+    con, owner = imported[0], imported[1]
+    with as_user(con, owner) as c:
+        rows = c.execute(
+            "select i.sku, gl.currency, gl.unit_price, gl.fx_rate,"
+            "       lc.landed_unit_cost"
+            "  from public.landed_cost lc"
+            "  join public.grn_lines gl on gl.id = lc.grn_line_id"
+            "  join public.items i on i.id = gl.item_id").fetchall()
+    for sku, currency, price, rate, landed in rows:
+        if currency and currency != "PKR":
+            assert float(rate) > 1, f"{sku}: {currency} at a rate of {rate}"
+        assert float(landed) < 5_000_000, (
+            f"{sku}: a landed unit cost of {landed} means a rate was "
+            f"applied to a figure that was already converted")
+
+
+def test_the_receipt_takes_the_order_currency_without_being_told(imported):
+    """Migration 0013's trigger, through the import rather than
+    through a hand-written row. The sheet may leave currency and rate
+    blank; a receipt against a euro order is in euros by definition."""
+    con, owner = imported[0], imported[1]
+    with as_user(con, owner) as c:
+        rows = c.execute(
+            "select gl.currency, gl.fx_rate, po.currency, po.fx_rate"
+            "  from public.grn_lines gl"
+            "  join public.po_lines pl on pl.id = gl.po_line_id"
+            "  join public.purchase_orders po on po.id = pl.po_id").fetchall()
+    assert rows, "no receipt was linked to its order line"
+    for gl_cur, gl_rate, po_cur, po_rate in rows:
+        assert gl_cur == po_cur, f"{gl_cur} on a {po_cur} order"
+        assert float(gl_rate) == float(po_rate)
+
+
+def test_the_engine_values_stock_at_the_landed_cost(imported):
+    """Not the Freight screen -- the stock position every other module
+    reads. This is the end of the chain and the only part a customer
+    sees."""
+    con, owner = imported[0], imported[1]
+    with as_user(con, owner) as c:
+        rows = c.execute(
+            "select i.sku, ic.avg_unit_cost, gl.unit_price * gl.fx_rate,"
+            "       lc.landed_unit_cost"
+            "  from public.landed_cost lc"
+            "  join public.grn_lines gl on gl.id = lc.grn_line_id"
+            "  join public.items i on i.id = gl.item_id"
+            "  join public.item_cost ic on ic.item_id = gl.item_id"
+            " where not exists (select 1 from public.stock_movement m"
+            "                    where m.item_id = gl.item_id"
+            "                      and m.source_type is distinct from"
+            "                          'grn_line' and m.qty > 0)").fetchall()
+    for sku, avg, fob, landed in rows:
+        assert abs(float(avg) - float(landed)) < 1.0, (
+            f"{sku}: the engine values this at {avg}, the landed cost is "
+            f"{landed} and the invoice cost is {fob}")
+
+
+def test_importing_the_same_workbook_twice_does_not_receive_twice(
+        imported, books):
+    """A receipt posts a stock movement, so a doubled receipt doubles
+    the stock -- the most expensive kind of double."""
+    from engine.importer import apply, plan
+
+    con = imported[0]
+    who = fresh_org(con, "Twice")
+    with as_user(con, who) as c:
+        apply(c, plan(books["meridian-diagnostics"]))
+    first = counts(con, who)
+    with as_user(con, who) as c:
+        apply(c, plan(books["meridian-diagnostics"]))
+    second = counts(con, who)
+
+    for table in ("goods_receipts", "grn_lines", "shipment_lines",
+                  "stock_movement"):
+        assert first[table] == second[table], (
+            f"{table}: {first[table]} became {second[table]} on a "
+            f"second import of the same file")
+
+
+def test_the_export_carries_the_goods_its_shipments_refer_to(imported):
+    """Out and back in, with the landed cost intact.
+
+    This is the round trip that matters. An export that carried
+    shipments and costs but not the goods would produce a file that
+    imports back as allocations over nothing -- exactly the state the
+    import itself was in -- and the person would have no way to tell,
+    because the shipment screen would look full.
+    """
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    from engine.exporter import to_bytes
+    from engine.importer import apply, plan
+
+    con, owner = imported[0], imported[1]
+    with as_user(con, owner) as c:
+        blob = to_bytes(c)
+
+    wb = load_workbook(BytesIO(blob))
+    assert "Goods received" in wb.sheetnames, \
+        "the export cannot describe what it shipped"
+    assert wb["Goods received"].max_row > 1, "the sheet is empty"
+
+    # Into a fresh organisation, which is the honest test: the same
+    # file, nothing else, and the valuation has to come out again.
+    con2 = imported[0]
+    who = fresh_org(con2, "Reimport")
+    with as_user(con2, who) as c:
+        apply(c, plan(blob))
+    with as_user(con2, who) as c:
+        rows = c.execute(
+            "select i.sku, gl.unit_price * gl.fx_rate,"
+            "       lc.landed_unit_cost"
+            "  from public.landed_cost lc"
+            "  join public.grn_lines gl on gl.id = lc.grn_line_id"
+            "  join public.items i on i.id = gl.item_id").fetchall()
+    assert rows, "the exported file imports back with no landed cost"
+    for sku, fob, landed in rows:
+        assert float(landed) > float(fob), sku

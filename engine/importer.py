@@ -86,6 +86,8 @@ class Plan:
     spend: list[dict] = field(default_factory=list)
     contacts: list[dict] = field(default_factory=list)
     dealings: list[dict] = field(default_factory=list)
+    fitment: list[dict] = field(default_factory=list)
+    receipts: list[dict] = field(default_factory=list)
     problems: list[Problem] = field(default_factory=list)
     months: list[str] = field(default_factory=list)
 
@@ -261,6 +263,10 @@ def plan(data: bytes) -> Plan:
         _read_machines(wb["Machines"], p)
     if "Service jobs" in wb.sheetnames:
         _read_jobs(wb["Service jobs"], p)
+    if "Goods received" in wb.sheetnames:
+        _read_receipts(wb["Goods received"], p)
+    if "Fitment" in wb.sheetnames:
+        _read_fitment(wb["Fitment"], p)
 
     # Every one of these is optional, and a workbook written before
     # they existed is still a valid import. That is why each is guarded
@@ -350,6 +356,15 @@ def _read_items(ws, p):
             "lead_std": _num(vals[i["lead_time_days_std"]]) if "lead_time_days_std" in i else 0,
             "critical": (_text(vals[i["is_clinical_critical"]]).lower() in TRUE
                          if "is_clinical_critical" in i else False),
+            # None rather than zero for a missing price. Zero is a
+            # price -- it would make the margin on the line the whole
+            # negative landed cost -- and a blank cell means nobody
+            # has said yet.
+            "price": (_num(vals[i["list_price"]])
+                      if "list_price" in i
+                      and _is_num(vals[i["list_price"]]) else None),
+            "generic": (_text(vals[i["is_generic"]]).lower() in TRUE
+                        if "is_generic" in i else False),
         })
 
 
@@ -567,6 +582,110 @@ def _read_invoices(ws, p):
                       if "branch_code" in i else "",
             "amount": amount, "paid": paid,
         })
+
+
+def _read_receipts(ws, p):
+    """Goods actually received, which is what landed cost attaches to.
+
+    A shipment and its costs allocate to nothing on their own: freight
+    is spread across the goods it carried, and without the goods there
+    is no denominator. This sheet is the goods.
+
+    Fatal on a bad row, unlike Fitment, because a receipt moves stock
+    and changes a valuation. A quantity that cannot be read is not a
+    line somebody loses, it is a figure that would come out wrong.
+    """
+    h = _headers(ws)
+    i = {name: n for n, name in enumerate(h)}
+    seen = set()
+    for r, vals, _i in _rows(ws, h):
+        grn = _text(vals[i["grn_number"]]) if "grn_number" in i else ""
+        sku = _text(vals[i["sku"]]) if "sku" in i else ""
+        branch = (_text(vals[i["branch_code"]]).upper()
+                  if "branch_code" in i else "")
+        if not (grn and sku and branch):
+            p.problems.append(Problem(
+                "Goods received", r,
+                "Needs a GRN number, a SKU and a branch."))
+            continue
+        if "qty" not in i or not _is_num(vals[i["qty"]]):
+            p.problems.append(Problem(
+                "Goods received", r, f"{sku}: qty is not a number."))
+            continue
+        qty = _num(vals[i["qty"]])
+        if qty <= 0:
+            p.problems.append(Problem(
+                "Goods received", r,
+                f"{sku}: a receipt of {qty:g} is not a receipt. Leave the "
+                f"row out, or record a count on the stock screen."))
+            continue
+        key = (grn, sku)
+        if key in seen:
+            p.problems.append(Problem(
+                "Goods received", r,
+                f"{sku} appears twice on {grn}. One row per line, or the "
+                f"importer has to guess which quantity arrived."))
+            continue
+        seen.add(key)
+        p.receipts.append({
+            "grn": grn,
+            "shipment": (_text(vals[i["shipment_ref"]])
+                         if "shipment_ref" in i else ""),
+            "po": _text(vals[i["po_number"]]) if "po_number" in i else "",
+            "branch": branch,
+            "sku": sku,
+            "qty": qty,
+            "price": (_num(vals[i["unit_price"]])
+                      if "unit_price" in i
+                      and _is_num(vals[i["unit_price"]]) else 0),
+            # Blank means "take the order's", which the database does
+            # on insert. Defaulting to PKR here would quietly convert
+            # a euro invoice at one to one.
+            "currency": (_text(vals[i["currency"]]).upper()
+                         if "currency" in i else "") or None,
+            "fx": (_num(vals[i["fx_rate"]])
+                   if "fx_rate" in i and _is_num(vals[i["fx_rate"]])
+                   else None),
+            "received": _day(vals[i["received_at"]])
+                        if "received_at" in i else None,
+            "weight": (_num(vals[i["weight_kg"]])
+                       if "weight_kg" in i
+                       and _is_num(vals[i["weight_kg"]]) else None),
+            "volume": (_num(vals[i["volume_cbm"]])
+                       if "volume_cbm" in i
+                       and _is_num(vals[i["volume_cbm"]]) else None),
+            "batch": _text(vals[i["batch"]]) if "batch" in i else "",
+            "expiry": _day(vals[i["expiry_date"]])
+                      if "expiry_date" in i else None,
+        })
+
+
+def _read_fitment(ws, p):
+    """Which reagent runs on which analyser.
+
+    Two columns and a pairing, which is why it is a sheet rather than
+    a column on Items: a reagent commonly fits several analysers, and
+    a column would force somebody to pick one and be wrong.
+
+    Not fatal when a row is wrong. Fitment makes a slow-moving line
+    readable; it is not an input to any figure, so a typo in it should
+    cost the person that line and not the import.
+    """
+    h = _headers(ws)
+    i = {name: n for n, name in enumerate(h)}
+    seen = set()
+    for r, vals, _i in _rows(ws, h):
+        sku = _text(vals[i["sku"]]) if "sku" in i else ""
+        machine = _text(vals[i["machine_key"]]) if "machine_key" in i else ""
+        if not (sku and machine):
+            p.problems.append(Problem(
+                "Fitment", r, "Needs both a SKU and a machine key.",
+                fatal=False))
+            continue
+        if (sku, machine) in seen:
+            continue
+        seen.add((sku, machine))
+        p.fitment.append({"sku": sku, "machine": machine})
 
 
 def _read_machines(ws, p):
@@ -1045,15 +1164,23 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
         got = run.execute(
             "insert into public.items (org_id, sku, description, category, "
             "uom, supplier_id, lead_time_days, lead_time_days_std, "
-            "is_clinical_critical) values (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "is_clinical_critical, list_price, is_generic) "
+            "values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
             "on conflict (org_id, sku) do update set "
             "description = excluded.description, category = excluded.category, "
             "lead_time_days = excluded.lead_time_days, "
             "lead_time_days_std = excluded.lead_time_days_std, "
-            "is_clinical_critical = excluded.is_clinical_critical "
+            "is_clinical_critical = excluded.is_clinical_critical, "
+            # A blank price in a re-import leaves the price that is
+            # there. Somebody correcting lead times in a spreadsheet
+            # that predates the price column should not silently wipe
+            # every price in the catalogue.
+            "list_price = coalesce(excluded.list_price, items.list_price), "
+            "is_generic = excluded.is_generic "
             "returning id",
             (org, i["sku"], i["description"], i["category"], i["uom"],
-             sup.get(i["supplier"]), i["lead"], i["lead_std"], i["critical"]),
+             sup.get(i["supplier"]), i["lead"], i["lead_std"], i["critical"],
+             i.get("price"), i.get("generic", False)),
         ).fetchone()
         item[i["sku"]] = got[0]
         made["items"] += 1
@@ -1066,6 +1193,18 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
         if not iid or not lid:
             continue
         places.append((org, iid, lid, s["expiry"]))
+        # A zero opening places the line at the branch -- which the row
+        # above does -- but writes no movement. public.stock_movement
+        # forbids a zero quantity, and rightly: a movement of nothing
+        # is not an event, and an append-only ledger should not carry
+        # no-op rows to make a count come out even.
+        #
+        # The preview has to agree with this, and for a long time it
+        # did not. See _specs: it counted every Stock row as an
+        # incoming movement, so an out-of-stock line had no client_ref
+        # to match against and was reported as new on every single
+        # re-import. One empty shelf at one branch was enough to stop
+        # a file ever reading as a replay.
         if s["qty"]:
             movements.append((
                 org, iid, lid, s["qty"], s["cost"] or None, as_of,
@@ -1226,6 +1365,38 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
         mach[m["key"]] = got[0]
         made["machines"] += 1
 
+    # ---- which reagent runs on which analyser
+    #
+    # After both, because it is a pairing of two ids rather than a
+    # record of its own. A SKU or a machine key that is not in this
+    # workbook is reported and skipped rather than failing the import:
+    # fitment is not an input to any figure, so a typo in it should
+    # cost that line and not the whole file.
+    links, unknown = [], []
+    for f in p.fitment:
+        iid, mid = item.get(f["sku"]), mach.get(f["machine"])
+        if iid is None or mid is None:
+            unknown.append(f["sku"] if iid is None else f["machine"])
+            continue
+        links.append((org, iid, mid))
+    if links:
+        run.executemany(
+            "insert into public.item_machines (org_id, item_id, machine_id) "
+            "values (%s,%s,%s) on conflict do nothing",
+            links)
+        made["fitment"] = len(links)
+    if unknown:
+        missing = sorted(set(unknown))
+        shown = ", ".join(missing[:6])
+        p.problems.append(Problem(
+            "Fitment", None,
+            f"The Fitment sheet names {len(missing)} "
+            f"{'thing' if len(missing) == 1 else 'things'} that "
+            f"{'is' if len(missing) == 1 else 'are'} not in this workbook "
+            f"({shown}{', and others' if len(missing) > 6 else ''}). "
+            f"Those pairings were skipped; nothing else was affected.",
+            fatal=False))
+
     visits = []
     for j in p.jobs:
         visits.append((org, mach.get(j["machine"]), loc.get(j["branch"]),
@@ -1254,6 +1425,11 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
     #
     # The sheet is one row per cost line, so the shipments themselves
     # are the distinct references in it.
+    # Declared out here because the receipts below link to it. A
+    # workbook with goods received and no Shipments sheet is a normal
+    # thing -- stock arrives without freight you are tracking -- and
+    # it should import, not raise a NameError.
+    ship_ids: dict = {}
     if p.shipments:
         ships = {}
         for sh in p.shipments:
@@ -1264,7 +1440,6 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
             for key in ("mode", "etd", "eta", "po"):
                 keep[key] = keep.get(key) or sh.get(key)
 
-        ship_ids = {}
         for ref, sh in ships.items():
             got = run.execute(
                 "insert into public.shipments (org_id, reference,"
@@ -1296,6 +1471,97 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
              for c in p.shipments])
         made["shipments"] = len(ships)
         made["shipment_costs"] = len(p.shipments)
+
+    # ---- goods received, which is where landed cost becomes a cost
+    #
+    # Shipments and their costs were being imported and allocating to
+    # nothing. The allocation divides a cost across the goods that
+    # shipment carried, and nothing was creating the goods: a complete
+    # workbook produced four shipments, sixteen cost lines and zero
+    # rows in public.landed_cost. Every figure that reads a landed
+    # unit cost silently fell back to the invoice price, which is the
+    # one thing this product exists not to do.
+    #
+    # Three tables, in order, because each needs the one before it.
+    # The grn_line insert fires a trigger that posts the stock
+    # movement and another that inherits the order's currency and
+    # rate, so a euro receipt against a euro order needs no rate typed
+    # on the sheet.
+    if p.receipts:
+        # A receipt is a fact about a day, so a re-import must not
+        # write it twice -- and unlike a cost line it has a natural
+        # key, the GRN number, so it does not need deleting first.
+        grns, grn_new = {}, 0
+        for g in p.receipts:
+            lid = loc.get(g["branch"])
+            if not lid or g["grn"] in grns:
+                continue
+            got = run.execute(
+                "insert into public.goods_receipts (org_id, location_id,"
+                " po_id, grn_number, received_at)"
+                " values (%s,%s,%s,%s,coalesce(%s, current_date))"
+                " on conflict (org_id, grn_number) do update set"
+                " received_at = excluded.received_at returning id,"
+                " (xmax = 0) as inserted",
+                (org, lid, heads.get(g["po"]), g["grn"], g["received"]),
+            ).fetchone()
+            grns[g["grn"]] = got[0]
+            grn_new += 1 if got[1] else 0
+
+        # Which po_line a receipt line is against, so the trigger can
+        # take the order's currency and rate. Looked up by item rather
+        # than carried on the sheet: a person has a GRN and a SKU in
+        # front of them, not a line id.
+        po_line = {}
+        if heads:
+            for pid, iid, lid2 in run.execute(
+                "select po_id, item_id, id from public.po_lines"
+                " where org_id = %s", (org,)).fetchall():
+                po_line[(pid, iid)] = lid2
+
+        made["goods_receipts"] = grn_new
+        received = 0
+        for g in p.receipts:
+            gid, iid = grns.get(g["grn"]), item.get(g["sku"])
+            if not gid or not iid:
+                continue
+            # Skipped rather than doubled on a re-import. grn_lines has
+            # no natural key -- two receipts of one SKU on one GRN are
+            # two real rows -- and the movement its trigger posts is
+            # append-only, so there is no safe upsert. The GRN number
+            # is the thing that identifies the event.
+            if not grn_new and run.execute(
+                    "select 1 from public.grn_lines"
+                    " where grn_id = %s and item_id = %s limit 1",
+                    (gid, iid)).fetchone():
+                continue
+            got = run.execute(
+                "insert into public.grn_lines (org_id, grn_id, po_line_id,"
+                " item_id, qty, unit_price, currency, fx_rate,"
+                " expiry_date, batch)"
+                " values (%s,%s,%s,%s,%s,%s,%s,coalesce(%s,1),%s,%s)"
+                " returning id",
+                (org, gid, po_line.get((heads.get(g["po"]), iid)), iid,
+                 g["qty"], g["price"], g["currency"], g["fx"],
+                 g["expiry"], g["batch"] or None),
+            ).fetchone()
+            received += 1
+            ship = ship_ids.get(g["shipment"]) if g["shipment"] else None
+            if ship:
+                run.execute(
+                    "insert into public.shipment_lines (org_id, shipment_id,"
+                    " grn_line_id, weight_kg, volume_cbm)"
+                    " values (%s,%s,%s,%s,%s)"
+                    " on conflict (shipment_id, grn_line_id) do nothing",
+                    (org, ship, got[0], g["weight"], g["volume"]))
+            elif g["shipment"]:
+                p.problems.append(Problem(
+                    "Goods received", None,
+                    f"{g['grn']} names shipment {g['shipment']}, which is "
+                    f"not on the Shipments sheet. The goods were received; "
+                    f"the freight on them could not be spread.",
+                    fatal=False))
+        made["received_lines"] = received
 
     # ---- migration 0009's tables
     #
@@ -1522,7 +1788,12 @@ def _specs(p: Plan):
         # only ever be skipped. There is no such thing as a changed one:
         # a different opening quantity is a new fact about stock, and
         # correcting it is a count, not an import.
-        dict(name="stock", label="Opening stock", rows=p.stock,
+        # Only the rows that become movements. A zero opening writes
+        # no movement -- the ledger forbids it -- so counting it here
+        # meant one out-of-stock line made every re-import of the same
+        # file report a new row and never read as a replay.
+        dict(name="stock", label="Opening stock",
+             rows=[s for s in p.stock if s["qty"]],
              action="skip",
              key=lambda r: (f"import:opening:{r['sku']}:{r['branch']}",),
              vals=lambda r: (),

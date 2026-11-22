@@ -100,11 +100,19 @@ def test_the_export_is_the_import_workbook(exported):
 
     from openpyxl import load_workbook
 
+    from tools.make_import_workbook import build
+
     wb = load_workbook(BytesIO(exported))
     assert "Read me" in wb.sheetnames
     assert "Trial balance" in wb.sheetnames
     assert "Committed payments" in wb.sheetnames
-    assert len(wb.sheetnames) == 22
+    assert "Goods received" in wb.sheetnames
+
+    # Against the generator rather than against a number. A count
+    # tells you something changed; this tells you which sheet, and it
+    # cannot drift out of date the way `== 22` did the moment a sheet
+    # was added.
+    assert wb.sheetnames == build("meridian", 1).sheetnames
 
 
 def test_every_table_with_rows_comes_back_out(exported):

@@ -166,7 +166,14 @@ def test_a_blank_month_is_a_zero_not_a_missing_row(book):
     from openpyxl import load_workbook
 
     wb = load_workbook(BytesIO(book))
-    wb["Sales history"].cell(2, 5, None)
+    # `.value = None`, not `cell(2, 5, None)`. openpyxl's third
+    # argument defaults to None and means "do not set a value", so
+    # that form returned the cell untouched and this test blanked
+    # nothing for as long as it has existed. It passed because the
+    # sample data happened to contain a zero somewhere in row two,
+    # and started failing the moment the generator's random draws
+    # shifted -- which is the only reason anybody looked.
+    wb["Sales history"].cell(2, 5).value = None
     buf = BytesIO()
     wb.save(buf)
     p = plan(buf.getvalue())
@@ -218,9 +225,17 @@ def test_stock_arrives_as_a_ledger_entry_not_a_balance(book, org):
                 "where reason = 'opening'")
     opening = cur.fetchone()[0]
     assert opening > 100
+    # Openings and receipts, and nothing else. A receipt is a ledger
+    # entry too -- the Goods received sheet posts one through a
+    # trigger, which is how landed cost reaches an item -- so the
+    # claim here is not "only openings", it is that every row has a
+    # movement behind it and no table holds a balance.
+    cur.execute("select distinct reason from public.stock_movement")
+    assert {r[0] for r in cur.fetchall()} <= {"opening", "grn"}
     cur.execute("select count(*) from public.stock_movement "
-                "where reason <> 'opening'")
-    assert cur.fetchone()[0] == 0
+                "where reason = 'grn'")
+    assert cur.fetchone()[0] > 0, \
+        "the Goods received sheet posted no movement"
 
 
 def test_importing_the_same_file_twice_does_not_double_the_stock(book, org):
@@ -323,8 +338,12 @@ def test_every_row_still_arrives_when_batched(book, org):
 
     cur.execute("select count(*) from public.demand_history")
     assert cur.fetchone()[0] == len(p.history)
+    # Openings plus receipts. A Goods received row posts a movement
+    # through a trigger, so the ledger is no longer only the Stock
+    # sheet -- which is the point of that sheet existing.
     cur.execute("select count(*) from public.stock_movement")
-    assert cur.fetchone()[0] == sum(1 for s in p.stock if s["qty"])
+    assert cur.fetchone()[0] == (sum(1 for s in p.stock if s["qty"])
+                                 + len(p.receipts))
     cur.execute("select count(*) from public.item_locations")
     assert cur.fetchone()[0] == len(p.stock)
     cur.execute("select count(*) from public.po_lines")
@@ -484,7 +503,14 @@ def test_a_replay_writes_no_movements_and_says_so(book, org):
 
     cur.execute("select count(*) from public.stock_movement"
                 " where org_id = %s", (org_id,))
-    assert cur.fetchone()[0] == first["movements"]
+    # Openings plus receipts, unchanged by the replay. `movements`
+    # counts the openings the importer wrote; a receipt's movement is
+    # posted by a trigger, so it is not in that figure and has to be
+    # counted separately or this reads as two rows appearing from
+    # nowhere.
+    assert cur.fetchone()[0] == first["movements"] + first["received_lines"]
+    assert second["received_lines"] == 0, \
+        "the second import received the same goods again"
 
 
 def test_a_replay_does_not_double_what_is_on_order(book, org):

@@ -6,7 +6,7 @@ A business about to put its stock, its cash position and its payroll
 into somebody else's software asks, reasonably, how it gets them out
 again. "Export to CSV" is a thin answer when the thing being exported
 is twenty tables that reference each other. So the export is the
-import workbook: the same twenty-two sheets, the same headers, the
+import workbook: the same twenty-four sheets, the same headers, the
 same codes in the same columns.
 
 Which gives the second reason. An export that can be imported is an
@@ -88,11 +88,13 @@ def collect(conn, as_of: date | None = None) -> dict:
         {"sku": r[0], "description": r[1], "category": r[2] or "",
          "supplier": r[3] or "", "uom": r[4] or "each",
          "lead": _f(r[5]), "lead_std": _f(r[6]),
-         "critical": "yes" if r[7] else ""}
+         "critical": "yes" if r[7] else "",
+         "price": _f(r[8]) if r[8] is not None else None,
+         "generic": "yes" if r[9] else ""}
         for r in run.execute(
             "select i.sku, i.description, i.category, s.name, i.uom,"
             "       i.lead_time_days, i.lead_time_days_std,"
-            "       i.is_clinical_critical"
+            "       i.is_clinical_critical, i.list_price, i.is_generic"
             "  from public.items i"
             "  left join public.suppliers s on s.id = i.supplier_id"
             " where i.is_active order by i.sku").fetchall()
@@ -238,6 +240,44 @@ def collect(conn, as_of: date | None = None) -> dict:
             " order by code").fetchall()
     ]
     extra = {
+        # What was received, so the export carries the goods its own
+        # shipments refer to. Without this the file it produces would
+        # import back as four shipments allocating to nothing, which
+        # is the state the import was in before the receipts sheet
+        # existed.
+        "receipts": [
+            {"grn": r[0], "shipment": r[1] or "", "po": r[2] or "",
+             "branch": r[3], "sku": r[4], "qty": _f(r[5]),
+             "price": _f(r[6]), "currency": r[7] or "",
+             "fx": _f(r[8]), "received": _day(r[9]),
+             "weight": _f(r[10]) if r[10] is not None else None,
+             "volume": _f(r[11]) if r[11] is not None else None,
+             "batch": r[12] or "", "expiry": _day(r[13])}
+            for r in run.execute(
+                "select g.grn_number, sh.reference, po.po_number,"
+                "       l.code, i.sku, gl.qty, gl.unit_price, gl.currency,"
+                "       gl.fx_rate, g.received_at, sl.weight_kg,"
+                "       sl.volume_cbm, gl.batch, gl.expiry_date"
+                "  from public.grn_lines gl"
+                "  join public.goods_receipts g on g.id = gl.grn_id"
+                "  join public.items i on i.id = gl.item_id"
+                "  join public.locations l on l.id = g.location_id"
+                "  left join public.purchase_orders po on po.id = g.po_id"
+                "  left join public.shipment_lines sl"
+                "    on sl.grn_line_id = gl.id"
+                "  left join public.shipments sh on sh.id = sl.shipment_id"
+                " order by g.grn_number, i.sku").fetchall()],
+        # Ordered by the pair rather than by insertion, so two exports
+        # of the same business produce the same sheet and a diff
+        # between them means something changed.
+        "fitment": [
+            {"sku": r[0], "machine": r[1]}
+            for r in run.execute(
+                "select i.sku, m.machine_key"
+                "  from public.item_machines im"
+                "  join public.items i on i.id = im.item_id"
+                "  join public.machines m on m.id = im.machine_id"
+                " order by i.sku, m.machine_key").fetchall()],
         "accounts": accounts,
         "period": (_day(period[0]) or f"{as_of.year}-01-01",
                    _day(period[1]) or as_of.isoformat()),
@@ -331,7 +371,7 @@ def collect(conn, as_of: date | None = None) -> dict:
 
 
 def workbook(conn, as_of: date | None = None):
-    """The same twenty-two sheets the import reads.
+    """The same twenty-four sheets the import reads.
 
     Imported by its proper path rather than by putting tools/ on
     sys.path. The path trick worked here and would have failed in the
