@@ -568,7 +568,47 @@ def _intelligence(f) -> dict:
             "cash_known": f.cash is not None}
 
 
+def _quality(f) -> dict:
+    """What is wrong with the figures, before anybody acts on them.
+
+    engine/sanity.py has run on every import since the beginning and
+    its findings reached nobody: they went into the command-line
+    report and stopped there. That is the wrong half to hide. A
+    confidently wrong number is worse than a missing one, and the
+    checks that catch it -- a unit cost out by a hundred, two spellings
+    of one customer, a receipt dated before its order -- are the
+    difference between a figure somebody can act on and one they
+    cannot.
+
+    Every finding carries what it does to the numbers and how to fix
+    it, because a data-quality report that only lists faults is a list
+    of homework.
+    """
+    from engine import sanity
+
+    findings = sanity.check(
+        items=f.items, demand=f.demand, invoices=f.invoices,
+        jobs=f.jobs, placements=f.placements,
+        commitments=f.commitments, as_of=f.as_of,
+    )
+    return {
+        "rows": jsonable(findings),
+        "totals": sanity.summary(findings),
+        # Said rather than left to be read off three counts. "Nothing
+        # known wrong" is deliberately not "right": these checks find
+        # what they look for, and silence is not proof.
+        "verdict": (
+            "Nothing here is known to be wrong. That is not the same as "
+            "right: these checks find what they look for."
+            if not findings else
+            f"{len(findings)} thing{'s' if len(findings) != 1 else ''} "
+            f"worth looking at before you act on these figures."
+        ),
+    }
+
+
 RUNNERS = {
+    "quality": _quality,
     "stock": _stock,
     "buy": _buy,
     "freight": _freight,

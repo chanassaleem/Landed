@@ -299,6 +299,27 @@
       ],
       notes: ['caveat', 'reason'],
     },
+    quality: {
+      cols: [
+        ['severity', 'How bad', 'state'],
+        ['dataset', 'Where', 'said'],
+        ['title', 'What', 'text'],
+        ['effect', 'What it does to the numbers', 'text'],
+        ['fix', 'How to fix it', 'text'],
+        ['count', 'Rows', 'num'],
+      ],
+      tiles: [
+        ['blocks', 'Makes a figure wrong', 'num'],
+        ['warns', 'Worth looking at', 'num'],
+        ['notes', 'Worth knowing', 'num'],
+        ['total', 'In all', 'num'],
+      ],
+      notes: ['verdict'],
+      /* A blocking fault means a number on another screen is wrong,
+         not merely unwelcome, so it is marked the way an overdrawn
+         customer is. */
+      flag: (r) => (r.severity === 'blocks' ? 'st-out' : ''),
+    },
     people: {
       key: 'slips',
       cols: [
@@ -541,6 +562,27 @@
       body.append(L.empty('Nothing to draw yet',
         'This module has figures but no table defined for them.'));
       return;
+    }
+
+    /* The branch selector narrows the stock screen, client-side, by
+       filtering rows. It does not narrow a module screen, and it must
+       not pretend to: these tiles are engine totals -- collection
+       days, the financing cost of the ageing book, a payback rate --
+       and none of them can be recomputed from a filtered list of
+       rows. Filtering the rows and leaving the tiles alone would put
+       one branch's lines under the whole group's figures, which is
+       worse than not filtering at all.
+
+       So it says which it is. Narrowing a module properly means the
+       server doing it, and that is work that has not been done. */
+    const branch = ($('branch') || {}).value;
+    if (branch && branch !== 'ALL') {
+      body.append(note(mod.group_level
+        ? `These figures cover the whole business. ${branch} cannot be `
+          + 'separated out here: a statement belongs to a company, and a '
+          + 'transfer has two ends.'
+        : `These figures cover every branch, not just ${branch}. The `
+          + 'branch selector narrows the stock screen only.', 'warn'));
     }
 
     (spec.notes || []).forEach((key) => {

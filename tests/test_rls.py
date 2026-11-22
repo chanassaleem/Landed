@@ -195,8 +195,12 @@ def test_a_new_organisation_gets_its_owner_and_the_importer_modules(db):
     # with no payment behind it.
     from engine.platform import MODULES
 
+    # Compared to the registry rather than to a count. A literal here
+    # has to be edited every time a module is added, which makes the
+    # test a chore rather than a guard -- and a chore gets updated
+    # without being thought about.
     assert modules == {m.id for m in MODULES}
-    assert len(modules) == 13
+    assert len(modules) == len(MODULES)
 
 
 # --------------------------------------------------------- the tenant wall

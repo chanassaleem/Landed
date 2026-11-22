@@ -205,6 +205,22 @@ MODULES: tuple[Module, ...] = (
         section="service",
     ),
     Module(
+        id="quality",
+        title="Is this right",
+        blurb="What is wrong with your figures before you act on them: "
+              "duplicates, impossible dates, costs out by a hundred.",
+        engine="sanity.check",
+        needs=("items",),
+        uses=("demand", "invoices", "jobs", "placements", "commitments"),
+        # Not staff. The checks read across invoices, placements and
+        # commitments, and a role that cannot see those would be shown
+        # a report whose every "nothing recorded" was a permission
+        # rather than a fact.
+        roles=("owner", "manager", "accountant"),
+        group_level=True,
+        section="decide",
+    ),
+    Module(
         id="intelligence",
         title="What to do next",
         blurb="Tenders and accounts being worked, weighted by odds "

@@ -668,3 +668,60 @@ def run_module(facts, module_id):
     assert payload["data"] is not None, \
         f"{module_id} returned nothing: {payload}"
     return payload["data"]
+
+
+# ------------------------------------------- the checks nobody could see
+
+
+def test_clean_figures_report_nothing_known_wrong(facts):
+    """And say exactly that, rather than "no problems".
+
+    These checks find what they look for. Silence is not proof the
+    figures are right, and a report that implies otherwise is worse
+    than no report.
+    """
+    data = run_module(facts, "quality")
+    assert data["totals"]["total"] == 0
+    assert data["totals"]["nothing_known_wrong"] is True
+    assert "not the same as right" in data["verdict"]
+
+
+def test_a_fault_in_the_figures_is_found_and_explained(seeded):
+    """A lead time of zero, which makes a reorder point meaningless.
+
+    Written and undone inside the test so the clean seed the other
+    tests rely on survives. The point is not that this one check
+    works -- it is that engine/sanity.py reaches a screen at all.
+    Until now its 657 lines of checks ran on every import and their
+    findings went into the command-line report and stopped there.
+    """
+    con, owner, _org = seeded
+    from web.facts import Facts
+    from web.modules import run
+
+    with as_user(con, owner) as c:
+        c.execute("update public.items set lead_time_days = 0"
+                  " where sku = 'RGT-100'")
+    try:
+        with as_user(con, owner) as c:
+            data = run("quality", Facts(c, as_of=TODAY))["data"]
+    finally:
+        with as_user(con, owner) as c:
+            c.execute("update public.items set lead_time_days = 75"
+                      " where sku = 'RGT-100'")
+
+    codes = {r["code"] for r in data["rows"]}
+    assert "lead_time_zero" in codes, f"not caught: {codes}"
+
+    found = [r for r in data["rows"] if r["code"] == "lead_time_zero"][0]
+    # A list of faults with no consequence and no remedy is homework.
+    assert found["effect"], "the finding does not say what it does"
+    assert found["fix"], "the finding does not say how to fix it"
+    assert found["severity"] in ("blocks", "warns", "notes")
+    assert data["totals"]["total"] >= 1
+
+
+def test_the_clean_seed_is_restored(facts):
+    """Guards the guard above: a fault left behind would quietly make
+    every later run of this file report a problem that is not real."""
+    assert run_module(facts, "quality")["totals"]["total"] == 0
