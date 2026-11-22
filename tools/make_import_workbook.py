@@ -404,16 +404,23 @@ def build(key: str, seed: int) -> Workbook:
         etd = today - timedelta(days=rng.randint(40, 70) if arrived
                                 else rng.randint(2, 20))
         eta = etd + timedelta(days=rng.randint(18, 34))
-        for cost_type, basis, amount in (
-            ("Ocean freight", "value", rng.randint(80_000, 260_000)),
-            ("Customs duty", "value", rng.randint(120_000, 420_000)),
-            ("Clearing agent", "qty", rng.randint(18_000, 45_000)),
-            ("Inland transport", "weight", rng.randint(12_000, 38_000)),
+        # The ocean freight is billed in dollars, because it usually
+        # is: the shipping line is foreign and the clearing agent and
+        # the customs duty are not. A workbook where every charge
+        # happens to be in rupees would never exercise the conversion.
+        for cost_type, basis, amount, cur in (
+            ("Ocean freight", "value",
+             round(rng.randint(80_000, 260_000) / 282.0, 2), "USD"),
+            ("Customs duty", "value", rng.randint(120_000, 420_000), "PKR"),
+            ("Clearing agent", "qty", rng.randint(18_000, 45_000), "PKR"),
+            ("Inland transport", "weight",
+             rng.randint(12_000, 38_000), "PKR"),
         ):
             shipments.append({
                 "ref": ref, "po": po, "mode": rng.choice(["sea", "air"]),
                 "etd": etd.isoformat(), "eta": eta.isoformat(),
                 "cost_type": cost_type, "amount": amount,
+                "currency": cur, "fx": 282.0 if cur == "USD" else 1.0,
                 "allocate_by": basis,
             })
         if not arrived:
@@ -977,14 +984,15 @@ def render(spec, branches, suppliers, items, stock, history, orders,
     # ---------------------------------------------------------- Shipments
     ws = wb.create_sheet("Shipments")
     head(ws, ["shipment_ref", "po_number", "mode", "etd", "eta",
-              "cost_type", "amount_pkr", "allocate_by"],
-         [16, 16, 10, 13, 13, 20, 14, 14],
-         required=("shipment_ref", "po_number", "cost_type", "amount_pkr",
+              "cost_type", "amount", "currency", "fx_rate", "allocate_by"],
+         [16, 16, 10, 13, 13, 20, 14, 10, 11, 14],
+         required=("shipment_ref", "po_number", "cost_type", "amount",
                    "allocate_by"))
     for r, s in enumerate(shipments, 2):
         put(ws, r, [s["ref"], s["po"], s["mode"], s["etd"], s["eta"],
-                    s["cost_type"], s["amount"], s["allocate_by"]],
-            formats={7: MONEY})
+                    s["cost_type"], s["amount"], s.get("currency", "PKR"),
+                    s.get("fx", 1), s["allocate_by"]],
+            formats={7: MONEY, 9: '#,##0.00'})
     ws.cell(len(shipments) + 3, 1,
             "One row per cost, not per shipment: a shipping line bills by "
             "volume and customs by value, so each").font = NOTE

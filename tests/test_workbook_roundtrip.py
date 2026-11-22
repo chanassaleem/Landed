@@ -525,3 +525,57 @@ def test_the_export_carries_the_goods_its_shipments_refer_to(imported):
     assert rows, "the exported file imports back with no landed cost"
     for sku, fob, landed in rows:
         assert float(landed) > float(fob), sku
+
+
+def test_a_freight_bill_in_dollars_is_converted(imported):
+    """The shipping line is foreign; the clearing agent is not.
+
+    The allocation view has multiplied by fx_rate since it was
+    written, and the importer hardcoded 'PKR' with no rate -- so a
+    USD freight invoice landed at a 282nd of its real weight and the
+    uplift on the goods came out that much too small.
+    """
+    con, owner = imported[0], imported[1]
+    with as_user(con, owner) as c:
+        rows = c.execute(
+            "select kind, amount, currency, fx_rate"
+            "  from public.shipment_costs").fetchall()
+    assert rows
+    foreign = [r for r in rows if r[2] != "PKR"]
+    assert foreign, "no cost is in a foreign currency, so this proves nothing"
+    for kind, amount, currency, rate in foreign:
+        assert float(rate) > 1, f"{kind} in {currency} at a rate of {rate}"
+    for kind, amount, currency, rate in rows:
+        if currency == "PKR":
+            assert float(rate) == 1, f"{kind}: PKR at a rate of {rate}"
+
+
+def test_a_shipment_with_costs_and_no_goods_is_reported(imported, books):
+    """The check that would have caught the hole the Goods received
+    sheet was added to fill.
+
+    A shipment with costs and no lines is not something the database
+    can refuse -- every row is valid on its own. It throws nothing,
+    empties no screen and shows no obviously wrong number. It spreads
+    a freight bill across zero goods, and every item quietly keeps
+    its invoice price.
+
+    The sample has two shipments still at sea, which is exactly this
+    shape and is also perfectly normal, so the wording has to read as
+    information rather than as a fault.
+    """
+    from engine.importer import apply, plan
+
+    con = imported[0]
+    who = fresh_org(con, "Stranded")
+    with as_user(con, who) as c:
+        p = plan(books["meridian-diagnostics"])
+        apply(c, p)
+
+    said = [x for x in p.problems if x.sheet == "Shipments"
+            and "no goods" in x.message]
+    assert said, "a shipment allocating to nothing was not mentioned"
+    assert all(not x.fatal for x in said), \
+        "goods still at sea is normal and must not fail the import"
+    assert "Goods received" in said[0].message, \
+        "the message does not say where to fix it"

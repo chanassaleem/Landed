@@ -519,7 +519,23 @@ def _read_shipments(ws, p):
             "eta": _day(vals[i["eta"]]) if "eta" in i else None,
             "cost_type": typed,
             "kind": _cost_kind(typed),
-            "amount": _num(vals[i["amount_pkr"]]) if "amount_pkr" in i else 0,
+            # `amount` is the column now; `amount_pkr` is what the
+            # sheet was called before a cost could be in anything but
+            # rupees, and a workbook filled in last month is still a
+            # valid workbook.
+            "amount": (_num(vals[i["amount"]]) if "amount" in i
+                       else _num(vals[i["amount_pkr"]])
+                       if "amount_pkr" in i else 0),
+            # A shipping line that bills in dollars was being recorded
+            # as dollars-worth of rupees. The allocation view has
+            # multiplied by fx_rate since it was written; nothing was
+            # setting it, so freight on a USD invoice landed at a
+            # 282nd of its real weight.
+            "currency": ((_text(vals[i["currency"]]).upper()
+                          if "currency" in i else "") or "PKR"),
+            "fx": (_num(vals[i["fx_rate"]])
+                   if "fx_rate" in i and _is_num(vals[i["fx_rate"]])
+                   else None),
             "allocate_by": basis,
         })
 
@@ -1464,9 +1480,10 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
             [(i,) for i in ship_ids.values()])
         run.executemany(
             "insert into public.shipment_costs (org_id, shipment_id,"
-            " kind, amount, currency, allocate_by, note)"
-            " values (%s,%s,%s,%s,'PKR',%s,%s)",
+            " kind, amount, currency, fx_rate, allocate_by, note)"
+            " values (%s,%s,%s,%s,%s,%s,%s,%s)",
             [(org, ship_ids[c["ref"]], c["kind"], c["amount"],
+              c["currency"], c["fx"] or 1,
               c["allocate_by"], c["cost_type"] or None)
              for c in p.shipments])
         made["shipments"] = len(ships)
@@ -1562,6 +1579,42 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
                     f"the freight on them could not be spread.",
                     fatal=False))
         made["received_lines"] = received
+
+    # ---- a shipment whose costs land on nothing
+    #
+    # The check that would have caught the hole this sheet was added
+    # to fill. A shipment with costs and no lines is not an error the
+    # database can refuse -- every row is valid on its own -- and it
+    # produces no exception, no empty screen and no obviously wrong
+    # number. It produces a freight bill that is silently spread
+    # across zero goods, so every item keeps its invoice price and
+    # the Landing screen shows a total nothing is using.
+    #
+    # Said at import, because that is the moment somebody can fix it
+    # by adding the rows.
+    if ship_ids:
+        stranded = run.execute(
+            "select s.reference, count(distinct c.id)"
+            "  from public.shipments s"
+            "  join public.shipment_costs c on c.shipment_id = s.id"
+            "  left join public.shipment_lines l on l.shipment_id = s.id"
+            " where s.org_id = %s and l.grn_line_id is null"
+            " group by s.reference order by s.reference", (org,)).fetchall()
+        if stranded:
+            refs = ", ".join(r[0] for r in stranded[:5])
+            total = sum(r[1] for r in stranded)
+            p.problems.append(Problem(
+                "Shipments", None,
+                f"{len(stranded)} "
+                f"{'shipment carries' if len(stranded) == 1 else 'shipments carry'}"
+                f" {total} cost "
+                f"{'line' if total == 1 else 'lines'} and no goods "
+                f"({refs}{', and others' if len(stranded) > 5 else ''}). "
+                f"Freight and duty are spread across what a shipment "
+                f"carried, so until those lines are on the Goods received "
+                f"sheet these costs reach no item and every price stays "
+                f"at the supplier's invoice.",
+                fatal=False))
 
     # ---- migration 0009's tables
     #
