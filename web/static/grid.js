@@ -98,6 +98,7 @@
       views = [],     // [{ id, label, blurb, keep(row) }]
       editable = [],  // column keys the server says may be typed into
       onEdit,         // (row, key, value) -> Promise
+      onOpen,         // (row) -> void: the row's own screen
       flag,           // (row) -> class name
     } = opts;
 
@@ -234,6 +235,15 @@
       const thead = el('thead');
       const hr = el('tr');
 
+      /* Matches the action cell on every body row. Without it every
+         column sits one place left of its heading, which looks like a
+         data bug and is a markup bug. */
+      if (onOpen) {
+        const th = el('th', 'grid-open-cell');
+        th.style.width = '64px';
+        hr.append(th);
+      }
+
       shown.forEach((c, index) => {
         const th = el('th', numeric.has(c.fmt) ? 'num' : '');
         th.append(el('span', 'th-label', c.label));
@@ -305,6 +315,24 @@
         if (flag) {
           const f = flag(r);
           if (f) tr.classList.add(f);
+        }
+        /* The way in to the row itself: its ledger, and the operations
+           that write to it. Its own column rather than a click on the
+           row, because a click on the row would fight the click that
+           starts an edit -- and because somebody looking for where to
+           enter a receipt should be able to see it rather than
+           discover it. */
+        if (onOpen) {
+          const td = el('td', 'grid-open-cell');
+          const b = el('button', 'grid-open', 'Open');
+          b.type = 'button';
+          b.title = 'Movements, and recording one';
+          b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            onOpen(r);
+          });
+          td.append(b);
+          tr.append(td);
         }
         shown.forEach((c) => {
           const can = editable.includes(c.key);

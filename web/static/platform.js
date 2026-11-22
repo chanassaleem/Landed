@@ -89,6 +89,9 @@
      engine attached is part of the answer, not decoration. */
   const SPEC = {
     stock: {
+      /* A stock line has movements behind it and operations that write
+         to them, so its rows open. Nothing else does yet. */
+      opens: true,
       cols: [
         ['item_key', 'SKU', 'text'],
         ['description', 'Item', 'text'],
@@ -795,6 +798,10 @@
         editable: data.editable || [],
         flag: spec.flag,
         onEdit: (row, field, value) => saveItem(row, field, value),
+        /* Only where the row is a stock line, because the drawer shows
+           a line's movements and offers the four operations that write
+           to the ledger. A customer or a payroll row has neither. */
+        onOpen: spec.opens ? (row) => L.openDetail(row, null) : null,
       }));
     } else {
       const panel = el('div', 'panel');

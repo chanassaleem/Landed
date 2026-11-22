@@ -128,6 +128,15 @@ const SAID = {
   paid_back: 'paid back', at_risk: 'at risk', behind: 'behind',
   on_track: 'on track', ramping: 'still ramping up',
   ended: 'contract ended',
+  /* The five stock states in the words the rest of the product uses.
+     The engine's enum is REORDER and EXCESS because that is what the
+     arithmetic is doing; a person reading a row wants to know whether
+     the thing is running out or sitting there. The distinction
+     between running out and due a reorder is real and worth keeping:
+     one is already short, the other is the point at which ordering
+     should start. */
+  ok: 'on the shelf', reorder: 'due a reorder', critical: 'running out',
+  excess: 'standing still', expiry_risk: 'near expiry',
 };
 const said = (w) => SAID[w] || String(w).replace(/_/g, ' ');
 
@@ -414,7 +423,39 @@ function block(title, facts) {
   return b;
 }
 
-function openDetail(row, tr) {
+/* The engine's names and the drawer's names.
+
+   The drawer was written against /api/stock, which called a SKU `sku`
+   and a branch `branch`. The modules return the engine's own names --
+   `item_key`, `location_id` -- because that is what an ItemSnapshot
+   carries, and renaming them on the way out would mean the API and
+   the engine disagreed about what a field is called.
+
+   So the rename happens once, here, named, rather than as
+   `row.sku || row.item_key` scattered through six functions. If a
+   third caller ever needs it, it calls this. */
+const DRAWER_NAMES = {
+  item_key: 'sku',
+  location_id: 'branch',
+  stock_value: 'value',
+  excess_value: 'idle_value',
+  open_po: 'on_order',
+  months_cover: 'cover',
+  status: 'state',
+  reason: 'why',
+};
+
+function forDrawer(row) {
+  if (row.sku !== undefined) return row;   // already the old shape
+  const out = Object.assign({}, row);
+  Object.keys(DRAWER_NAMES).forEach((from) => {
+    if (row[from] !== undefined) out[DRAWER_NAMES[from]] = row[from];
+  });
+  return out;
+}
+
+function openDetail(given, tr) {
+  const row = forDrawer(given);
   const d = $('detail');
   document.querySelectorAll('tr.picked').forEach(
     (r) => r.classList.remove('picked'));
@@ -432,7 +473,11 @@ function openDetail(row, tr) {
     fact('On order', row.on_order ? qty(row.on_order) : '—'),
     fact('Months of cover', row.cover === null ? 'no demand yet'
                                                : months(row.cover)),
-    fact('State', row.state, true),
+    /* The same words the grid uses. The old /api/stock sent this
+       already in words; the module sends the engine's own enum,
+       and two screens calling one state by two names is how a
+       person starts to wonder whether they are the same thing. */
+    fact('State', said(String(row.state || '').toLowerCase()), true),
   ]));
 
   body.append(block('Policy', [
@@ -645,9 +690,24 @@ function openForm(op, row) {
       /* Reload from the server rather than patch the figure here. A
          screen that works out its own new total is a screen that can
          disagree with the database, and nobody can tell which is
-         wrong. */
-      await boot();
-      go2(row);
+         wrong.
+
+         Which screen to reload is the screen that is showing. boot()
+         rebuilds the old top-level views; on a module screen those
+         are not in the page, so it reached for elements that are not
+         there and threw after the movement had already been written
+         -- a write that succeeded, reported as a failure. */
+      const onModule = location.hash.startsWith('#m/');
+      if (onModule && window.LANDED_PLATFORM) {
+        const id = location.hash.slice(3);
+        const mod = ((window.LANDED_MODULES || {}).modules || [])
+          .find((m) => m.id === id);
+        closeDetail();
+        if (mod) await window.LANDED_PLATFORM.open(mod);
+      } else {
+        await boot();
+        go2(row);
+      }
     } catch (ex) {
       err.hidden = false;
       err.textContent = ex.message;
@@ -1349,6 +1409,7 @@ async function boot() {
    from this one the day somebody changed a country. */
 window.LANDED = {
   $, el, go, icon, ICON, empty, money, qty, pct, months, said, plural,
+  openDetail, closeDetail,
   get data() { return S.data; },
 };
 
