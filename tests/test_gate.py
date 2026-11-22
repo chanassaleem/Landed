@@ -722,11 +722,19 @@ def test_a_standing_still_limit_below_the_cover_target_is_refused(
 
 
 def test_settings_outside_their_range_are_refused_by_name(signed_in):
+    """Refused, and the response says which field.
+
+    The sentence a person reads names the setting the way the screen
+    labels it; the field key comes back separately so the input can be
+    marked and so this test matches on something steadier than
+    wording.
+    """
     client, _ = signed_in
     r = client.post("/api/settings",
                     json={"settings": {"cost_of_capital_annual": 40}})
     assert r.status_code == 400
-    assert "cost_of_capital_annual" in " ".join(r.json()["problems"])
+    assert r.json()["rejected"] == ["cost_of_capital_annual"]
+    assert any("between 0 and 1" in p for p in r.json()["problems"])
 
 
 def test_an_unknown_setting_is_ignored_not_stored(signed_in, monkeypatch):
@@ -752,8 +760,11 @@ def test_an_unknown_setting_is_ignored_not_stored(signed_in, monkeypatch):
     import engine.db.supabase as sup
     client, _ = signed_in
     monkeypatch.setattr(sup, "database", lambda: DB())
+    # `minimum_wage_monthly` used to be the unknown key here. It is a
+    # real setting now, which is exactly the drift this test exists to
+    # catch, so the example is one the engine has no field for.
     r = client.post("/api/settings", json={"settings": {
-        "excess_cover_months": 9, "minimum_wage_monthly": 1}})
+        "excess_cover_months": 9, "profit_target_margin": 1}})
     assert r.status_code == 200
     assert r.json()["settings"] == {"excess_cover_months": 9.0}
 

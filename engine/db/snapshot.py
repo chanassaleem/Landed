@@ -315,3 +315,275 @@ def read_jobs(conn, since: date | None = None):
         )
         for r in conn.execute(JOBS_SQL, (since,)).fetchall()
     ]
+
+
+# ------------------------------------------------------------ migration 0009
+#
+# Readers for the four modules that were written, tested, and had
+# nowhere to read from: the statements, the commitments half of the cash
+# view, payroll and the pipeline. Each one returns the dataclass its
+# module already takes, so no module changed to gain a database.
+#
+# entity_id is left at its default throughout, as the readers above do.
+# A connection is scoped to one organisation by the policies, so every
+# row a read returns belongs to the same entity and a column saying so
+# would be a constant. When an organisation can hold several legal
+# entities that changes, and it changes here rather than in the engine.
+
+
+def read_accounts(conn, period_to: date | None = None):
+    """The trial balance for the latest period at or before a date.
+
+    `period_to` picks the period rather than filtering by it: a trial
+    balance is as at one date, and summing two periods' worth of
+    closing balances produces a statement that balances by accident or
+    not at all. Where several periods are loaded the most recent one
+    that has closed on or before the date wins, which is what somebody
+    asking for "the accounts" in March means.
+    """
+    from engine.modules.finance import Account
+
+    period_to = period_to or date.today()
+    row = conn.execute(
+        "select max(period_to) from public.accounts where period_to <= %s",
+        (period_to,),
+    ).fetchone()
+    if not row or row[0] is None:
+        return []
+    chosen = row[0]
+    return [
+        Account(
+            entity_id="default",
+            code=r[0], name=r[1], line=r[2],
+            opening=float(r[3] or 0), closing=float(r[4] or 0),
+        )
+        for r in conn.execute(
+            "select code, name, line, opening, closing"
+            "  from public.accounts where period_to = %s"
+            " order by code",
+            (chosen,),
+        ).fetchall()
+    ]
+
+
+def accounts_period(conn, period_to: date | None = None):
+    """Which period `read_accounts` would return, so a screen can say so.
+
+    A statement shown without the period it covers is a number nobody
+    can check.
+    """
+    period_to = period_to or date.today()
+    row = conn.execute(
+        "select period_from, period_to from public.accounts"
+        " where period_to = (select max(period_to) from public.accounts"
+        "                     where period_to <= %s)"
+        " limit 1",
+        (period_to,),
+    ).fetchone()
+    return (row[0], row[1]) if row else (None, None)
+
+
+def read_dividends(conn, period_from: date, period_to: date) -> float:
+    """Dividends paid in the period, for the retained-earnings check.
+
+    Without this the check fails for every company that pays one:
+    closing retained earnings less opening does not equal profit when a
+    dividend went out in between, and the module would report a correct
+    set of books as broken.
+    """
+    row = conn.execute(
+        "select coalesce(sum(amount), 0) from public.equity_movements"
+        " where kind = 'dividend' and moved_on between %s and %s",
+        (period_from, period_to),
+    ).fetchone()
+    return float(row[0] or 0)
+
+
+def read_commitments(conn, as_of: date | None = None):
+    """Outflows already committed, unsettled ones only.
+
+    A settled commitment has already left the account, so counting it
+    again in the horizon charges the same money twice. The recurrence is
+    passed through rather than expanded: engine/modules/cash.py has
+    `expand_commitments` for that, and expanding here would mean two
+    places that know how a recurrence works.
+    """
+    from engine.schema import Commitment, CommitmentKind
+
+    as_of = as_of or date.today()
+    return [
+        Commitment(
+            label=r[0],
+            kind=CommitmentKind(r[1]),
+            due_date=r[2],
+            amount=float(r[3] or 0),
+            is_recurring=bool(r[4]),
+            recurs_every_days=int(r[5] or 0),
+            location_id=str(r[6]) if r[6] else "default",
+        )
+        for r in conn.execute(
+            "select label, kind, due_date, amount, is_recurring,"
+            "       recurs_every_days, location_id"
+            "  from public.commitments"
+            " where is_settled = false"
+            "   and (due_date >= %s or is_recurring)"
+            " order by due_date",
+            (as_of,),
+        ).fetchall()
+    ]
+
+
+def read_cash_balance(conn, as_of: date | None = None):
+    """The opening bank balance, as at the latest date not after `as_of`.
+
+    Returns None rather than zero when nothing has been entered. Zero
+    is a balance, and a cash view that opens at zero because nobody
+    filled the figure in reports a business about to miss payroll.
+    """
+    as_of = as_of or date.today()
+    row = conn.execute(
+        "select sum(balance), max(as_at) from public.cash_balances"
+        " where as_at = (select max(as_at) from public.cash_balances"
+        "                 where as_at <= %s)",
+        (as_of,),
+    ).fetchone()
+    if not row or row[0] is None:
+        return None, None
+    return float(row[0]), row[1]
+
+
+def read_employees(conn):
+    from engine.payroll import Employee
+
+    return [
+        Employee(
+            employee_id=r[0], name=r[1], entity_id="default",
+            location_id=str(r[2]) if r[2] else "default",
+            department=r[3] or "",
+            basic_monthly=float(r[4] or 0),
+            allowances_monthly=float(r[5] or 0),
+            medical_monthly=float(r[6] or 0),
+            employer_pf_rate=float(r[7] or 0),
+            employee_pf_rate=float(r[8] or 0),
+            joined=r[9], left=r[10],
+            eobi_registered=bool(r[11]),
+            social_security=bool(r[12]),
+            is_active=bool(r[13]),
+        )
+        for r in conn.execute(
+            "select employee_no, name, location_id, department,"
+            "       basic_monthly, allowances_monthly, medical_monthly,"
+            "       employer_pf_rate, employee_pf_rate, joined, left_on,"
+            "       eobi_registered, social_security, is_active"
+            "  from public.employees order by name"
+        ).fetchall()
+    ]
+
+
+def read_opportunities(conn):
+    """The pipeline, with the item each opportunity would consume.
+
+    The item key is joined in rather than held on the row because
+    engine/modules/marketing.py checks the pipeline against the stock
+    position by item key, and a stored copy of the key drifts the first
+    time somebody renames a code.
+    """
+    from engine.modules.marketing import Opportunity
+
+    return [
+        Opportunity(
+            opportunity_id=r[0],
+            customer_key=r[1] or "",
+            customer_name=r[2] or "(none)",
+            entity_id="default",
+            location_id=str(r[3]) if r[3] else "default",
+            stage=r[4],
+            value=float(r[5] or 0),
+            expected_close=r[6],
+            item_key=r[7] or "",
+            quantity=float(r[8] or 0),
+            source=r[9] or "",
+            owner=r[10] or "",
+            opened=r[11],
+            closed=r[12],
+        )
+        for r in conn.execute(
+            "select o.reference, c.code, c.name, o.location_id, o.stage,"
+            "       o.value, o.expected_close, i.sku, o.quantity,"
+            "       o.source, o.owner_name, o.opened, o.closed"
+            "  from public.opportunities o"
+            "  left join public.customers c on c.id = o.customer_id"
+            "  left join public.items i on i.id = o.item_id"
+            " order by o.expected_close nulls last, o.value desc"
+        ).fetchall()
+    ]
+
+
+def read_marketing_spend(conn, since: date | None = None):
+    from engine.modules.marketing import Spend
+
+    since = since or date(date.today().year - 1, 1, 1)
+    return [
+        Spend(entity_id="default", label=r[0], category=r[1],
+              spent_on=r[2], amount=float(r[3] or 0))
+        for r in conn.execute(
+            "select label, category, spent_on, amount"
+            "  from public.marketing_spend where spent_on >= %s"
+            " order by spent_on desc",
+            (since,),
+        ).fetchall()
+    ]
+
+
+# What record types this organisation actually holds. The module
+# registry turns this into each module's state, which is why it counts
+# rows rather than checking that a table exists: every table exists in
+# every organisation from the moment the migration runs, and a module
+# whose table is empty is waiting for figures, not ready.
+PRESENCE_SQL: dict[str, str] = {
+    "items": "select 1 from public.items limit 1",
+    "demand": "select 1 from public.demand_history limit 1",
+    "invoices": "select 1 from public.invoices limit 1",
+    "customers": "select 1 from public.customers limit 1",
+    "jobs": "select 1 from public.service_jobs limit 1",
+    "placements": "select 1 from public.machines limit 1",
+    "commitments": "select 1 from public.commitments where is_settled = false limit 1",
+    "accounts": "select 1 from public.accounts limit 1",
+    "employees": "select 1 from public.employees where is_active limit 1",
+    "opportunities": "select 1 from public.opportunities limit 1",
+    "marketing_spend": "select 1 from public.marketing_spend limit 1",
+    "shipments": "select 1 from public.shipments limit 1",
+    "orders": "select 1 from public.purchase_orders limit 1",
+}
+
+
+def present(conn) -> set[str]:
+    """Which record types have at least one row this user can see.
+
+    One statement rather than thirteen round trips, because this runs
+    on every page load and the modules screen is the first thing anyone
+    sees. Each arm is a `limit 1` existence check, so none of them
+    reads a table.
+
+    A record type whose query fails is reported absent rather than
+    raising. The policies refuse a table the role may not read, and a
+    manager who cannot see payroll should be told the payroll module is
+    waiting for figures, not handed a 500.
+    """
+    arms = ", ".join(
+        f"exists({sql}) as {name}" for name, sql in PRESENCE_SQL.items()
+    )
+    try:
+        row = conn.execute(f"select {arms}").fetchone()
+    except Exception:
+        out = set()
+        for name, sql in PRESENCE_SQL.items():
+            try:
+                if conn.execute(f"select exists({sql})").fetchone()[0]:
+                    out.add(name)
+            except Exception:
+                continue
+        return out
+    return {
+        name for name, got in zip(PRESENCE_SQL, row) if got
+    }

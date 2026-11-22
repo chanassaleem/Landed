@@ -263,3 +263,4 @@ def test_import_avoided_is_priced_at_the_receiver_cost():
 
 def test_no_blocks_is_safe():
     assert suggest([], T) == ()
+

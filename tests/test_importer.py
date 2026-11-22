@@ -222,12 +222,19 @@ def test_importing_the_same_file_twice_does_not_double_the_stock(book, org):
     opening movement carries a client_ref so the ledger can refuse the
     replay rather than quietly adding the stock again.
     """
-    conn, cur, _ = org
+    conn, cur, org_id = org
     p = plan(book)
     apply(cur, p)
     conn.commit()
 
-    cur.execute("select sum(qty) from public.stock_movement")
+    # Counted within this organisation, not across the database. These
+    # assertions used to be unscoped, which made the test pass only
+    # while the database held exactly one organisation's rows -- so it
+    # went green on its own and red whenever a module that seeds or
+    # rebuilds the schema had run first. The thing being tested is a
+    # replay into one tenant, so that is what is counted.
+    cur.execute("select sum(qty) from public.stock_movement"
+                " where org_id = %s", (org_id,))
     first = cur.fetchone()[0]
 
     try:
@@ -236,9 +243,11 @@ def test_importing_the_same_file_twice_does_not_double_the_stock(book, org):
     except Exception:
         conn.rollback()
 
-    cur.execute("select count(*) from public.items")
+    cur.execute("select count(*) from public.items where org_id = %s",
+                (org_id,))
     assert cur.fetchone()[0] == 60, "items were duplicated"
-    cur.execute("select sum(qty) from public.stock_movement")
+    cur.execute("select sum(qty) from public.stock_movement"
+                " where org_id = %s", (org_id,))
     assert cur.fetchone()[0] == first, "the opening stock was counted twice"
 
 

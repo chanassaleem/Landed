@@ -100,6 +100,28 @@ def _donatable(
     # item's service target, which matters most for intermittent spares: their
     # mean monthly demand is near zero, so a cover-months floor would happily
     # ship out the last pump that nobody can predict needing.
+    #
+    # It is also what stops a transfer from causing the very import it was
+    # meant to avoid. Floored at the reorder point instead, a donor is left
+    # standing exactly at the level that triggers a purchase order, so the
+    # stock moves and the letter of credit is opened anyway -- which is the
+    # opposite of the point.
+    #
+    # One consequence is deliberate and is NOT resolved here. An item can be
+    # EXCESS and have nothing to give. EXCESS is a flat
+    # `excess_cover_months` of on-hand cover, while order_up_to is lead-time
+    # relative, so on a long lead time order_up_to sits above the excess
+    # line: at 75 days it is roughly seven and a half months of demand
+    # against a six-month excess limit. Such an item is flagged as holding
+    # too much and is correctly refused permission to release any of it.
+    #
+    # Both halves are defensible on their own and the pair is contradictory.
+    # Reconciling them means changing what EXCESS means, which moves a figure
+    # on every stock screen, so it is a decision for the business and not for
+    # this function. What the product must not do is stay silent: see
+    # `blocked_donors` in web/modules.py, which counts these and says so,
+    # rather than letting the transfer list come back empty with no
+    # explanation.
     keep = max(result.order_up_to, thresholds.sender_min_cover_months * monthly)
     return max(0.0, item.on_hand - keep)
 

@@ -600,11 +600,144 @@ def equipment(claims: Claims = Depends(require)) -> JSONResponse:
 # Only these, and only as numbers. A settings blob written straight
 # into Thresholds would let anything in the column become anything in
 # the engine, which is a wide door for a feature this small.
-SETTABLE = {
-    "target_cover_months": (0.25, 36.0),
-    "excess_cover_months": (0.5, 60.0),
-    "cost_of_capital_annual": (0.0, 1.0),
-    "cash_buffer": (0.0, 1e15),
+#
+# Four of the engine's twenty-three numbers used to be here, which
+# meant the other nineteen were settable in the dataclass and
+# unreachable from the product -- a forecast's smoothing constants, the
+# payroll minimum wage, the cash horizon. They are all here now, each
+# with the module it moves, so a person can find the one that explains
+# a figure they disagree with.
+#
+# `kind` is not decoration. Thresholds holds ints for the fields that
+# index or iterate -- cash_horizon_weeks reaches a range(), target_dso
+# days a timedelta -- and a float arriving there is a TypeError deep in
+# a module rather than a rejection at the edge. The old table held only
+# floats, so this never came up and would have the first time one of
+# the week counts was exposed.
+
+
+class Setting:
+    """One settable number: its bounds, its type, and what it moves."""
+
+    __slots__ = ("lo", "hi", "kind", "label", "help", "module", "advanced")
+
+    def __init__(self, lo, hi, kind=float, label="", help="",
+                 module="", advanced=True):
+        self.lo, self.hi, self.kind = lo, hi, kind
+        self.label, self.help, self.module = label, help, module
+        self.advanced = advanced
+
+    def clean(self, raw):
+        """The value, or a sentence saying why not. Never a clamp.
+
+        Clamping is the software deciding what the business meant. A
+        person who types 400% for the cost of capital has made a
+        mistake worth telling them about, and silently storing 100%
+        hides it until a figure they cannot explain shows up.
+        """
+        try:
+            v = self.kind(float(raw))
+        except (TypeError, ValueError):
+            return None, f"{self.label or 'that'} is not a number"
+        if not (self.lo <= v <= self.hi):
+            return None, (f"{self.label or 'that'} has to be between "
+                          f"{self.lo:g} and {self.hi:g}")
+        return v, None
+
+
+SETTABLE: dict[str, Setting] = {
+    # ---------------------------------------------------- stock policy
+    "target_cover_months": Setting(
+        0.25, 36.0, float, "Cover you aim to hold", module="stock",
+        advanced=False,
+        help="Months of demand a branch should have on the shelf."),
+    "excess_cover_months": Setting(
+        0.5, 60.0, float, "Standing-still limit", module="stock",
+        advanced=False,
+        help="Cover above which stock counts as money standing still."),
+    "min_transfer_value": Setting(
+        0.0, 1e12, float, "Smallest transfer worth making", module="stock",
+        help="A move has paperwork and breakage risk, so below this the "
+             "engine does not suggest it."),
+    "sender_min_cover_months": Setting(
+        0.0, 36.0, float, "Floor a sending branch keeps", module="stock",
+        help="A branch is never stripped below this to rescue another."),
+    "abc_a_cutoff": Setting(
+        0.5, 0.99, float, "Where the A class ends", module="stock",
+        help="Share of consumption value that counts as the A lines."),
+    "abc_b_cutoff": Setting(
+        0.6, 0.999, float, "Where the B class ends", module="stock"),
+    "clinical_critical_floor": Setting(
+        0.5, 0.9999, float, "Service level for critical lines",
+        module="stock",
+        help="Clinical criticality raises a service target and never "
+             "lowers it."),
+    # ------------------------------------------------------- forecasting
+    "forecast_horizon_months": Setting(
+        1, 36, int, "How far ahead to forecast", module="demand"),
+    "min_periods_for_seasonality": Setting(
+        6, 120, int, "History needed before fitting seasonality",
+        module="demand",
+        help="Two full cycles. Below this a seasonal pattern is a fit to "
+             "noise that will read as insight."),
+    "holt_alpha": Setting(
+        0.01, 1.0, float, "Level smoothing", module="demand",
+        help="Higher reacts faster to the last few months and is noisier."),
+    "holt_beta": Setting(
+        0.01, 1.0, float, "Trend smoothing", module="demand"),
+    "croston_alpha": Setting(
+        0.01, 1.0, float, "Smoothing for intermittent lines",
+        module="demand",
+        help="Used by the Syntetos-Boylan method on lines that sell in "
+             "bursts."),
+    # -------------------------------------------------------------- cash
+    "cost_of_capital_annual": Setting(
+        0.0, 1.0, float, "What money costs you a year", module="cash",
+        advanced=False,
+        help="Prices the delay in the ageing book and the stock you hold."),
+    "cash_buffer": Setting(
+        0.0, 1e15, float, "Cash you will not spend down to", module="cash",
+        advanced=False,
+        help="No order is ever recommended that eats into this."),
+    "cash_horizon_weeks": Setting(
+        4, 52, int, "Weeks the cash view covers", module="cash"),
+    "overdue_catchup_weeks": Setting(
+        1, 26, int, "Weeks to spread the overdue book across",
+        module="cash",
+        help="An invoice already past its customer's own average "
+             "lateness is spread rather than expected this week."),
+    "lc_payment_lag_days": Setting(
+        0, 180, int, "Days before an order's money leaves", module="cash",
+        help="A letter of credit is opened at close to full value days "
+             "after the order, not on arrival."),
+    # ------------------------------------------------------- receivables
+    "target_dso_days": Setting(
+        1, 365, int, "Collection days you aim for", module="money",
+        advanced=False,
+        help="What the ageing book would release if you hit it."),
+    # ------------------------------------------- service and equipment
+    "labour_rate_per_hour": Setting(
+        0.0, 1e7, float, "An engineer's hour", module="service",
+        advanced=False,
+        help="Prices the hours worked that nobody billed."),
+    "payback_target_months": Setting(
+        1, 120, int, "Payback you expect on a placement",
+        module="equipment", advanced=False),
+    "placement_min_months_to_judge": Setting(
+        1, 36, int, "Before a placement is judged", module="equipment",
+        help="A rate extrapolated from a few weeks of pull is noise, so "
+             "a new machine reads as ramping up rather than failing."),
+    # ----------------------------------------------------------- payroll
+    "minimum_wage_monthly": Setting(
+        0.0, 1e7, float, "Monthly minimum wage", module="people",
+        advanced=False,
+        help="Provincial, reset each year, and EOBI is charged on it "
+             "rather than on pay -- so one wrong figure moves every "
+             "employee's contribution at once."),
+    "social_security_wage_ceiling": Setting(
+        0.0, 1e7, float, "Social security wage ceiling", module="people",
+        help="Zero applies no ceiling, which overstates the cost rather "
+             "than understating it."),
 }
 
 # Not numbers, so not range-checked: each is one of a known set.
@@ -620,15 +753,12 @@ def thresholds_for(settings: dict):
     from engine.schema import Thresholds
 
     clean = {}
-    for key, (lo, hi) in SETTABLE.items():
+    for key, spec in SETTABLE.items():
         if key not in (settings or {}):
             continue
-        try:
-            v = float(settings[key])
-        except (TypeError, ValueError):
-            continue
-        if lo <= v <= hi:
-            clean[key] = v
+        value, _ = spec.clean(settings[key])
+        if value is not None:
+            clean[key] = value
     # Nonsense is refused rather than clamped: an excess limit below
     # the reorder level means every line is at once too little and too
     # much, and silently swapping them would be the software deciding
@@ -707,7 +837,17 @@ def read_settings(claims: Claims = Depends(require)) -> JSONResponse:
         "name": row[0], "country": row[1], "currency": row[2],
         "settings": row[3] or {},
         "defaults": {k: getattr(thresholds_for({}), k) for k in SETTABLE},
-        "limits": {k: list(v) for k, v in SETTABLE.items()},
+        "fields": {
+            k: {"lo": s.lo, "hi": s.hi,
+                "kind": "int" if s.kind is int else "float",
+                "label": s.label, "help": s.help,
+                "module": s.module, "advanced": s.advanced}
+            for k, s in SETTABLE.items()
+        },
+        # Kept for anything already reading it. The shape above carries
+        # the same bounds plus what each number is for, which is what
+        # makes twenty-three of them navigable rather than a wall.
+        "limits": {k: [s.lo, s.hi] for k, s in SETTABLE.items()},
         "branches": branches,
         "email": claims.email,
     })
@@ -722,19 +862,20 @@ async def write_settings(request: Request,
     name = str(body.get("name", "")).strip()
     incoming = body.get("settings") or {}
 
-    keep, rejected = {}, []
-    for key, (lo, hi) in SETTABLE.items():
+    # Two lists, because they answer different questions. `problems`
+    # is what the person reads; `rejected` is which field it was, so a
+    # screen can mark the input and a caller can match on something
+    # more stable than a sentence.
+    keep, rejected, bad_fields = {}, [], []
+    for key, spec in SETTABLE.items():
         if key not in incoming or incoming[key] in ("", None):
             continue
-        try:
-            v = float(incoming[key])
-        except (TypeError, ValueError):
-            rejected.append(f"{key} is not a number")
+        value, why = spec.clean(incoming[key])
+        if why:
+            rejected.append(why)
+            bad_fields.append(key)
             continue
-        if not (lo <= v <= hi):
-            rejected.append(f"{key} has to be between {lo:g} and {hi:g}")
-            continue
-        keep[key] = v
+        keep[key] = value
 
     for key, check in SETTABLE_TEXT.items():
         if key not in incoming or not incoming[key]:
@@ -742,6 +883,7 @@ async def write_settings(request: Request,
         ok, cleaned = check(str(incoming[key]).strip())
         if not ok:
             rejected.append(f"{key} is not one this app knows")
+            bad_fields.append(key)
             continue
         keep[key] = cleaned
 
@@ -751,8 +893,11 @@ async def write_settings(request: Request,
         rejected.append(
             "the standing-still limit has to be above the cover target, or "
             "every line is at once too little and too much")
+        bad_fields += ["target_cover_months", "excess_cover_months"]
     if rejected:
-        return JSONResponse({"ok": False, "problems": rejected}, 400)
+        return JSONResponse(
+            {"ok": False, "problems": rejected,
+             "rejected": sorted(set(bad_fields))}, 400)
 
     import json as _json
 
@@ -958,3 +1103,130 @@ def index(request: Request) -> Response:
     if auth().configured and who(request) is None:
         return RedirectResponse("/sign-in", status_code=303)
     return FileResponse(STATIC / "index.html")
+
+
+# ───────────────────────────────────────────────────────── the platform
+#
+# One endpoint lists the modules and one runs a module. Both read the
+# registry in engine/platform.py rather than a list of their own, so a
+# module cannot exist in the rail and not in the API, or the reverse.
+
+
+def _standing(conn, claims) -> tuple[str, set[str], dict]:
+    """This person's role here, what the organisation has licensed, and
+    its settings.
+
+    Role comes from the membership rather than from anything the
+    browser sent. A role in a request body is a role the browser can
+    edit, and the modules this gates include payroll and the
+    statements.
+
+    An organisation with no entitlement rows at all is treated as
+    having licensed everything. That is deliberate for now: billing
+    does not exist, so an empty table means nobody has sold them
+    anything yet rather than that they bought nothing, and the
+    alternative is a product that shows a new account thirteen locked
+    doors.
+    """
+    row = conn.execute(
+        "select m.role from public.memberships m"
+        "  join public.organisations o on o.id = m.org_id"
+        " where m.user_id = auth.uid() and m.status = 'active'"
+        " order by o.created_at limit 1"
+    ).fetchone()
+    role = row[0] if row else "staff"
+
+    licensed = {
+        r[0] for r in conn.execute(
+            "select module from public.entitlements"
+            " where status in ('active','trial')"
+            "   and (valid_until is null or valid_until >= current_date)"
+        ).fetchall()
+    }
+    settings = conn.execute(
+        "select settings from public.organisations order by created_at limit 1"
+    ).fetchone()
+    return role, licensed, (settings[0] if settings and settings[0] else {})
+
+
+@app.get("/api/modules")
+def list_modules(claims: Claims = Depends(require)) -> JSONResponse:
+    """The rail: every module, with the state that explains it.
+
+    Four states, and the middle two are the point. `ready` has what it
+    needs. `waiting` is licensed and permitted but has no figures yet,
+    and says which record types are missing. `locked` is not licensed.
+    A module the role may not open is not in the response at all --
+    somebody who may not read the books should not be told the books
+    exist.
+    """
+    from engine.db.supabase import NotConfigured, database
+    from engine.platform import SECTIONS, catalogue
+
+    try:
+        with database().as_user(claims.user_id) as conn:
+            role, licensed, _ = _standing(conn, claims)
+            from engine.db import snapshot
+            present = snapshot.present(conn)
+    except NotConfigured:
+        return JSONResponse({"error": "the database is not configured"}, 503)
+    except Exception as exc:
+        return JSONResponse(
+            {"error": "the database is unreachable", "detail": str(exc)[:200]},
+            503)
+
+    return JSONResponse({
+        "role": role,
+        "sections": [{"id": i, "label": l} for i, l in SECTIONS],
+        "modules": catalogue(
+            present=present, role=role,
+            licensed=licensed if licensed else None),
+        "present": sorted(present),
+    })
+
+
+@app.get("/api/module/{module_id}")
+def read_module(module_id: str,
+                claims: Claims = Depends(require)) -> JSONResponse:
+    """One module's figures.
+
+    The role gate is here rather than only in the rail, because a rail
+    that hides a module is a hidden link and not a permission. The
+    policies refuse the rows underneath as well, so this is the second
+    of two gates and not the only one.
+    """
+    from engine.db.supabase import NotConfigured, database
+    from engine.platform import BY_ID, for_role
+    from web.facts import Facts
+    from web.modules import run
+
+    if module_id not in BY_ID:
+        raise HTTPException(404, f"There is no {module_id} module.")
+
+    try:
+        with database().as_user(claims.user_id) as conn:
+            role, licensed, settings = _standing(conn, claims)
+            if module_id not in {m.id for m in for_role(role)}:
+                raise HTTPException(
+                    403, f"A {role} cannot open this module.")
+            if licensed and module_id not in licensed:
+                raise HTTPException(
+                    402, f"This organisation has not licensed {module_id}.")
+            facts = Facts(
+                conn,
+                thresholds=thresholds_for(settings),
+                currency=str(settings.get("currency") or "PKR"),
+            )
+            payload = run(module_id, facts)
+    except NotConfigured:
+        return JSONResponse({"error": "the database is not configured"}, 503)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # The message, not the class. Twice now a failure has reached a
+        # person as the name of a Python exception, which tells them
+        # nothing and tells us only slightly more.
+        return JSONResponse(
+            {"error": "that module could not be read",
+             "detail": str(exc)[:300]}, 500)
+    return JSONResponse(payload)

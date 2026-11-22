@@ -185,7 +185,18 @@ def test_a_new_organisation_gets_its_owner_and_the_importer_modules(db):
             "select module from public.entitlements where org_id = %s", (org,)
         ).fetchall()
     }
-    assert modules == {"stock", "buy", "freight", "demand", "cash"}
+    # Migration 0009 widened the wedge from five modules to all
+    # thirteen. Two of the eight it adds -- equipment and service --
+    # already had screens in the app and no entitlement to license
+    # them, so checking entitlements against a five-module trial would
+    # have locked two working screens on every account. The honest
+    # reason for granting the rest is that billing does not exist:
+    # withholding modules nobody is charged for would be a paywall
+    # with no payment behind it.
+    from engine.platform import MODULES
+
+    assert modules == {m.id for m in MODULES}
+    assert len(modules) == 13
 
 
 # --------------------------------------------------------- the tenant wall
