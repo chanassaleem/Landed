@@ -54,8 +54,16 @@ def org():
     org_id = cur.fetchone()[0]
     conn.commit()
 
-    cur.execute("set local role authenticated")
-    cur.execute("select set_config('request.jwt.claims', %s, true)",
+    # Session-level, not SET LOCAL. This fixture commits part way
+    # through -- an import is a transaction and the tests then look at
+    # what it wrote -- and a commit discards SET LOCAL, so every query
+    # after the first commit ran as the table owner with row-level
+    # security off. That made these tests see every organisation in
+    # the database: they passed alone and failed whenever another test
+    # module had seeded one, which reads as flakiness and is really a
+    # test that stopped testing what it says.
+    cur.execute("set role authenticated")
+    cur.execute("select set_config('request.jwt.claims', %s, false)",
                 ('{"sub": "%s", "role": "authenticated"}' % owner,))
     yield conn, cur, org_id
 
