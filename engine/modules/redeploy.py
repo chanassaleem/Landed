@@ -216,9 +216,19 @@ def suggest(
                         f"Moving them avoids a write-off and a purchase."
                     )
                 elif urgency is TransferUrgency.URGENT:
+                    # months_cover is None when the donor branch has no
+                    # demand history for the line -- stock sitting
+                    # somewhere it has never sold, which is one of the
+                    # commonest reasons to move it. Formatting that None
+                    # raised a TypeError and took the Stock and Ordering
+                    # screens down with it, for any importer holding a
+                    # line at a branch that has not sold it.
+                    held = ("more cover than it can use"
+                            if dres.months_cover is None
+                            else f"{dres.months_cover:.1f} months of cover")
                     why = (
                         f"{rb.location_id} runs out while {db.location_id} holds "
-                        f"{dres.months_cover:.1f} months of cover. "
+                        f"{held}. "
                         f"A transfer avoids "
                         f"{money(value, thresholds.currency, thresholds.number_scale)} "
                         f"of imports."

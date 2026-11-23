@@ -264,3 +264,28 @@ def test_import_avoided_is_priced_at_the_receiver_cost():
 def test_no_blocks_is_safe():
     assert suggest([], T) == ()
 
+
+
+def test_a_donor_that_has_never_sold_the_line_does_not_crash():
+    """Stock sitting at a branch with no sales history for it.
+
+    One of the commonest reasons to move stock, and `months_cover` is
+    None for exactly that case -- no demand, so no cover to compute.
+    Formatting that None raised a TypeError out of the reason string
+    and took the Stock and Ordering screens down with it for any
+    importer holding a line at a branch that has not sold it. It
+    survived every test because the fixtures gave every branch
+    demand, and only appeared on a dataset built to look like a real
+    distributor's.
+    """
+    # Plenty on the shelf at KHI and not one sale recorded there.
+    rich = block("E1", "KHI", [item(on_hand=1_200)], [])
+    poor = block("E1", "LHR", [item(on_hand=20)], steady())
+
+    moves = suggest([rich, poor], T)
+
+    assert moves, "a donor with no demand is still a donor"
+    m = moves[0]
+    assert (m.from_location, m.to_location) == ("KHI", "LHR")
+    assert m.reason and "None" not in m.reason
+    assert "cover" in m.reason
