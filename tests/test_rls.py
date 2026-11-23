@@ -24,6 +24,7 @@ import json
 import os
 import pathlib
 import uuid
+from datetime import date, timedelta
 
 import pytest
 
@@ -734,3 +735,91 @@ def test_a_stranger_cannot_write_into_somebody_elses_books(db):
             assert c.execute(
                 f"select count(*) from public.{table}").fetchone()[0] == 0, (
                 f"an outsider wrote into {table}")
+
+
+# ------------------------------------------- one month, one source
+#
+# demand_monthly was a UNION ALL of ledger sales and imported Sales
+# history, so a business that imported its history and then recorded
+# sales in the app had both for the same month and the engine summed
+# them. Demand feeds the forecast, the forecast feeds the reorder
+# point, and the reorder point feeds the order quantity -- so the
+# product told an importer to buy twice what they needed.
+
+
+def test_a_month_in_both_the_ledger_and_the_import_is_counted_once(db):
+    owner = new_user(db, f"demand-{uuid.uuid4().hex[:6]}@t.test")
+    org, loc = new_org(db, owner, "Demand Co")
+    this_month = date.today().strftime("%Y-%m")
+
+    with as_user(db, owner):
+        item = db.execute(
+            "insert into public.items (org_id, sku, description,"
+            " lead_time_days) values (%s,%s,'Reagent',30) returning id",
+            (org, sku("DM")),
+        ).fetchone()[0]
+        # They import their history: 100 sold this month.
+        db.execute(
+            "insert into public.demand_history (org_id, location_id,"
+            " item_id, period, quantity) values (%s,%s,%s,%s,100)",
+            (org, loc, item, this_month))
+        # Then record the very same month's sales in the app.
+        db.execute(
+            "insert into public.stock_movement (org_id, item_id,"
+            " location_id, qty, unit_cost, reason, occurred_at)"
+            " values (%s,%s,%s,500,100,'opening',current_date)",
+            (org, item, loc))
+        db.execute(
+            "insert into public.stock_movement (org_id, item_id,"
+            " location_id, qty, reason, occurred_at)"
+            " values (%s,%s,%s,-100,'sale',current_date)",
+            (org, item, loc))
+
+        rows = db.execute(
+            "select source, quantity from public.demand_monthly"
+            " where item_id = %s and period = %s", (item, this_month)
+        ).fetchall()
+
+    assert len(rows) == 1, f"the same month twice: {rows}"
+    assert rows[0][0] == "ledger", "the ledger is the truth where it has rows"
+    assert float(rows[0][1]) == 100.0, "they sold 100, not 200"
+
+
+def test_imported_history_still_fills_the_months_before_the_ledger(db):
+    """The import is a backfill. Preferring the ledger must not throw
+    away the history for months it does not cover, or every business
+    loses its past the day it records its first sale."""
+    owner = new_user(db, f"backfill-{uuid.uuid4().hex[:6]}@t.test")
+    org, loc = new_org(db, owner, "Backfill Co")
+    today = date.today()
+    this_month = today.strftime("%Y-%m")
+    older = (today.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+
+    with as_user(db, owner):
+        item = db.execute(
+            "insert into public.items (org_id, sku, description,"
+            " lead_time_days) values (%s,%s,'Reagent',30) returning id",
+            (org, sku("BF")),
+        ).fetchone()[0]
+        for period, qty in ((older, 80), (this_month, 100)):
+            db.execute(
+                "insert into public.demand_history (org_id, location_id,"
+                " item_id, period, quantity) values (%s,%s,%s,%s,%s)",
+                (org, loc, item, period, qty))
+        db.execute(
+            "insert into public.stock_movement (org_id, item_id,"
+            " location_id, qty, unit_cost, reason, occurred_at)"
+            " values (%s,%s,%s,500,100,'opening',current_date)",
+            (org, item, loc))
+        db.execute(
+            "insert into public.stock_movement (org_id, item_id,"
+            " location_id, qty, reason, occurred_at)"
+            " values (%s,%s,%s,-40,'sale',current_date)",
+            (org, item, loc))
+
+        got = dict(db.execute(
+            "select period, source from public.demand_monthly"
+            " where item_id = %s", (item,)).fetchall())
+
+    assert got[older] == "import", "the month before the ledger was lost"
+    assert got[this_month] == "ledger"
