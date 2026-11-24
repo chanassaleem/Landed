@@ -29,10 +29,20 @@ from typing import Iterable
 
 from engine.schema import DemandPeriod, ItemSnapshot
 
-# How far back to read demand. Long enough for a seasonal pattern to be
-# visible, short enough that a line's behaviour two years ago does not
-# outvote what it has done since.
-MONTHS = 18
+# How far back to read demand.
+#
+# Thirty-six, and the number is not arbitrary: Thresholds asks for 24
+# observations before it will fit a seasonality term, and this window
+# used to be 18. The forecast code checked for 24, the database path
+# could supply at most 18, and so the seasonal method could never
+# fire for anything coming through the application -- only for data
+# handed to the engine directly, which is to say only in tests.
+#
+# Two full cycles is the minimum for fitting one, so 24 is the floor
+# and 36 gives a line somewhere to be wrong without losing the
+# season. A test holds this above Thresholds.min_periods_for_seasonality
+# so the two cannot drift apart again.
+MONTHS = 36
 
 
 def _months_back(as_of: date, n: int) -> list[str]:

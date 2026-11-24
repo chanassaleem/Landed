@@ -117,7 +117,7 @@ def seeded():
             "insert into public.items (org_id, sku, description, category,"
             " uom, supplier_id, lead_time_days, lead_time_days_std,"
             " is_clinical_critical) values (%s,'RGT-100','HbA1c reagent kit',"
-            "'reagent','kit',%s,75,14,true) returning id",
+            "'reagent','kit',%s,120,14,true) returning id",
             (org, sup)).fetchone()[0]
         spare = c.execute(
             "insert into public.items (org_id, sku, description, category,"
@@ -150,7 +150,20 @@ def seeded():
             # 'YYYY-MM', which is what the column is: a month is a
             # label here, not a date, so that two branches reporting
             # the same month cannot differ by a day.
-            period = f"{2025 + (n // 12)}-{(n % 12) + 1:02d}"
+            #
+            # Counted back from today rather than written as 2025-01
+            # onwards. Fixed labels drift out of the snapshot's window
+            # as real time passes, and they moved when the window
+            # itself widened from eighteen months to thirty-six: five
+            # months that had been out of range came into it and
+            # changed every average this file asserts on. A seed
+            # anchored to today is in range by construction.
+            back = 17 - n
+            y, m = TODAY.year, TODAY.month - back
+            while m <= 0:
+                m += 12
+                y -= 1
+            period = f"{y}-{m:02d}"
             for loc, base in ((khi, 90), (lhe, 25)):
                 c.execute(
                     "insert into public.demand_history (org_id, location_id,"
@@ -472,10 +485,18 @@ def test_stock_explains_a_surplus_it_cannot_move(facts):
 
     EXCESS is a flat six months of on-hand cover; the level a donor
     keeps is its order-up-to, which is lead-time relative. At the
-    reagent's 75-day lead time order-up-to is about seven and a half
-    months of demand, so it sits above the line that flagged the line
-    as standing still. Both halves are defensible and the pair
-    contradicts itself.
+    reagent's 120-day lead time order-up-to sits above the line that
+    flagged the line as standing still. Both halves are defensible and
+    the pair contradicts itself.
+
+    The lead time was 75 days and the crossing happened there too,
+    until the demand window widened from eighteen months to
+    thirty-six. That brought five more months of this seed's history
+    into range, the demand estimate moved, and Karachi became able to
+    donate after all -- a better answer from fuller data, and a
+    scenario this test no longer reproduced. The contradiction is
+    real at any lead time long enough; 120 days is an ordinary one
+    for a reagent shipped against a letter of credit.
 
     Resolving it changes what EXCESS means on every stock screen, so it
     is a decision for the business. What is not acceptable is the
@@ -707,7 +728,7 @@ def test_a_fault_in_the_figures_is_found_and_explained(seeded):
             data = run("quality", Facts(c, as_of=TODAY))["data"]
     finally:
         with as_user(con, owner) as c:
-            c.execute("update public.items set lead_time_days = 75"
+            c.execute("update public.items set lead_time_days = 120"
                       " where sku = 'RGT-100'")
 
     codes = {r["code"] for r in data["rows"]}
@@ -869,3 +890,22 @@ def test_a_poisoned_transaction_surfaces_instead_of_emptying_the_page(facts):
     with pytest.raises(psycopg.errors.InFailedSqlTransaction):
         facts._get("pretend3", poisoned, [])
     assert "pretend3" not in facts.refused
+
+
+def test_the_demand_window_can_actually_reach_seasonality():
+    """The snapshot read 18 months. Thresholds asks for 24 observations
+    before it fits a seasonality term. So the seasonal method could
+    never fire for data coming through the application -- only for
+    data handed to the engine directly, which is to say only in tests.
+
+    Two full cycles is the minimum for fitting one. The window has to
+    stay at or above the threshold or the method is unreachable
+    again, silently, and the only sign is forecasts that never mention
+    a season.
+    """
+    from engine.db.snapshot import MONTHS
+    from engine.schema import Thresholds
+
+    assert MONTHS >= Thresholds().min_periods_for_seasonality, (
+        f"the snapshot reads {MONTHS} months and seasonality needs "
+        f"{Thresholds().min_periods_for_seasonality}")
