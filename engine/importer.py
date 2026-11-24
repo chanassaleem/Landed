@@ -1428,6 +1428,18 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
 
     heads, lines = {}, []
     po_supplier: dict = {}
+    # What the rates were before this import, so a correction can be
+    # told apart from a re-import of the same figures. Without it
+    # every existing order looked corrected, and the warning named
+    # thirteen orders nobody had touched.
+    was = {
+        r[0]: (r[1], float(r[2]))
+        for r in run.execute(
+            "select po_number, currency, fx_rate"
+            "  from public.purchase_orders where org_id = %s",
+            (org,)).fetchall()
+    }
+    corrected: list = []
     for o in p.orders:
         iid, lid = item.get(o["sku"]), loc.get(o["branch"])
         if not iid or not lid:
@@ -1438,11 +1450,30 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
                 "supplier_id, po_number, currency, fx_rate, status, "
                 "ordered_at, expected_at) values (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "on conflict (org_id, po_number) do update set "
-                "status = excluded.status returning id",
+                "status = excluded.status, "
+                # A corrected rate is applied. It used to update the
+                # status and nothing else, so a customer who found a
+                # rate typed as 282 when it should have been 310,
+                # fixed the workbook and re-imported, got the old rate
+                # back and a preview telling them nothing had changed.
+                #
+                # Receipts already taken are not touched: grn_lines
+                # copies the rate at insert, which is what makes stock
+                # already valued stay valued at the rate it was
+                # received at. The correction reaches future receipts,
+                # and the lines below say so when any exist.
+                "currency = excluded.currency, "
+                "fx_rate = excluded.fx_rate, "
+                "expected_at = excluded.expected_at "
+                "returning id, (xmax <> 0) as existed",
                 (org, lid, sup.get(o["supplier"]), o["po"], o["currency"],
                  o["fx"] or 1, o["status"], o["ordered"], o["expected"]),
             ).fetchone()
             heads[o["po"]] = got[0]
+            before = was.get(o["po"])
+            if before and before != (o["currency"], float(o["fx"] or 1)):
+                corrected.append((o["po"], got[0], before,
+                                  (o["currency"], float(o["fx"] or 1))))
             # Remembered so a shipment can inherit the supplier from
             # the order it carries: the Shipments sheet names a PO, not
             # a supplier, because that is what a person has in front of
@@ -1464,6 +1495,37 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
             "unit_price) values (%s, %s, %s, %s, %s) "
             "on conflict (org_id, po_id, item_id) do update set "
             "qty = excluded.qty, unit_price = excluded.unit_price", lines)
+
+    # An order whose rate changed, against which goods have already
+    # been received. Those receipts keep the rate they recorded -- that
+    # is correct, and it is also the thing somebody will not expect, so
+    # it is said rather than left to be discovered in a valuation.
+    if corrected:
+        touched = run.execute(
+            "select distinct o.po_number"
+            "  from public.purchase_orders o"
+            "  join public.po_lines pl on pl.po_id = o.id"
+            "  join public.grn_lines gl on gl.po_line_id = pl.id"
+            " where o.id = any(%s)", ([c[1] for c in corrected],)).fetchall()
+        names = sorted(r[0] for r in touched)
+        by_po = {c[0]: c for c in corrected}
+        if names:
+            shown = "; ".join(
+                f"{n}: {by_po[n][2][0]} at {by_po[n][2][1]:g} became "
+                f"{by_po[n][3][0]} at {by_po[n][3][1]:g}"
+                for n in names[:3] if n in by_po)
+            p.problems.append(Problem(
+                "On order", None,
+                f"{len(names)} order{'s' if len(names) != 1 else ''} with a "
+                f"corrected currency or rate already had goods received "
+                f"against {'them' if len(names) != 1 else 'it'} "
+                f"({shown}"
+                f"{', and others' if len(names) > 3 else ''}). The "
+                f"correction applies to what is received from now on. "
+                f"Stock already received keeps the rate it was received "
+                f"at, which is what stops a past valuation changing "
+                f"under you.",
+                fatal=False))
 
     # ---- customers, and what they owe
 
@@ -2016,11 +2078,16 @@ def _specs(p: Plan):
                  "  from public.demand_history d"
                  "  join public.items i on i.id = d.item_id"
                  "  join public.locations l on l.id = d.location_id"),
+        # Currency and rate are compared, not just quantity and price.
+        # Without them a corrected rate showed as "unchanged" and the
+        # person was told their fix had landed when it had not.
         dict(name="orders", label="On order", rows=p.orders,
              action="update",
              key=lambda r: (r["po"], r["sku"]),
-             vals=lambda r: (r["qty"], r["price"]),
-             sql="select po.po_number, i.sku, pl.qty, pl.unit_price"
+             vals=lambda r: (r["qty"], r["price"], r["currency"],
+                             float(r["fx"] or 1)),
+             sql="select po.po_number, i.sku, pl.qty, pl.unit_price,"
+                 "       po.currency, po.fx_rate"
                  "  from public.po_lines pl"
                  "  join public.purchase_orders po on po.id = pl.po_id"
                  "  join public.items i on i.id = pl.item_id"),

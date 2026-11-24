@@ -740,3 +740,108 @@ def test_one_delivery_can_carry_the_same_sku_in_two_lots(imported, books):
     assert len(lots) == 2, f"the second lot was dropped: {lots}"
     assert "LOT-SECOND" in [r[0] for r in lots]
     assert not [x for x in p.problems if "appears twice" in x.message]
+
+
+def test_a_corrected_exchange_rate_is_applied_and_shown(imported, books):
+    """A rate typed as 282 that should have been 310.
+
+    The upsert updated the status and nothing else, so the correction
+    was thrown away -- and the preview compared only quantity and unit
+    price, so it reported the order as unchanged. The customer was
+    told their fix had landed when the database still held the old
+    rate, and that rate flows into every receipt taken against the
+    order and from there into the stock valuation.
+    """
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    from engine.importer import apply, inspect, plan
+
+    con = imported[0]
+    who = fresh_org(con, "Rate")
+    with as_user(con, who) as c:
+        apply(c, plan(books["meridian-diagnostics"]))
+
+    wb = load_workbook(BytesIO(books["meridian-diagnostics"]))
+    sheet = wb["On order"]
+    headers = [c.value for c in sheet[1]]
+    fx_col = next(i for i, h in enumerate(headers, 1)
+                  if h and h.startswith("fx_rate"))
+    po = sheet.cell(2, 1).value
+    sheet.cell(2, fx_col, 310.0)
+    buf = BytesIO(); wb.save(buf)
+
+    def rate():
+        with as_user(con, who) as c:
+            return float(c.execute(
+                "select fx_rate from public.purchase_orders"
+                " where po_number = %s", (po,)).fetchone()[0])
+
+    assert rate() != 310.0, "the sample already uses this rate"
+
+    p = plan(buf.getvalue())
+    with as_user(con, who) as c:
+        seen = inspect(c, p)
+    orders = [t for t in seen["tables"] if t["name"] == "orders"][0]
+    assert orders["changed"] >= 1, \
+        "the preview says nothing changed when the rate did"
+
+    with as_user(con, who) as c:
+        apply(c, p)
+    assert rate() == 310.0, "the correction was thrown away"
+
+
+def test_a_rate_corrected_after_goods_arrived_says_so(imported, books):
+    """Receipts keep the rate they recorded, which is right and is also
+    the part nobody expects. It is said rather than left to be found
+    in a valuation."""
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    from engine.importer import apply, plan
+
+    con = imported[0]
+    who = fresh_org(con, "RateSaid")
+    with as_user(con, who) as c:
+        apply(c, plan(books["meridian-diagnostics"]))
+
+    wb = load_workbook(BytesIO(books["meridian-diagnostics"]))
+    sheet = wb["On order"]
+    headers = [c.value for c in sheet[1]]
+    fx_col = next(i for i, h in enumerate(headers, 1)
+                  if h and h.startswith("fx_rate"))
+    # The order the first goods receipt is against.
+    received_po = wb["Goods received"].cell(2, 3).value
+    for row in range(2, sheet.max_row + 1):
+        if sheet.cell(row, 1).value == received_po:
+            sheet.cell(row, fx_col, 311.0)
+    buf = BytesIO(); wb.save(buf)
+
+    p = plan(buf.getvalue())
+    with as_user(con, who) as c:
+        apply(c, p)
+
+    said = [x for x in p.problems if x.sheet == "On order"]
+    assert said, "a rate was corrected under goods already received, silently"
+    assert received_po in said[0].message
+    assert "311" in said[0].message, "it does not say what changed"
+    assert not said[0].fatal, "correcting a rate is not an error"
+
+
+def test_re_importing_the_same_rates_warns_about_nothing(imported, books):
+    """The warning must name orders somebody actually changed. Reporting
+    every existing order would make it noise, and noise is how a real
+    warning gets ignored."""
+    from engine.importer import apply, plan
+
+    con = imported[0]
+    who = fresh_org(con, "RateQuiet")
+    with as_user(con, who) as c:
+        apply(c, plan(books["meridian-diagnostics"]))
+    p = plan(books["meridian-diagnostics"])
+    with as_user(con, who) as c:
+        apply(c, p)
+    assert not [x for x in p.problems if x.sheet == "On order"], \
+        "warned about orders nobody corrected"
