@@ -90,6 +90,27 @@ def record(run, sku: str, branch: str, kind: str, qty: float,
         raise NotAllowed("The quantity has to be more than zero.")
 
     sign, wants_cost, _label = KINDS[kind]
+
+    # A receipt with no cost is not a receipt anybody can value.
+    #
+    # This was a preference, not a rule: the kind knew it wanted a
+    # cost and nothing checked. The movement went in with a null
+    # unit_cost, public.item_cost skips null-cost movements when it
+    # averages, and the on-hand figure does not -- so a hundred units
+    # received without a price were valued at the average of the
+    # hundred that had one. Received 100 at 1,000 and 100 more with
+    # the field left blank, and the stock read 200,000 against
+    # 100,000 actually spent.
+    #
+    # Zero is a cost: a free sample and a warranty replacement are
+    # both real, and both are stated. What is refused is silence.
+    if wants_cost and unit_cost is None:
+        raise NotAllowed(
+            "A receipt needs a cost each. It is what the line is "
+            "valued at, and a receipt without one quietly takes the "
+            "price of whatever else is on the shelf. Enter 0 if it "
+            "genuinely cost nothing.")
+
     org = _org(run)
     item_id, location_id = _resolve(run, org, sku, branch)
 
@@ -112,7 +133,9 @@ def record(run, sku: str, branch: str, kind: str, qty: float,
         "qty, unit_cost, reason, occurred_at, note, client_ref) "
         "values (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (org, item_id, location_id, sign * qty,
-         unit_cost if (wants_cost and unit_cost) else None,
+         # `and unit_cost` would have written a stated zero as null,
+         # which is the same silence this refuses above.
+         unit_cost if wants_cost else None,
          kind, when or date.today(), note or None, str(uuid.uuid4())))
     return {"sku": sku, "branch": branch, "reason": kind, "qty": sign * qty}
 

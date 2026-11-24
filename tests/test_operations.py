@@ -208,3 +208,63 @@ def test_history_reads_back_most_recent_first(shop):
     assert [r["reason"] for r in rows][:2] == ["sale", "grn"]
     assert rows[-1]["reason"] == "opening"
     assert sum(r["qty"] for r in rows) == on_hand(cur)
+
+
+# --------------------------------------------- a receipt needs a cost
+#
+# The kind knew it wanted a cost and nothing checked. The movement
+# went in with a null unit_cost; public.item_cost skips null-cost
+# movements when it averages and the on-hand figure does not, so units
+# received without a price were valued at the price of whatever else
+# was on the shelf.
+
+
+def test_a_receipt_without_a_cost_is_refused(shop):
+    _, cur = shop
+    with pytest.raises(NotAllowed) as e:
+        record(cur, "RGT-1", "KHI", "grn", 100)
+    assert "cost" in str(e.value).lower()
+    assert "0" in str(e.value), "it does not say what to do for a free one"
+
+
+def test_a_cost_of_zero_is_a_cost(shop):
+    """A free sample and a warranty replacement are both real, and both
+    are stated. What is refused is silence, not zero."""
+    _, cur = shop
+    record(cur, "RGT-1", "KHI", "grn", 10, unit_cost=0)
+    row = cur.execute(
+        "select unit_cost from public.stock_movement"
+        " where reason = 'grn' order by created_at desc limit 1").fetchone()
+    assert row[0] is not None, "a stated zero was written as null"
+    assert float(row[0]) == 0.0
+
+
+def test_an_uncosted_receipt_cannot_inflate_the_valuation(shop):
+    """The number this protects.
+
+    Receive 100 at 1,000 and 100 more with the field blank, and the
+    stock used to read 200,000 against 100,000 actually spent.
+    """
+    con, cur = shop
+    before = cur.execute(
+        "select coalesce(sum(qty), 0) from public.stock_movement").fetchone()[0]
+    record(cur, "RGT-1", "KHI", "grn", 100, unit_cost=1_000)
+    with pytest.raises(NotAllowed):
+        record(cur, "RGT-1", "KHI", "grn", 100)
+
+    on, avg = cur.execute(
+        "select soh.on_hand, c.avg_unit_cost"
+        "  from public.stock_on_hand soh"
+        "  join public.item_cost c on c.item_id = soh.item_id"
+        " limit 1").fetchone()
+    # Every unit on the shelf is backed by a price somebody stated.
+    priced = cur.execute(
+        "select coalesce(sum(qty), 0) from public.stock_movement"
+        " where qty > 0 and unit_cost is not null").fetchone()[0]
+    inbound = cur.execute(
+        "select coalesce(sum(qty), 0) from public.stock_movement"
+        " where qty > 0").fetchone()[0]
+    assert float(priced) == float(inbound), \
+        "stock went up without a cost behind it"
+    assert float(on) > 0 and float(avg) > 0
+    assert before is not None

@@ -543,15 +543,24 @@ const OPS = [
     key: 'grn', label: () => 'Receive stock', primary: true,
     title: 'Receive stock',
     note: 'Goods arriving at this branch. Cost is per unit, landed if '
-      + 'you know it.',
+      + 'you know it. Enter 0 if it genuinely cost nothing \u2014 a '
+      + 'blank would let these units take the price of whatever else '
+      + 'is on the shelf.',
     fields: [
       { name: 'qty', label: 'How many', type: 'number', required: true },
-      { name: 'unit_cost', label: 'Cost each', type: 'number' },
+      { name: 'unit_cost', label: 'Cost each', type: 'number',
+        required: true },
       { name: 'note', label: 'Note', type: 'text' },
     ],
+    /* Number(), not `|| null`. A cost of 0 is a cost -- a free sample,
+       a warranty replacement -- and `0 || null` is null, so the one
+       figure the server now insists on was the one the browser threw
+       away. */
     send: (row, v) => ['/api/movement', {
       sku: row.sku, branch: row.branch, kind: 'grn',
-      qty: v.qty, unit_cost: v.unit_cost || null, note: v.note }],
+      qty: v.qty,
+      unit_cost: v.unit_cost === '' ? null : Number(v.unit_cost),
+      note: v.note }],
   },
   {
     key: 'sale', label: () => 'Record a sale',
