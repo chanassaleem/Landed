@@ -909,3 +909,48 @@ def test_the_demand_window_can_actually_reach_seasonality():
     assert MONTHS >= Thresholds().min_periods_for_seasonality, (
         f"the snapshot reads {MONTHS} months and seasonality needs "
         f"{Thresholds().min_periods_for_seasonality}")
+
+
+def test_a_charge_that_reached_no_item_is_reported(facts):
+    """Freight spread by volume across lines with no volume recorded.
+
+    The division is by zero, so the allocation is null and the charge
+    reaches nothing. The database is right to refuse it. What was
+    missing is anybody saying so: PKR 500,000 of freight sat in the
+    shipment total, every landed cost equalled the invoice price, and
+    the Landing screen looked complete.
+    """
+    conn = facts.conn
+    org = conn.execute("select id from public.organisations").fetchone()[0]
+    loc = conn.execute(
+        "select id from public.locations limit 1").fetchone()[0]
+    item = conn.execute(
+        "select id from public.items limit 1").fetchone()[0]
+    ship = conn.execute(
+        "insert into public.shipments (org_id, reference, status)"
+        " values (%s,'SHP-NOVOL','arrived') returning id", (org,)).fetchone()[0]
+    grn = conn.execute(
+        "insert into public.goods_receipts (org_id, location_id, grn_number)"
+        " values (%s,%s,'GRN-NOVOL') returning id", (org, loc)).fetchone()[0]
+    line = conn.execute(
+        "insert into public.grn_lines (org_id, grn_id, item_id, qty,"
+        " unit_price, fx_rate) values (%s,%s,%s,100,1000,1) returning id",
+        (org, grn, item)).fetchone()[0]
+    # Linked, but with no weight and no volume on it.
+    conn.execute(
+        "insert into public.shipment_lines (org_id, shipment_id,"
+        " grn_line_id, weight_kg, volume_cbm) values (%s,%s,%s,null,null)",
+        (org, ship, line))
+    conn.execute(
+        "insert into public.shipment_costs (org_id, shipment_id, kind,"
+        " amount, currency, fx_rate, allocate_by)"
+        " values (%s,%s,'freight',500000,'PKR',1,'volume')", (org, ship))
+
+    facts._cache.clear()
+    d = run_module(facts, "freight")
+
+    assert d["totals"]["unallocated"] >= 500_000, \
+        "half a million of freight reached no item and nothing said so"
+    assert d["unallocated_note"], "no explanation offered"
+    assert "SHP-NOVOL" in d["unallocated_note"], "it does not name the shipment"
+    assert "volume" in d["unallocated_note"], "it does not say what to fix"

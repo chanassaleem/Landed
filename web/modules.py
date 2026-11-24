@@ -265,7 +265,18 @@ def _freight(f) -> dict:
         "                  where c.shipment_id = s.id), 0),"
         "       (select count(*) from public.shipment_lines l"
         "          where l.shipment_id = s.id),"
-        "       s.id"
+        "       s.id,"
+        # What actually reached an item. A charge spread by volume
+        # across lines with no volume recorded divides by zero, so the
+        # allocation is null and the cost reaches nothing -- the bill
+        # sits in the shipment total and no price moves. The database
+        # is right to refuse the division; what was missing is anybody
+        # saying so.
+        "       coalesce((select sum(lc.allocated_cost)"
+        "                   from public.landed_cost lc"
+        "                   join public.shipment_lines sl"
+        "                     on sl.grn_line_id = lc.grn_line_id"
+        "                  where sl.shipment_id = s.id), 0)"
         "  from public.shipments s"
         "  left join public.suppliers sup on sup.id = s.supplier_id"
         "  left join public.shipment_totals t on t.shipment_id = s.id"
@@ -288,6 +299,8 @@ def _freight(f) -> dict:
             "uplift_pct": round(costs / goods, 4) if goods else None,
             "lines": int(r[11] or 0),
             "id": str(r[12]),
+            "allocated": round(float(r[13] or 0), 2),
+            "unallocated": round(costs - float(r[13] or 0), 2),
         })
 
     breakdown = [
@@ -342,6 +355,13 @@ def _freight(f) -> dict:
     # The excluded ones are counted rather than hidden, because the
     # reason the figure moved is itself the thing worth knowing: it
     # means freight is sitting against goods nobody has booked in.
+    # A charge that reached no item at all. Separate from a shipment
+    # with no goods: these have goods, and the charge still went
+    # nowhere, which is the harder one to notice because the screen
+    # looks complete.
+    stranded = [r for r in rows
+                if r["goods_value"] > 0 and r["unallocated"] > 0.01]
+
     landed = [r for r in rows if r["goods_value"] > 0]
     landed_goods = sum(r["goods_value"] for r in landed)
     landed_costs = sum(r["landed_costs"] for r in landed)
@@ -359,6 +379,7 @@ def _freight(f) -> dict:
             "shipments": len(rows),
             "shipments_landed": len(landed),
             "awaiting_goods": waiting,
+            "unallocated": round(sum(r["unallocated"] for r in stranded), 2),
         },
         "awaiting_note": (
             f"{waiting} of {len(rows)} shipments carry costs with no goods "
@@ -367,6 +388,19 @@ def _freight(f) -> dict:
             f"not been entered on the Goods received sheet \u2014 and "
             f"until it is, their freight and duty reach no item."
         ) if waiting else None,
+        "unallocated_note": (
+            f"{len(stranded)} shipment"
+            f"{'s carry' if len(stranded) != 1 else ' carries'} charges "
+            f"that reached no item: "
+            f"{', '.join(r['reference'] for r in stranded[:4])}"
+            f"{', and others' if len(stranded) > 4 else ''}. A charge "
+            f"spread by weight or volume needs those figures on the "
+            f"received lines; with none recorded there is nothing to "
+            f"divide by, so the bill sits in the total above and no "
+            f"unit cost moves. Put the weights and volumes on the "
+            f"Goods received sheet, or spread that charge by value or "
+            f"quantity instead."
+        ) if stranded else None,
     }
 
 

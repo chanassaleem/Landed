@@ -241,8 +241,9 @@
         ['uplift_pct', 'On top of the invoice', 'pct'],
         ['shipments_landed', 'Shipments with goods', 'num'],
         ['awaiting_goods', 'Awaiting goods', 'num'],
+        ['unallocated', 'Reached no item', 'money'],
       ],
-      notes: ['awaiting_note'],
+      notes: ['unallocated_note', 'awaiting_note'],
     },
     demand: {
       views: [
