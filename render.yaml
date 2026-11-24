@@ -32,6 +32,12 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
+      # Said rather than relied on. Secure cookies are the default now
+      # -- the flag is dropped only where LANDED_ENV names a
+      # development environment -- but a deployment that states what
+      # it is does not depend on somebody remembering the rule.
+      - key: LANDED_ENV
+        value: production
       # The free instance has 512 MB and 0.1 CPU; one worker is all that fits.
       - key: WEB_CONCURRENCY
         value: "1"

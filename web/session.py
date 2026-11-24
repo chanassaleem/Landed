@@ -204,14 +204,30 @@ class Auth:
             pass
 
 
+# Where a session cookie may go out without the Secure flag. Nowhere
+# but a developer's own machine, and named rather than inferred.
+INSECURE_OK = ("dev", "development", "local", "test")
+
+
 def secure_cookies() -> bool:
     """Whether to mark cookies Secure.
 
-    On in production, off on localhost -- a Secure cookie is not sent
-    over plain http, so leaving it on would make local development look
-    like a broken login.
+    Secure unless this is explicitly a development environment.
+
+    It used to be the other way round: Secure only when LANDED_ENV said
+    production. LANDED_ENV was not set in render.yaml, so the deployed
+    application issued its session cookies without the flag over HTTPS
+    -- and the failure was silent, because a cookie without Secure
+    works perfectly. Nothing breaks, nothing logs, and the only sign is
+    that the session token will also travel over plain http if anything
+    ever downgrades the connection.
+
+    A default that fails open is the wrong default for a credential.
+    Forgetting to set a variable now costs a developer a login on
+    localhost, which they notice in seconds, rather than costing a
+    customer a cookie nobody notices at all.
     """
-    return os.environ.get("LANDED_ENV", "").lower() in ("production", "prod")
+    return os.environ.get("LANDED_ENV", "").lower() not in INSECURE_OK
 
 
 def set_session(response, tokens: Tokens) -> None:

@@ -45,6 +45,11 @@ def seed():
 
 
 def main() -> int:
+    # Secure cookies are the default; this is the one place they are
+    # not wanted, because a Secure cookie is not sent over plain http
+    # and the sign-in would look broken on localhost.
+    os.environ.setdefault("LANDED_ENV", "dev")
+
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8099
     con, owner, _org = seed()
 

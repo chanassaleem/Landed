@@ -97,10 +97,18 @@ def test_no_token_ever_reaches_the_response_body(client, monkeypatch):
     assert "refresh-token" not in r.text
 
 
-def test_cookies_are_marked_secure_in_production(monkeypatch):
+def test_cookies_are_marked_secure_unless_told_otherwise(monkeypatch):
+    """The default was the other way round, and LANDED_ENV was not set
+    on the deployment -- so the live application issued its session
+    cookies without the flag, silently, because a cookie without
+    Secure works perfectly."""
     monkeypatch.setenv("LANDED_ENV", "production")
     assert session.secure_cookies() is True
     monkeypatch.setenv("LANDED_ENV", "")
+    assert session.secure_cookies() is True
+    monkeypatch.delenv("LANDED_ENV", raising=False)
+    assert session.secure_cookies() is True
+    monkeypatch.setenv("LANDED_ENV", "dev")
     assert session.secure_cookies() is False
 
 

@@ -192,3 +192,54 @@ def test_every_decision_tone_has_a_colour_in_the_stylesheet(payload):
     used = {d["tone"] for d in payload["decisions"]}
     assert used <= known, f"no .d-* rule for {sorted(used - known)}"
     assert not known - used - {"eck"}, f"dead rules for {sorted(known - used)}"
+
+
+# ------------------------------------------- cookies default to Secure
+#
+# secure_cookies() used to return True only when LANDED_ENV said
+# production. LANDED_ENV was not set in render.yaml, so the deployed
+# application issued session cookies without the Secure flag over
+# HTTPS -- and the failure was silent, because a cookie without Secure
+# works perfectly.
+
+
+def test_a_session_cookie_is_secure_unless_told_otherwise(monkeypatch):
+    from web.session import secure_cookies
+
+    monkeypatch.delenv("LANDED_ENV", raising=False)
+    assert secure_cookies(), \
+        "forgetting the variable drops the flag on a real deployment"
+
+    monkeypatch.setenv("LANDED_ENV", "production")
+    assert secure_cookies()
+    monkeypatch.setenv("LANDED_ENV", "staging")
+    assert secure_cookies(), "an unrecognised environment is not a dev one"
+    monkeypatch.setenv("LANDED_ENV", "")
+    assert secure_cookies()
+
+
+def test_only_a_named_development_environment_drops_it(monkeypatch):
+    """A Secure cookie is not sent over plain http, so localhost has to
+    be able to opt out. Every other value is treated as real."""
+    from web.session import secure_cookies
+
+    for value in ("dev", "development", "local", "test", "DEV"):
+        monkeypatch.setenv("LANDED_ENV", value)
+        assert not secure_cookies(), value
+
+
+def test_the_deployment_says_which_environment_it_is():
+    """Not relied on -- the default is safe either way -- but a
+    deployment that states what it is does not depend on anybody
+    remembering the rule."""
+    import pathlib
+
+    import yaml
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    spec = yaml.safe_load((root / "render.yaml").read_text())
+    env = {
+        v["key"]: v.get("value")
+        for s in spec["services"] for v in s.get("envVars", [])
+    }
+    assert env.get("LANDED_ENV") == "production"
