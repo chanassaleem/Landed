@@ -531,3 +531,88 @@ def test_a_replay_does_not_double_what_is_on_order(book, org):
     cur.execute("select count(*), sum(qty) from public.po_lines"
                 " where org_id = %s", (org_id,))
     assert cur.fetchone() == first
+
+
+# ------------------------------------- blank is not zero, for money
+#
+# `_is_num` answers True for an empty cell, by design: for most
+# columns a blank means a sensible default and zero is that default.
+# For money it is a trap. Zero is a price -- goods do arrive free --
+# so a blank and a zero have to be different, and `_num` collapses
+# them. Two faults came from exactly this one line.
+
+
+def test_a_blank_receipt_price_takes_the_order_price(book):
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    wb = load_workbook(BytesIO(book))
+    sheet = wb["Goods received"]
+    headers = [c.value for c in sheet[1]]
+    col = next(i for i, h in enumerate(headers, 1)
+               if h and h.startswith("unit_price"))
+    sheet.cell(2, col).value = None
+    buf = BytesIO(); wb.save(buf)
+
+    p = plan(buf.getvalue())
+    line = p.receipts[0]
+    ordered = next(o["price"] for o in p.orders
+                   if (o["po"], o["sku"]) == (line["po"], line["sku"]))
+    assert line["price"] == ordered, \
+        "a blank price was recorded as zero instead of the order's"
+
+
+def test_a_receipt_with_no_price_and_no_order_is_refused(book):
+    """Stock on a shelf that the valuation counts at nothing. The
+    preview exists so this is seen before anything is written."""
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    wb = load_workbook(BytesIO(book))
+    sheet = wb["Goods received"]
+    headers = [c.value for c in sheet[1]]
+    for name in ("unit_price", "po_number"):
+        col = next(i for i, h in enumerate(headers, 1)
+                   if h and h.startswith(name))
+        sheet.cell(2, col).value = None
+    buf = BytesIO(); wb.save(buf)
+
+    p = plan(buf.getvalue())
+    assert not p.ok, "a receipt with no price anywhere was accepted"
+    said = [x for x in p.problems if x.sheet == "Goods received"]
+    assert said and "no unit price" in said[0].message
+    assert "0" in said[0].message, "it does not say what to do if it was free"
+
+
+def test_a_stated_zero_price_is_kept(book):
+    """Goods really do arrive free. What is refused is silence."""
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    wb = load_workbook(BytesIO(book))
+    sheet = wb["Goods received"]
+    headers = [c.value for c in sheet[1]]
+    col = next(i for i, h in enumerate(headers, 1)
+               if h and h.startswith("unit_price"))
+    sheet.cell(2, col, 0)
+    buf = BytesIO(); wb.save(buf)
+
+    p = plan(buf.getvalue())
+    assert p.receipts[0]["price"] == 0, "a stated zero was treated as blank"
+    assert not [x for x in p.problems if x.sheet == "Goods received"]
+
+
+def test_blank_and_zero_are_different_numbers():
+    from engine.importer import _num, _num_or_none
+
+    assert _num_or_none(None) is None
+    assert _num_or_none("") is None
+    assert _num_or_none("   ") is None
+    assert _num_or_none(0) == 0.0
+    assert _num_or_none("0") == 0.0
+    assert _num_or_none(35.9) == 35.9
+    # The old behaviour, kept for the columns where it is right.
+    assert _num(None) == 0.0

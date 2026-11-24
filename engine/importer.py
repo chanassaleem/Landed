@@ -317,6 +317,28 @@ def _is_num(v) -> bool:
         return False
 
 
+def _num_or_none(v) -> float | None:
+    """The figure, or None where the cell is empty.
+
+    `_is_num` answers True for a blank, by design: for most columns a
+    blank means a sensible default and zero is that default. For money
+    it is a trap. Zero is a price -- goods do arrive free -- so a blank
+    and a zero have to be different, and `_num` collapses them.
+
+    Two faults came from exactly this. A receipt with the price column
+    left empty was recorded at zero, which put stock on a shelf that
+    the valuation counted at nothing. And an exchange rate left empty
+    became 0, which the database rejects outright because a rate of
+    zero is not a rate.
+    """
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _day(v):
     if v in (None, ""):
         return None
@@ -661,9 +683,8 @@ def _read_shipments(ws, p):
             # 282nd of its real weight.
             "currency": ((_text(vals[i["currency"]]).upper()
                           if "currency" in i else "") or "PKR"),
-            "fx": (_num(vals[i["fx_rate"]])
-                   if "fx_rate" in i and _is_num(vals[i["fx_rate"]])
-                   else None),
+            "fx": (_num_or_none(vals[i["fx_rate"]])
+                   if "fx_rate" in i else None),
             "allocate_by": basis,
         })
 
@@ -787,17 +808,21 @@ def _read_receipts(ws, p):
             "branch": branch,
             "sku": sku,
             "qty": qty,
-            "price": (_num(vals[i["unit_price"]])
-                      if "unit_price" in i
-                      and _is_num(vals[i["unit_price"]]) else 0),
+            # None, not zero. Zero is a price -- goods really can
+            # arrive free -- and defaulting a blank to it produced
+            # stock on the shelf that the valuation counted at
+            # nothing. Where it is blank the order's price is used
+            # instead, and where there is no order to take it from the
+            # import says so rather than guessing.
+            "price": (_num_or_none(vals[i["unit_price"]])
+                      if "unit_price" in i else None),
             # Blank means "take the order's", which the database does
             # on insert. Defaulting to PKR here would quietly convert
             # a euro invoice at one to one.
             "currency": (_text(vals[i["currency"]]).upper()
                          if "currency" in i else "") or None,
-            "fx": (_num(vals[i["fx_rate"]])
-                   if "fx_rate" in i and _is_num(vals[i["fx_rate"]])
-                   else None),
+            "fx": (_num_or_none(vals[i["fx_rate"]])
+                   if "fx_rate" in i else None),
             "received": _day(vals[i["received_at"]])
                         if "received_at" in i else None,
             "weight": (_num(vals[i["weight_kg"]])
@@ -1215,6 +1240,33 @@ def _cross_check(p: Plan):
             "Items", None,
             f"{len(without)} items have no stock row. They will be created "
             f"with nothing on the shelf.", fatal=False))
+
+    # A receipt with no price, and no order to take one from.
+    #
+    # Cross-sheet, so it belongs here rather than in either reader.
+    # Fatal, because the alternative is stock on a shelf that the
+    # valuation counts at nothing, and the whole point of the preview
+    # is that nothing is written until somebody has seen what it does.
+    if p.receipts:
+        ordered = {
+            (o["po"], o["sku"]): o["price"]
+            for o in p.orders if o.get("price")
+        }
+        for g in p.receipts:
+            if g["price"] is not None:
+                continue
+            got = ordered.get((g["po"], g["sku"]))
+            if got:
+                g["price"] = got
+                continue
+            p.problems.append(Problem(
+                "Goods received", None,
+                f"{g['sku']} on {g['grn']} has no unit price, and "
+                f"{'order ' + g['po'] + ' does not give one either'
+                   if g['po'] else 'no order is named to take one from'}. "
+                f"A receipt without a price puts stock on the shelf that "
+                f"the valuation counts at nothing. Enter the price, or 0 "
+                f"if it genuinely arrived free."))
 
     if not p.history:
         p.problems.append(Problem(
