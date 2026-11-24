@@ -560,7 +560,7 @@ const OPS = [
       sku: row.sku, branch: row.branch, kind: 'grn',
       qty: v.qty,
       unit_cost: v.unit_cost === '' ? null : Number(v.unit_cost),
-      note: v.note }],
+      note: v.note, client_ref: v.client_ref }],
   },
   {
     key: 'sale', label: () => 'Record a sale',
@@ -573,7 +573,7 @@ const OPS = [
     ],
     send: (row, v) => ['/api/movement', {
       sku: row.sku, branch: row.branch, kind: 'sale',
-      qty: v.qty, note: v.note }],
+      qty: v.qty, note: v.note, client_ref: v.client_ref }],
   },
   {
     key: 'adjust', label: () => 'Adjust count',
@@ -650,9 +650,18 @@ function openForm(op, row) {
   back.addEventListener('click', () => openDetail(row, null));
   form.append(back);
 
+  /* One key per attempt at this form, made once and reused by every
+     retry of it. If the reply to a submission is lost -- a flaky
+     connection, a closed laptop -- the next attempt carries the same
+     key and the ledger refuses the duplicate rather than recording a
+     second sale. A new key is minted only when the form is opened
+     again, which is a person deciding to do it twice. */
+  const attempt = (crypto.randomUUID ? crypto.randomUUID()
+    : String(Date.now()) + Math.random().toString(16).slice(2));
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const values = {};
+    const values = { client_ref: attempt };
     Object.entries(inputs).forEach(([k, i]) => { values[k] = i.value; });
     go.disabled = true;
     go.textContent = 'Recording…';

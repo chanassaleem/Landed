@@ -70,9 +70,32 @@ def _resolve(run, org, sku: str, branch: str) -> tuple[str, str]:
     return row[0], row[1]
 
 
+def _hold(run, org, item_id, location_id) -> None:
+    """Hold this line at this branch for the rest of the transaction.
+
+    Two sales at once both read the same on-hand figure, both find it
+    sufficient and both insert. Proven on a clean database: 100 units
+    on the shelf, two sales of 80 started together, both committed,
+    and the ledger finished at -60 -- which the check above exists to
+    make impossible and which nothing errors on, because each
+    transaction was correct when it looked.
+
+    An advisory lock rather than SELECT ... FOR UPDATE because there
+    is no row to lock: the on-hand figure is a sum of movements, and
+    item_locations may have no row for a line that has only ever
+    arrived. The lock is on the thing being protected -- this item at
+    this branch -- so two branches, or two items, never wait for each
+    other. It is transaction-scoped, so it is released by the commit
+    or the rollback and cannot be leaked by a failure.
+    """
+    run.execute(
+        "select pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (f"{org}:{item_id}:{location_id}",))
+
+
 def record(run, sku: str, branch: str, kind: str, qty: float,
            unit_cost: float | None = None, when: date | None = None,
-           note: str = "") -> dict:
+           note: str = "", client_ref: str | None = None) -> dict:
     """One movement, one row.
 
     `qty` is always given as a positive number and the sign comes from
@@ -114,6 +137,11 @@ def record(run, sku: str, branch: str, kind: str, qty: float,
     org = _org(run)
     item_id, location_id = _resolve(run, org, sku, branch)
 
+    # Before the check, not after it: a lock taken afterwards protects
+    # nothing, because the figure it was checking is already stale.
+    if sign < 0:
+        _hold(run, org, item_id, location_id)
+
     if sign < 0:
         on_hand = run.execute(
             "select coalesce(sum(qty), 0) from public.stock_movement "
@@ -128,16 +156,34 @@ def record(run, sku: str, branch: str, kind: str, qty: float,
                 f"{branch}. Record the receipt that is missing, or use "
                 f"Adjust count if the shelf disagrees with the ledger.")
 
-    run.execute(
+    # A retry must not post twice.
+    #
+    # The ledger has had a unique index on (org_id, client_ref) since
+    # it was written, and this generated a fresh uuid every call -- so
+    # the guarantee was there and nothing used it. A browser that
+    # retries a request whose reply was lost, or somebody pressing a
+    # button twice on a slow connection, posted the movement again.
+    #
+    # Where the caller supplies a key the insert is idempotent: the
+    # second attempt conflicts, writes nothing, and reports what the
+    # first one did rather than an error about a duplicate.
+    ref = client_ref or str(uuid.uuid4())
+    done = run.execute(
         "insert into public.stock_movement (org_id, item_id, location_id, "
         "qty, unit_cost, reason, occurred_at, note, client_ref) "
-        "values (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        "values (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+        # The predicate is repeated because the index is partial;
+        # without it Postgres cannot match the conflict target.
+        "on conflict (org_id, client_ref) where client_ref is not null "
+        "do nothing "
+        "returning id",
         (org, item_id, location_id, sign * qty,
          # `and unit_cost` would have written a stated zero as null,
          # which is the same silence this refuses above.
          unit_cost if wants_cost else None,
-         kind, when or date.today(), note or None, str(uuid.uuid4())))
-    return {"sku": sku, "branch": branch, "reason": kind, "qty": sign * qty}
+         kind, when or date.today(), note or None, ref)).fetchone()
+    return {"sku": sku, "branch": branch, "reason": kind, "qty": sign * qty,
+            "recorded": done is not None}
 
 
 def adjust(run, sku: str, branch: str, counted: float,
@@ -158,6 +204,10 @@ def adjust(run, sku: str, branch: str, counted: float,
 
     org = _org(run)
     item_id, location_id = _resolve(run, org, sku, branch)
+    # A count reconciles to the figure it read. Without the lock, two
+    # counts taken together each write a delta against the same
+    # starting figure and the shelf ends up at neither number.
+    _hold(run, org, item_id, location_id)
     on_hand = float(run.execute(
         "select coalesce(sum(qty), 0) from public.stock_movement "
         "where item_id = %s and location_id = %s",
@@ -200,6 +250,11 @@ def transfer(run, sku: str, from_branch: str, to_branch: str, qty: float,
     org = _org(run)
     item_id, out_id = _resolve(run, org, sku, from_branch)
     _item, in_id = _resolve(run, org, sku, to_branch)
+    # Both ends, and always in the same order. Two transfers moving
+    # the same line in opposite directions would otherwise each hold
+    # what the other is waiting for, and neither would ever finish.
+    for lid in sorted((str(out_id), str(in_id))):
+        _hold(run, org, item_id, lid)
 
     on_hand = float(run.execute(
         "select coalesce(sum(qty), 0) from public.stock_movement "

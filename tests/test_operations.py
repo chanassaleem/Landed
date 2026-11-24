@@ -268,3 +268,100 @@ def test_an_uncosted_receipt_cannot_inflate_the_valuation(shop):
         "stock went up without a cost behind it"
     assert float(on) > 0 and float(avg) > 0
     assert before is not None
+
+
+# ------------------------------------- two at once, and the same one twice
+#
+# The availability check reads the on-hand figure and then inserts.
+# Two sales started together both read the same figure, both find it
+# sufficient and both insert -- each transaction correct when it
+# looked, the ledger wrong when they finish. Proven on a clean
+# database: 100 on the shelf, two sales of 80, both committed, ledger
+# at -60. Nothing errors, because nothing was wrong at the time.
+
+
+def test_two_sales_at_once_cannot_sell_the_same_stock(shop):
+    import threading
+    import time
+
+    import psycopg
+
+    con, cur = shop
+    dsn = con.info.dsn
+    # No commit here. The fixture already committed the shop's rows,
+    # and its role and claims are transaction-local -- committing
+    # would discard them, and the side connections would be told this
+    # account has no organisation.
+    claims = cur.execute(
+        "select current_setting('request.jwt.claims', true)").fetchone()[0]
+    assert claims, "the fixture's claims were lost"
+    have = float(cur.execute(
+        "select coalesce(sum(qty), 0) from public.stock_movement"
+    ).fetchone()[0])
+    assert have >= 100, "the fixture has too little stock to race over"
+    start = threading.Barrier(2)
+    done = []
+
+    def sell():
+        side = psycopg.connect(dsn)
+        try:
+            c = side.cursor()
+            c.execute("set role authenticated")
+            c.execute("select set_config('request.jwt.claims', %s, false)",
+                      (claims,))
+            start.wait(timeout=10)
+            record(c, "RGT-1", "KHI", "sale", have - 10)
+            time.sleep(0.05)
+            side.commit()
+            done.append("committed")
+        except Exception as exc:
+            side.rollback()
+            done.append(f"refused: {type(exc).__name__}: {exc}"[:90])
+        finally:
+            side.close()
+
+    threads = [threading.Thread(target=sell) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+
+    kinds = sorted(d.split(":")[0] for d in done)
+    assert kinds == ["committed", "refused"], done
+    left = float(cur.execute(
+        "select coalesce(sum(qty), 0) from public.stock_movement"
+    ).fetchone()[0])
+    assert left >= 0, f"the shelf went to {left}"
+
+
+def test_the_same_request_twice_records_one_movement(shop):
+    """A reply that never arrived gets retried with the same key. The
+    ledger has had a unique index on (org_id, client_ref) since it was
+    written; this generated a fresh uuid every call, so the guarantee
+    was there and nothing used it."""
+    _, cur = shop
+    key = f"attempt-{uuid.uuid4()}"
+
+    first = record(cur, "RGT-1", "KHI", "sale", 5, client_ref=key)
+    again = record(cur, "RGT-1", "KHI", "sale", 5, client_ref=key)
+
+    assert first["recorded"] is True
+    assert again["recorded"] is False, "the retry posted a second sale"
+    n = cur.execute(
+        "select count(*) from public.stock_movement where client_ref = %s",
+        (key,)).fetchone()[0]
+    assert n == 1
+
+
+def test_two_different_attempts_both_record(shop):
+    """Idempotency must not turn two deliberate sales into one."""
+    _, cur = shop
+    before = float(cur.execute(
+        "select coalesce(sum(qty), 0) from public.stock_movement"
+    ).fetchone()[0])
+    record(cur, "RGT-1", "KHI", "sale", 3, client_ref=f"a-{uuid.uuid4()}")
+    record(cur, "RGT-1", "KHI", "sale", 3, client_ref=f"b-{uuid.uuid4()}")
+    after = float(cur.execute(
+        "select coalesce(sum(qty), 0) from public.stock_movement"
+    ).fetchone()[0])
+    assert before - after == 6

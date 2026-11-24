@@ -1006,10 +1006,18 @@ async def movement(request: Request,
     b = await request.json()
     try:
         with _ops(claims) as conn:
+            # The browser's key for this attempt. A request whose
+            # reply was lost gets retried with the same key, and the
+            # ledger's unique index on (org_id, client_ref) turns the
+            # second attempt into a no-op instead of a second sale.
+            # Trusted only as an opaque string: it identifies an
+            # attempt, it does not grant anything.
+            ref = str(b.get("client_ref") or "").strip()[:200] or None
             out = record(conn, str(b.get("sku", "")), str(b.get("branch", "")),
                          str(b.get("kind", "")), b.get("qty"),
                          unit_cost=b.get("unit_cost"),
-                         note=str(b.get("note", "")))
+                         note=str(b.get("note", "")),
+                         client_ref=ref)
     except Exception as exc:
         return _op_error(exc)
     return JSONResponse({"ok": True, **out})
