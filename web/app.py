@@ -1090,28 +1090,80 @@ def state(request: Request) -> dict:
                              scale=money_scale)
 
 
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _xlsx(book, filename: str) -> Response:
+    import io
+
+    buf = io.BytesIO()
+    book.save(buf)
+    return Response(
+        content=buf.getvalue(),
+        media_type=XLSX,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/model")
+def data_model() -> JSONResponse:
+    """What the workbook is, sheet by sheet.
+
+    Served rather than written into the browser, because the list that
+    describes the sheets and the code that reads them have to be the
+    same list. The template this application used to offer was built
+    by a different file; it shared six sheet names out of twenty-four
+    and this importer refused it.
+    """
+    from engine.importer import REQUIRED_SHEETS, SHEET_MODEL
+
+    return JSONResponse({
+        "sheets": [
+            dict(m, required=m["sheet"] in REQUIRED_SHEETS
+                 or m["sheet"] == "Sales history",
+                 tables=list(m["tables"]))
+            for m in SHEET_MODEL
+        ],
+    })
+
+
+@app.get("/api/template.xlsx")
+def template() -> Response:
+    """The empty workbook: every sheet Landed reads, no rows.
+
+    This endpoint used to serve a different builder entirely, and the
+    file it produced was refused by this application's own importer --
+    "These sheets are missing: Items, Stock". It shared six sheet names
+    out of twenty-four. Anybody who downloaded the template, filled it
+    in and uploaded it hit a wall on the first thing they ever did.
+
+    Both files come from one builder now. A template assembled
+    separately drifts from the importer the moment a column changes,
+    which is exactly how that happened.
+    """
+    from tools.make_import_workbook import blank
+
+    return _xlsx(blank(), "landed-template.xlsx")
+
+
+@app.get("/api/sample.xlsx")
+def sample() -> Response:
+    """The same sheets with an invented importer's figures in them.
+
+    Worth having beside the empty one: a column makes more sense with
+    a plausible value under it than with a header alone, and somebody
+    deciding whether to buy this can upload it and see every screen
+    populated without typing anything.
+    """
+    from tools.make_import_workbook import build
+
+    return _xlsx(build("meridian", 7), "landed-sample.xlsx")
+
+
 @app.get("/api/workbook.xlsx")
 def workbook() -> Response:
-    """The whole model as a spreadsheet.
-
-    Still here, and still worth having: it is how a business sees the
-    arithmetic before it trusts the software, and how one with a year of
-    history gets that history in without typing it twice.
-    """
-    from tools import build_workbook
-
-    with tempfile.TemporaryDirectory() as tmp:
-        path = pathlib.Path(tmp) / "landed-model.xlsx"
-        build_workbook.main(path)
-        body = path.read_bytes()
-
-    return Response(
-        content=body,
-        media_type=(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ),
-        headers={"Content-Disposition": 'attachment; filename="landed-model.xlsx"'},
-    )
+    """Kept because links to it exist. It is the template."""
+    return template()
 
 
 @app.get("/sign-in", response_class=HTMLResponse)

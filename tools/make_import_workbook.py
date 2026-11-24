@@ -263,6 +263,37 @@ def demand_series(rng: random.Random, pattern: str, base: float,
     return out
 
 
+def blank() -> Workbook:
+    """The same twenty-four sheets with no rows in them.
+
+    The template somebody downloads before they have anything to
+    upload. Headers, the required markers and the notes under each
+    sheet, and nothing else -- so the first thing they do is type
+    their own figures rather than delete somebody else's.
+
+    Built by the same `render` as the sample, from empty lists, which
+    is the point: a template assembled separately would drift from the
+    importer the moment a column changed, and that is exactly what
+    happened to the one this replaces.
+    """
+    return render(
+        spec={"name": "Landed import template",
+              "what": "Every sheet Landed reads, with no rows in it. Fill in "
+                      "what you have and upload it. Nothing is written until "
+                      "you have seen what it will do."},
+        branches=[], suppliers=[], items=[], stock=[], history=[],
+        orders=[], shipments=[], months=month_labels(date.today(), MONTHS),
+        customers=[], invoices=[], machines=[], jobs=[],
+        extra={
+            "receipts": [], "fitment": [], "accounts": [], "dividends": [],
+            "period": (date.today().replace(month=1, day=1).isoformat(),
+                       date.today().isoformat()),
+            "commitments": [], "bank": [], "employees": [], "pipeline": [],
+            "spend": [], "contacts": [], "dealings": [],
+        },
+    )
+
+
 def build(key: str, seed: int) -> Workbook:
     spec = ORGS[key]
     rng = random.Random(seed)

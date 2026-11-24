@@ -27,6 +27,97 @@ REQUIRED_SHEETS = ("Branches", "Items", "Stock")
 OPTIONAL_SHEETS = ("Sales history", "On order", "Shipments", "Suppliers",
                    "Customers", "Invoices", "Machines", "Service jobs")
 
+# The model, said once.
+#
+# What each sheet is, where it lands, and what it switches on. It lives
+# beside the readers because that is where the truth is: a list kept
+# anywhere else goes stale the first time a sheet is added, which is
+# exactly what happened to the template this application used to serve
+# -- it shared six sheet names out of twenty-four and was refused by
+# this importer.
+#
+# `tables` is where the rows end up. A person filling in a spreadsheet
+# does not need to know that, but somebody deciding whether to trust
+# the software does, and nobody else is going to tell them.
+SHEET_MODEL: tuple[dict, ...] = (
+    dict(sheet="Branches", tables=("locations",),
+         what="Every branch you hold stock at.",
+         unlocks="Everything."),
+    dict(sheet="Items", tables=("items", "suppliers"),
+         what="Every line you carry, once \u2014 not once per branch.",
+         unlocks="The catalogue the rest reads."),
+    dict(sheet="Stock", tables=("stock_movement", "item_locations"),
+         what="What is on the shelf today. Your count BEFORE anything "
+              "on Goods received.",
+         unlocks="Stock value, and what stands still."),
+    dict(sheet="Sales history", tables=("demand_history",),
+         what="What you sold each month. Fills the months before you "
+              "start recording sales here.",
+         unlocks="Forecast, cover, reorder points."),
+    dict(sheet="On order", tables=("purchase_orders", "po_lines"),
+         what="Orders placed, in the supplier's currency with the rate "
+              "you got.",
+         unlocks="What is already coming."),
+    dict(sheet="Shipments", tables=("shipments", "shipment_costs"),
+         what="What is in transit, and the freight and duty on it.",
+         unlocks="Landing, with Goods received."),
+    dict(sheet="Goods received", tables=("goods_receipts", "grn_lines",
+                                         "shipment_lines"),
+         what="What actually arrived off those shipments.",
+         unlocks="The landed unit cost."),
+    dict(sheet="Fitment", tables=("item_machines",),
+         what="Which analyser each reagent runs on.",
+         unlocks="Dead stock, or a machine consumable."),
+    dict(sheet="Suppliers", tables=("suppliers",),
+         what="Who you buy from and in what currency.",
+         unlocks="Optional: taken from Items."),
+    dict(sheet="Customers", tables=("customers",),
+         what="Who you sell to, their terms and credit limit.",
+         unlocks="Owed, and who is over their limit."),
+    dict(sheet="Invoices", tables=("invoices",),
+         what="What you billed and what has been paid.",
+         unlocks="Owed, Sales, cash coming in."),
+    dict(sheet="Contacts", tables=("contacts",),
+         what="People at those customers.",
+         unlocks="Customers."),
+    dict(sheet="Dealings", tables=("interactions",),
+         what="What was said and when.",
+         unlocks="Customers."),
+    dict(sheet="Machines", tables=("machines",),
+         what="Analysers placed with customers.",
+         unlocks="Equipment, and whether it repays."),
+    dict(sheet="Service jobs", tables=("service_jobs",),
+         what="Visits, hours, parts, downtime.",
+         unlocks="Service, and the margin lost."),
+    dict(sheet="Pipeline", tables=("opportunities",),
+         what="Tenders and accounts being worked.",
+         unlocks="Pipeline, against stock and cash."),
+    dict(sheet="Marketing spend", tables=("marketing_spend",),
+         what="What was spent winning work.",
+         unlocks="Cost per win."),
+    dict(sheet="Trial balance", tables=("accounts",),
+         what="Your trial balance for a period.",
+         unlocks="Books, and the checks that tie."),
+    dict(sheet="Dividends", tables=("equity_movements",),
+         what="Dividends and capital in or out.",
+         unlocks="The retained-earnings check."),
+    dict(sheet="Committed payments", tables=("commitments",),
+         what="Payments already committed, by week.",
+         unlocks="Cash, and what Ordering refuses."),
+    dict(sheet="Bank balance", tables=("cash_balances",),
+         what="What is in the bank, as at a date.",
+         unlocks="Cash. The thirteen weeks need it."),
+    dict(sheet="Employees", tables=("employees",),
+         what="Who you employ and on what.",
+         unlocks="Payroll, and the floor under cash."),
+    dict(sheet="Read me", tables=(),
+         what="What each sheet is for.",
+         unlocks="Not read by the importer."),
+    dict(sheet="Check", tables=(),
+         what="Totals that must tie before you upload.",
+         unlocks="Not read by the importer."),
+)
+
 PERIOD = re.compile(r"^\d{4}-\d{2}$")
 MONTH_COL = re.compile(r"^sold[_ ](\d{4})[_-](\d{2})$", re.I)
 

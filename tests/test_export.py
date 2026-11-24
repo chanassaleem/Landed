@@ -204,3 +204,117 @@ def test_an_export_holds_only_what_that_person_can_see(filled):
     counts = plan(theirs).as_dict()["counts"]
     assert all(n == 0 for n in counts.values()), \
         f"a stranger's export contains somebody else's data: {counts}"
+
+
+# ------------------------ the template the application actually serves
+#
+# /api/workbook.xlsx served a different builder, and the file it
+# produced was refused by this application's own importer: "These
+# sheets are missing: Items, Stock". It shared six sheet names out of
+# twenty-four. Anybody who downloaded the template, filled it in and
+# uploaded it hit a wall on the first thing they ever did, and nothing
+# anywhere compared the two.
+
+
+def _fetch(path):
+    from fastapi.testclient import TestClient
+
+    import web.app as webapp
+
+    r = TestClient(webapp.app).get(path)
+    assert r.status_code == 200, f"{path} -> {r.status_code}"
+    return r.content
+
+
+def test_the_template_has_every_sheet_the_importer_reads():
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    from tools.make_import_workbook import build
+
+    served = load_workbook(BytesIO(_fetch("/api/template.xlsx"))).sheetnames
+    reads = build("meridian", 1).sheetnames
+    missing = sorted(set(reads) - set(served))
+    assert not missing, f"the template a customer downloads lacks {missing}"
+
+
+def test_the_template_is_not_refused_by_our_own_importer():
+    """Not that it imports rows -- it is empty -- but that it is a
+    workbook this application recognises. A structural refusal is the
+    failure that shipped."""
+    from engine.importer import BadWorkbook, plan
+
+    try:
+        p = plan(_fetch("/api/template.xlsx"))
+    except BadWorkbook as exc:  # pragma: no cover - the bug this pins
+        raise AssertionError(f"our own template is refused: {exc}") from None
+    fatal = [x for x in p.problems if x.fatal]
+    assert not fatal, [x.message for x in fatal]
+
+
+def test_the_sample_imports_and_carries_a_landed_cost():
+    """The file somebody uploads to see the product working. If it does
+    not produce a valuation, every screen they look at is empty of the
+    one number the product is for."""
+    from engine.importer import plan
+
+    d = plan(_fetch("/api/sample.xlsx")).as_dict()
+    assert d["ok"], [p["message"] for p in d["problems"][:3]]
+    rows = {x["label"]: x["rows"] for x in d["summary"]}
+    for sheet in ("Items", "Stock lines", "Months of history", "Shipment costs",
+                  "Goods received"):
+        assert rows.get(sheet), f"the sample has no {sheet}: {sorted(rows)}"
+
+
+def test_the_old_url_still_works_and_gives_the_template():
+    """By sheet names, not bytes: two builds of one workbook differ in
+    the zip's timestamps."""
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    old = load_workbook(BytesIO(_fetch("/api/workbook.xlsx"))).sheetnames
+    new = load_workbook(BytesIO(_fetch("/api/template.xlsx"))).sheetnames
+    assert old == new
+
+
+def test_the_model_describes_exactly_the_sheets_that_exist():
+    """The list on the Import screen and the workbook have to be one
+    thing. A sheet added without an entry here is one nobody is told
+    about; an entry with no sheet is a promise the file does not keep.
+    """
+    from engine.importer import SHEET_MODEL
+    from tools.make_import_workbook import build
+
+    described = [m["sheet"] for m in SHEET_MODEL]
+    actual = build("meridian", 1).sheetnames
+
+    assert len(described) == len(set(described)), "a sheet described twice"
+    assert sorted(described) == sorted(actual), (
+        f"described but absent: {sorted(set(described) - set(actual))}; "
+        f"present but undescribed: {sorted(set(actual) - set(described))}")
+
+
+def test_every_sheet_says_where_its_rows_land():
+    """Except the two that are not read at all, which say so."""
+    from engine.importer import SHEET_MODEL
+
+    for m in SHEET_MODEL:
+        assert m["what"], m["sheet"]
+        assert m["unlocks"], m["sheet"]
+        if m["sheet"] in ("Read me", "Check"):
+            assert not m["tables"]
+            assert "not read" in m["unlocks"].lower()
+        else:
+            assert m["tables"], f"{m['sheet']} lands nowhere"
+
+
+def test_the_model_endpoint_marks_what_is_needed():
+    from fastapi.testclient import TestClient
+
+    import web.app as webapp
+
+    d = TestClient(webapp.app).get("/api/model").json()
+    needed = {m["sheet"] for m in d["sheets"] if m["required"]}
+    assert needed == {"Branches", "Items", "Stock", "Sales history"}

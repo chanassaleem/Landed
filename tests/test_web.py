@@ -161,13 +161,21 @@ def test_the_payload_matches_what_the_engine_computed(payload):
 # ------------------------------------------------------------- the model
 
 
-def test_the_excel_model_downloads():
-    r = client.get("/api/workbook.xlsx")
+@pytest.mark.parametrize("path,name", [
+    ("/api/template.xlsx", "landed-template.xlsx"),
+    ("/api/sample.xlsx", "landed-sample.xlsx"),
+    # The old URL. Kept because links to it exist, and it is the
+    # template now: it used to serve a workbook built by a different
+    # file, which this application's own importer refused.
+    ("/api/workbook.xlsx", "landed-template.xlsx"),
+])
+def test_the_workbooks_download(path, name):
+    r = client.get(path)
     assert r.status_code == 200
     assert r.headers["content-type"].startswith(
         "application/vnd.openxmlformats"
     )
-    assert "landed-model.xlsx" in r.headers["content-disposition"]
+    assert name in r.headers["content-disposition"]
     assert r.content[:2] == b"PK"      # a real zip, which is what xlsx is
 
 

@@ -273,6 +273,7 @@ function go(view) {
   if (view === 'settings') renderSettings();
   if (view === 'owed') renderOwed();
   if (view === 'equipment') renderEquipment();
+  if (view === 'import') renderModel();
   $('main').scrollTop = 0;
   history.replaceState(null, '', `#${view}`);
 }
@@ -2159,6 +2160,70 @@ function wireFilters() {
 }
 
 let importWired = false;
+
+/* ---------------------------------------------------- the model
+
+   What the workbook is, on the screen where somebody is about to fill
+   one in. Three files and a list of every sheet.
+
+   The list comes from the server because the description of the
+   sheets and the code that reads them have to be one thing. The
+   template this product used to offer was built by a different file
+   and shared six sheet names out of twenty-four: downloading it,
+   filling it in and uploading it produced "These sheets are missing:
+   Items, Stock" on the first thing a customer ever did. */
+
+const MODEL_FILES = [
+  ['/api/template.xlsx', 'Blank template',
+   'Every sheet, no rows. Fill in what you have.'],
+  ['/api/sample.xlsx', 'Sample data',
+   'The same sheets with an invented importer in them. Upload it to '
+   + 'see every screen working.'],
+  ['/api/export.xlsx', 'Everything you have',
+   'Your own figures, in the same shape. It imports back, so nothing '
+   + 'here is locked in.'],
+];
+
+async function renderModel() {
+  const files = $('model-files');
+  const host = $('model-table');
+  if (!files || !host) return;
+
+  files.textContent = '';
+  MODEL_FILES.forEach(([href, title, note]) => {
+    const card = el('a', 'file-card');
+    card.href = href;
+    card.setAttribute('download', '');
+    card.append(el('strong', null, title));
+    card.append(el('span', null, note));
+    files.append(card);
+  });
+
+  if (host.dataset.filled) return;
+  let d;
+  try {
+    const r = await fetch('/api/model');
+    d = await r.json();
+    if (!r.ok) throw new Error('The model could not be read.');
+  } catch (e) {
+    host.textContent = '';
+    host.append(empty('The model could not be read', e.message));
+    return;
+  }
+
+  host.textContent = '';
+  host.append(table(
+    [['Sheet', ''], ['', ''], ['What it is', ''],
+     ['What it switches on', ''], ['Where it lands', '']],
+    (d.sheets || []).map((m) => [
+      cell(m.sheet, 'lead'),
+      cell(m.required ? 'needed' : '', 'dim'),
+      cell(m.what),
+      cell(m.unlocks, 'dim'),
+      cell(m.tables.join(', ') || '—', 'dim'),
+    ])));
+  host.dataset.filled = '1';
+}
 
 function wireImport() {
   const drop = $('drop');

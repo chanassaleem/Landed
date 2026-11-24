@@ -253,9 +253,7 @@
             </p>
             <p class="drop-sub">An .xlsx with the sheets Branches, Items,
               Stock and Sales history. Every other sheet is read if it is
-              there &mdash; On order, Shipments, Goods received and the
-              rest. Download the template from Settings for all of
-              them.</p>
+              there. The model below lists all of them.</p>
           </div>
 
           <div class="panel" id="import-report" hidden></div>
@@ -264,6 +262,17 @@
               Write this to my organisation</button>
             <button class="btn" id="cancel-import" type="button">Cancel</button>
           </div>
+        </div>
+
+        <div class="section">
+          <div class="section-head">
+            <h2>The model</h2>
+            <p>Every sheet Landed reads, what it switches on, and where
+               it ends up. Three files, all the same twenty-four
+               sheets.</p>
+          </div>
+          <div class="files" id="model-files"></div>
+          <div id="model-table"></div>
         </div>
       </div>
     </section>
