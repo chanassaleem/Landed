@@ -763,12 +763,20 @@ def _read_receipts(ws, p):
                 f"{sku}: a receipt of {qty:g} is not a receipt. Leave the "
                 f"row out, or record a count on the stock screen."))
             continue
-        key = (grn, sku)
+        batch = _text(vals[i["batch"]]) if "batch" in i else ""
+        # The batch is part of what identifies a line. One delivery
+        # commonly carries the same reagent in two lots with different
+        # expiry dates, and the database has always been able to hold
+        # them -- this reader refused them, so the second lot was
+        # reported as a mistake and dropped.
+        key = (grn, sku, batch)
         if key in seen:
             p.problems.append(Problem(
                 "Goods received", r,
-                f"{sku} appears twice on {grn}. One row per line, or the "
-                f"importer has to guess which quantity arrived."))
+                f"{sku}"
+                f"{' batch ' + batch if batch else ''} appears twice on "
+                f"{grn}. One row per lot, or the importer has to guess "
+                f"which quantity arrived."))
             continue
         seen.add(key)
         p.receipts.append({
@@ -798,7 +806,7 @@ def _read_receipts(ws, p):
             "volume": (_num(vals[i["volume_cbm"]])
                        if "volume_cbm" in i
                        and _is_num(vals[i["volume_cbm"]]) else None),
-            "batch": _text(vals[i["batch"]]) if "batch" in i else "",
+            "batch": batch,
             "expiry": _day(vals[i["expiry_date"]])
                       if "expiry_date" in i else None,
         })
@@ -1670,15 +1678,35 @@ def apply(conn, p: Plan, as_of: date | None = None) -> dict:
             gid, iid = grns.get(g["grn"]), item.get(g["sku"])
             if not gid or not iid:
                 continue
-            # Skipped rather than doubled on a re-import. grn_lines has
-            # no natural key -- two receipts of one SKU on one GRN are
-            # two real rows -- and the movement its trigger posts is
-            # append-only, so there is no safe upsert. The GRN number
-            # is the thing that identifies the event.
-            if not grn_new and run.execute(
+            # Skipped rather than doubled on a re-import. The movement
+            # this line's trigger posts is append-only, so there is no
+            # safe upsert: the only correct answer for a line already
+            # recorded is to leave it alone.
+            #
+            # This asked the wrong question. It was guarded by
+            # `not grn_new`, a counter of new receipts across the whole
+            # workbook -- so the moment any one receipt was new, the
+            # check was switched off for every other line in the file
+            # and the ones already recorded were inserted a second
+            # time. A customer who keeps one workbook and adds this
+            # week's receipts to it doubled every receipt they had
+            # imported before, and the trigger posted the stock to
+            # match. 154 units became 308 on the second upload.
+            #
+            # The guard was never needed either. A genuinely new
+            # receipt has no lines yet, so this query finds nothing and
+            # the insert goes ahead on its own.
+            #
+            # Identity is the receipt, the item and the batch. Two lots
+            # of one SKU on one delivery are two real lines with two
+            # expiry dates, and keying on the item alone would have
+            # silently dropped the second.
+            if run.execute(
                     "select 1 from public.grn_lines"
-                    " where grn_id = %s and item_id = %s limit 1",
-                    (gid, iid)).fetchone():
+                    " where grn_id = %s and item_id = %s"
+                    "   and coalesce(batch, '') = coalesce(%s, '')"
+                    " limit 1",
+                    (gid, iid, g["batch"] or None)).fetchone():
                 continue
             got = run.execute(
                 "insert into public.grn_lines (org_id, grn_id, po_line_id,"

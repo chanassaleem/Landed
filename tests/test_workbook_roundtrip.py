@@ -614,3 +614,129 @@ def test_the_uplift_ignores_shipments_with_no_goods(imported):
     assert 0.02 < t["uplift_pct"] < 1.5, t["uplift_pct"]
     assert d["awaiting_note"], "nothing says why shipments were left out"
     assert "Goods received" in d["awaiting_note"]
+
+
+# ----------------------------------- the workbook that grows each week
+#
+# The round-trip tests imported the same file twice, which is the easy
+# case: nothing is new, so the skip was never asked a hard question.
+# The real workflow is one workbook that gains this week's receipts and
+# is uploaded again -- and that is where it broke.
+
+
+def test_adding_a_receipt_does_not_re_receive_the_old_ones(imported, books):
+    """A workbook-wide counter asked the wrong question.
+
+    The skip that stops a recorded receipt being inserted twice was
+    guarded by a count of NEW receipts across the whole file. The
+    moment any one receipt was new, the check switched off for every
+    other line, and everything already imported went in a second time
+    with the trigger posting the stock to match.
+
+    154 units became 308 on the second upload.
+    """
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    from engine.importer import apply, plan
+
+    con = imported[0]
+    who = fresh_org(con, "Weekly")
+
+    # Week one: the workbook carries a single goods receipt.
+    wb = load_workbook(BytesIO(books["meridian-diagnostics"]))
+    sheet = wb["Goods received"]
+    first = sheet.cell(2, 1).value
+    sheet.delete_rows(3, sheet.max_row)
+    buf = BytesIO(); wb.save(buf)
+    with as_user(con, who) as c:
+        apply(c, plan(buf.getvalue()))
+
+    def received():
+        with as_user(con, who) as c:
+            return c.execute(
+                "select coalesce(sum(gl.qty), 0), count(*)"
+                "  from public.grn_lines gl"
+                "  join public.goods_receipts g on g.id = gl.grn_id"
+                " where g.grn_number = %s", (first,)).fetchone()
+
+    def moved():
+        with as_user(con, who) as c:
+            return c.execute(
+                "select coalesce(sum(qty), 0) from public.stock_movement"
+                " where reason = 'grn'").fetchone()[0]
+
+    week_one, lines_one = received()
+    assert week_one > 0 and lines_one == 1
+    before = moved()
+
+    # Week two: the same workbook, with the second receipt added back.
+    with as_user(con, who) as c:
+        apply(c, plan(books["meridian-diagnostics"]))
+
+    week_two, lines_two = received()
+    assert (week_two, lines_two) == (week_one, lines_one), (
+        f"{first} was received again: {week_one} became {week_two}")
+    assert moved() > before, "the genuinely new receipt did not arrive"
+
+    # And a third upload of that same file changes nothing at all.
+    steady = moved()
+    with as_user(con, who) as c:
+        apply(c, plan(books["meridian-diagnostics"]))
+    assert received() == (week_one, lines_one)
+    assert moved() == steady
+
+
+def test_one_delivery_can_carry_the_same_sku_in_two_lots(imported, books):
+    """A reagent arrives in two batches with different expiry dates.
+
+    The database has always been able to hold them as two lines. The
+    reader refused them -- same GRN, same SKU, reported as a mistake --
+    so the second lot was dropped, and with it the quantity and the
+    expiry that makes it worth tracking at all.
+    """
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    from engine.importer import apply, plan
+
+    con = imported[0]
+    who = fresh_org(con, "Lots")
+
+    wb = load_workbook(BytesIO(books["meridian-diagnostics"]))
+    sheet = wb["Goods received"]
+    # Straight after the first data row. `max_row` counts the note
+    # lines under the data, and a row written below a blank one is a
+    # row the reader never reaches.
+    sheet.insert_rows(3)
+    second = 3
+    for col in range(1, 15):
+        sheet.cell(second, col, sheet.cell(2, col).value)
+    headers = [c.value for c in sheet[1]]
+    batch_col = next(i for i, h in enumerate(headers, 1)
+                     if h and h.startswith("batch"))
+    expiry_col = next(i for i, h in enumerate(headers, 1)
+                      if h and h.startswith("expiry"))
+    sheet.cell(second, batch_col, "LOT-SECOND")
+    sheet.cell(second, expiry_col, "2029-12-31")
+    buf = BytesIO(); wb.save(buf)
+
+    with as_user(con, who) as c:
+        p = plan(buf.getvalue())
+        apply(c, p)
+
+    grn = sheet.cell(2, 1).value
+    sku = sheet.cell(2, 5).value
+    with as_user(con, who) as c:
+        lots = c.execute(
+            "select gl.batch from public.grn_lines gl"
+            "  join public.goods_receipts g on g.id = gl.grn_id"
+            "  join public.items i on i.id = gl.item_id"
+            " where g.grn_number = %s and i.sku = %s"
+            " order by gl.batch", (grn, sku)).fetchall()
+
+    assert len(lots) == 2, f"the second lot was dropped: {lots}"
+    assert "LOT-SECOND" in [r[0] for r in lots]
+    assert not [x for x in p.problems if "appears twice" in x.message]
