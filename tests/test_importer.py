@@ -616,3 +616,112 @@ def test_blank_and_zero_are_different_numbers():
     assert _num_or_none(35.9) == 35.9
     # The old behaviour, kept for the columns where it is right.
     assert _num(None) == 0.0
+
+
+# ------------------------------------- a receipt that disagrees
+#
+# A receipt is an event: the stock moved, the valuation took the cost.
+# A later file saying it was really 90 at a different price does not
+# unhappen any of that, and apply() leaves it alone -- correctly. What
+# the preview owed the person was the fact that their file and the
+# ledger disagree. It said "already recorded" instead, because the
+# receipts spec compared no values at all: a GRN number seen before
+# was reported as agreement.
+
+
+def _first_receipt(cur, org_id):
+    return cur.execute(
+        "select gl.id, g.grn_number, i.sku, gl.qty"
+        "  from public.grn_lines gl"
+        "  join public.goods_receipts g on g.id = gl.grn_id"
+        "  join public.items i on i.id = gl.item_id"
+        " where gl.org_id = %s order by g.grn_number, i.sku limit 1",
+        (org_id,)).fetchone()
+
+
+def test_a_receipt_whose_quantity_moved_is_not_called_already_recorded(
+        book, org):
+    conn, cur, org_id = org
+    apply(cur, plan(book))
+    conn.commit()
+    line = _first_receipt(cur, org_id)
+    assert line, "the workbook recorded no receipts to disagree about"
+
+    cur.execute("update public.grn_lines set qty = qty + 7 where id = %s",
+                (line[0],))
+    conn.commit()
+
+    got = inspect(cur, plan(book))
+    receipts = [t for t in got["tables"] if t["name"] == "receipts"][0]
+    assert receipts["changed"] == 1, receipts
+    assert got["needs_correction"] == 1
+    assert "already recorded" not in got["headline"]
+    assert "will not change" in got["headline"]
+    assert got["is_replay"] is False
+
+
+def test_the_disagreement_names_the_receipt_and_both_figures(book, org):
+    conn, cur, org_id = org
+    apply(cur, plan(book))
+    conn.commit()
+    line = _first_receipt(cur, org_id)
+    cur.execute("update public.grn_lines set qty = qty + 7 where id = %s",
+                (line[0],))
+    conn.commit()
+
+    got = inspect(cur, plan(book))
+    receipts = [t for t in got["tables"] if t["name"] == "receipts"][0]
+    example = receipts["examples"][0]
+    assert line[1] in example["key"], example
+    assert line[2] in example["key"], example
+    # The ledger's figure and the file's, so the screen can show the
+    # difference rather than only that there is one.
+    assert float(line[3]) + 7 in [float(v) for v in example["recorded"]
+                                  if isinstance(v, (int, float))]
+
+
+def test_two_lots_of_one_item_on_one_receipt_are_separate_lines(book, org):
+    """Keyed on (grn, sku) alone, the second lot read as the same line
+    as the first and was compared against the first's figures. Identity
+    is the receipt, the item and the batch -- the three the writer
+    already used."""
+    conn, cur, org_id = org
+    apply(cur, plan(book))
+    conn.commit()
+    line = _first_receipt(cur, org_id)
+
+    # A second lot of the same item on the same receipt.
+    cur.execute(
+        "insert into public.grn_lines (org_id, grn_id, item_id, qty,"
+        " unit_price, batch) select org_id, grn_id, item_id, 5, unit_price,"
+        " 'LOT-B' from public.grn_lines where id = %s", (line[0],))
+    conn.commit()
+
+    recorded = cur.execute(
+        "select count(*) from public.grn_lines gl"
+        "  join public.goods_receipts g on g.id = gl.grn_id"
+        " where g.grn_number = %s and gl.item_id ="
+        "       (select item_id from public.grn_lines where id = %s)",
+        (line[1], line[0])).fetchone()[0]
+    assert recorded == 2
+
+    got = inspect(cur, plan(book))
+    receipts = [t for t in got["tables"] if t["name"] == "receipts"][0]
+    # The file's line still matches its own batch, so it is unchanged.
+    # The extra lot is not in the file and is simply absent from it --
+    # what must not happen is the file's line being compared against
+    # the wrong lot and reported as a disagreement.
+    assert receipts["changed"] == 0, receipts["examples"]
+
+
+def test_a_receipt_the_file_agrees_with_is_still_quiet(book, org):
+    conn, cur, _ = org
+    apply(cur, plan(book))
+    conn.commit()
+
+    got = inspect(cur, plan(book))
+    receipts = [t for t in got["tables"] if t["name"] == "receipts"][0]
+    assert receipts["changed"] == 0
+    assert receipts["unchanged"] == receipts["incoming"]
+    assert got["needs_correction"] == 0
+    assert got["is_replay"] is True

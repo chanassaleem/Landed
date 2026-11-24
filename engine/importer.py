@@ -2145,13 +2145,29 @@ def _specs(p: Plan):
                  "  join public.items i on i.id = pl.item_id"),
         # Receipts move stock and change a valuation, so a preview
         # that leaves them out is hiding the rows that matter most.
-        # Skip rather than update: a receipt is an event, and the GRN
-        # number is what says it is the same event.
+        #
+        # Identity is the receipt, the item and the batch -- the same
+        # three the writer uses. Keyed on (grn, sku) alone, two lots of
+        # one item on one GRN read as the same line, and the second
+        # one's figures were compared against the first's.
+        #
+        # The values are compared even though apply() will not write
+        # them. A receipt is an event: the stock moved, the valuation
+        # took the cost, and a later upload saying it was really 90 at
+        # a different price does not unhappen any of that. What the
+        # preview owes the person is the truth that their file and the
+        # ledger disagree, and that committing will not resolve it --
+        # with `vals` empty this reported "already recorded", which
+        # read as agreement when it only meant the GRN number had been
+        # seen before.
         dict(name="receipts", label="Goods received", rows=p.receipts,
-             action="skip",
-             key=lambda r: (r["grn"], r["sku"]),
-             vals=lambda r: (),
-             sql="select g.grn_number, i.sku"
+             action="correct",
+             key=lambda r: (r["grn"], r["sku"], r["batch"] or ""),
+             vals=lambda r: (r["qty"], r["price"], r["currency"],
+                             r["fx"], r["expiry"]),
+             sql="select g.grn_number, i.sku, coalesce(gl.batch, ''),"
+                 "       gl.qty, gl.unit_price, gl.currency, gl.fx_rate,"
+                 "       gl.expiry_date"
                  "  from public.grn_lines gl"
                  "  join public.goods_receipts g on g.id = gl.grn_id"
                  "  join public.items i on i.id = gl.item_id"),
@@ -2315,6 +2331,17 @@ def inspect(conn, p: Plan) -> dict:
     # re-uploading to check -- and it deserves to be said plainly
     # rather than left for the person to work out from ten rows of
     # counts.
+    # Changed rows the commit will not write. A receipt is an event --
+    # the stock moved and the valuation took the cost -- so a later
+    # file disagreeing about the quantity or the price does not
+    # unhappen it, and apply() leaves it alone. Counted apart from the
+    # rest because the old sentence promised that committing "updates
+    # the changed rows", which for these was untrue: it recorded the
+    # new lines and quietly left the disagreement standing.
+    needs_correction = sum(t.changed for t in tables
+                           if t.action == "correct")
+    will_update = totals["changed"] - needs_correction
+
     if totals["new"] == 0 and totals["changed"] == 0:
         headline = ("Every row in this file is already recorded. "
                     "Committing it will change nothing.")
@@ -2325,10 +2352,36 @@ def inspect(conn, p: Plan) -> dict:
             f"{totals['new']:,} new, {totals['changed']:,} changed and "
             f"{totals['unchanged']:,} already recorded. Committing "
             f"updates the changed rows and leaves the rest alone.")
+        if needs_correction and will_update:
+            headline = (
+                f"{totals['new']:,} new and {will_update:,} changed, "
+                f"which committing updates. "
+                f"{needs_correction:,} recorded "
+                f"{'receipt' if needs_correction == 1 else 'receipts'} "
+                f"{'disagrees' if needs_correction == 1 else 'disagree'} "
+                f"with this file and committing will not change "
+                f"{'it' if needs_correction == 1 else 'them'} -- "
+                f"a receipt already moved stock, so correcting one is "
+                f"its own entry.")
+        elif needs_correction:
+            headline = (
+                f"{totals['new']:,} new. {needs_correction:,} recorded "
+                f"{'receipt' if needs_correction == 1 else 'receipts'} "
+                f"{'disagrees' if needs_correction == 1 else 'disagree'} "
+                f"with this file and committing will not change "
+                f"{'it' if needs_correction == 1 else 'them'} -- "
+                f"a receipt already moved stock, so correcting one is "
+                f"its own entry.")
 
     return {
         "headline": headline,
         "totals": totals,
+        # A replay in the sense that matters: committing writes
+        # nothing. Rows needing a correction are not a replay, because
+        # the file and the ledger genuinely disagree -- but they are
+        # not something the commit resolves either, so they are named
+        # separately rather than folded into either count.
         "is_replay": totals["new"] == 0 and totals["changed"] == 0,
+        "needs_correction": needs_correction,
         "tables": [t.as_dict() for t in tables],
     }
