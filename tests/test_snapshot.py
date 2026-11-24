@@ -278,17 +278,27 @@ def test_two_organisations_on_one_connection_do_not_mix(org):
                 "location_id) values (%s,%s,%s)",
                 (second_org, other_item, isb))
 
-    # Make them a member of the first organisation too.
-    cur.execute(
-        "insert into public.memberships (org_id, user_id, role) "
-        "values (%s, %s, 'owner') on conflict do nothing", (first_org, person))
+    # They do NOT join the first organisation: migration 0016 allows
+    # one active membership each, because the engine groups demand
+    # without an organisation in the key and two businesses under one
+    # login have their sales summed.
+    #
+    # The invariant this test guards is unaffected. It is about the
+    # SQL's join keys, not about who may see what: the role is reset
+    # above, so both companies' rows are on this connection whatever
+    # the policies would have done, and the question is whether the
+    # snapshot pairs one company's items with the other's branches.
     conn.commit()
 
-    as_user(cur, person)
+    # Read with the policies out of the way, so both companies' rows
+    # are genuinely on this connection. That is the situation the join
+    # keys have to survive: whether row-level security would have
+    # filtered them is a different guarantee, tested in test_rls.py,
+    # and a test that relies on it proves nothing about the SQL.
+    cur.execute("reset role")
     s = read(cur, AS_OF)
     pairs = {(i.item_key, i.location_id) for i in s.items}
 
-    # Both companies are visible, because they are a member of both.
     assert ("OTHER-1", "ISB") in pairs
     assert ("RGT-1", "KHI") in pairs
 

@@ -823,3 +823,73 @@ def test_imported_history_still_fills_the_months_before_the_ledger(db):
 
     assert got[older] == "import", "the month before the ledger was lost"
     assert got[this_month] == "ledger"
+
+
+# ------------------------------------------ one organisation per person
+#
+# The policies always allowed a user to belong to several, and the
+# application was not ready for it. Proven on a clean database: one
+# user, two importers, each with SKU RGT-100 at branch KHI, one
+# selling 50 a month and the other 30. The engine reads 80 for both,
+# because DEMAND_SQL groups by SKU, branch and month with no
+# organisation in the key. A forecast drives the reorder point, which
+# drives what the product tells somebody to buy.
+
+
+def test_a_second_organisation_is_refused(db):
+    owner = new_user(db, f"two-{uuid.uuid4().hex[:6]}@t.test")
+    new_org(db, owner, "First Importer")
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        with as_user(db, owner):
+            db.execute(
+                "insert into public.organisations (name, created_by)"
+                " values ('Second Importer', %s)", (owner,))
+
+
+def test_the_restriction_is_about_active_membership(db):
+    """Somebody suspended from an old employer has not used up their
+    one organisation. The index is partial on status for that reason,
+    and `suspended` is the only other value the column allows."""
+    owner = new_user(db, f"moved-{uuid.uuid4().hex[:6]}@t.test")
+    org, _ = new_org(db, owner, "Old Employer")
+    db.execute(
+        "update public.memberships set status = 'suspended'"
+        " where user_id = %s and org_id = %s", (owner, org))
+    with as_user(db, owner):
+        db.execute(
+            "insert into public.organisations (name, created_by)"
+            " values ('New Employer', %s)", (owner,))
+        n = db.execute(
+            "select count(*) from public.memberships"
+            " where user_id = %s and status = 'active'", (owner,)).fetchone()[0]
+    assert n == 1
+
+
+def test_two_organisations_cannot_pool_their_demand(db):
+    """The arithmetic the restriction protects.
+
+    Built the only way it still can be: two owners, one organisation
+    each, same SKU and branch code. Each has to see its own figure and
+    not the sum.
+    """
+    this_month = date.today().strftime("%Y-%m")
+    seen = []
+    for name, sold in (("Importer One", 50), ("Importer Two", 30)):
+        owner = new_user(db, f"pool-{uuid.uuid4().hex[:6]}@t.test")
+        org, loc = new_org(db, owner, name)
+        with as_user(db, owner):
+            item = db.execute(
+                "insert into public.items (org_id, sku, description,"
+                " lead_time_days) values (%s,'RGT-100','Reagent',30)"
+                " returning id", (org,)).fetchone()[0]
+            db.execute(
+                "insert into public.demand_history (org_id, location_id,"
+                " item_id, period, quantity) values (%s,%s,%s,%s,%s)",
+                (org, loc, item, this_month, sold))
+            got = db.execute(
+                "select sum(quantity) from public.demand_monthly"
+                " where period = %s", (this_month,)).fetchone()[0]
+        seen.append(float(got))
+
+    assert seen == [50.0, 30.0], \
+        f"one business is reading another's sales: {seen}"

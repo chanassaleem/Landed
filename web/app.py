@@ -384,12 +384,39 @@ async def create_organisation(request: Request,
         return JSONResponse({"error": "Give the business a name."}, 400)
     from engine.db.supabase import database
 
-    with database().as_user(claims.user_id) as conn:
-        row = conn.execute(
-            "insert into public.organisations (name, created_by) "
-            "values (%s, auth.uid()) returning id, name",
-            (name,),
-        ).fetchone()
+    try:
+        with database().as_user(claims.user_id) as conn:
+            row = conn.execute(
+                "insert into public.organisations (name, created_by) "
+                "values (%s, auth.uid()) returning id, name",
+                (name,),
+            ).fetchone()
+    except Exception as exc:
+        # Migration 0016 allows one active organisation per person, and
+        # the reason is arithmetic rather than policy: the engine
+        # groups demand by SKU, branch and month with no organisation
+        # in the key, so two businesses under one login have their
+        # sales summed into one forecast. The constraint is in the
+        # database because an import and a script reach the same
+        # tables; this turns its name into a sentence.
+        if "memberships_one_active_org_per_user" not in str(exc):
+            raise
+        with database().as_user(claims.user_id) as conn:
+            mine = conn.execute(
+                "select o.name from public.organisations o"
+                "  join public.memberships m on m.org_id = o.id"
+                " where m.user_id = auth.uid() and m.status = 'active'"
+                " limit 1").fetchone()
+        return JSONResponse({
+            "error": (
+                f"This account already belongs to "
+                f"{mine[0] if mine else 'a business'}. One business per "
+                f"sign-in for now: the forecast groups demand by item, "
+                f"branch and month, so two businesses here would have "
+                f"their sales added together. Use a separate sign-in "
+                f"for the other one."
+            ),
+        }, 409)
     return JSONResponse({"id": str(row[0]), "name": row[1]})
 
 
