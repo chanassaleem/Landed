@@ -781,8 +781,13 @@ def test_a_month_in_both_the_ledger_and_the_import_is_counted_once(db):
         ).fetchall()
 
     assert len(rows) == 1, f"the same month twice: {rows}"
-    assert rows[0][0] == "ledger", "the ledger is the truth where it has rows"
     assert float(rows[0][1]) == 100.0, "they sold 100, not 200"
+    # The fault this test was written for is the 200. The source moved
+    # from the ledger to history when 0017 narrowed the rule: this is
+    # the month the branch went live, where the ledger holds the days
+    # since they began and the import holds the whole month. Both say
+    # 100 here, which is why the count is unaffected.
+    assert rows[0][0] == "import", rows
 
 
 def test_imported_history_still_fills_the_months_before_the_ledger(db):
@@ -822,7 +827,10 @@ def test_imported_history_still_fills_the_months_before_the_ledger(db):
             " where item_id = %s", (item,)).fetchall())
 
     assert got[older] == "import", "the month before the ledger was lost"
-    assert got[this_month] == "ledger"
+    # Also the opening month, so the import's whole month stands rather
+    # than the ledger's part of it -- 0017. The backfill this test is
+    # about is the older month, and it is still there.
+    assert got[this_month] == "import", got
 
 
 # ------------------------------------------ one organisation per person
