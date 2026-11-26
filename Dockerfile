@@ -23,4 +23,8 @@ COPY tools/ ./tools/
 # Cloud Run also chooses the port and passes it in, so it is never hardcoded.
 ENV PORT=8080
 EXPOSE 8080
-CMD exec uvicorn web.app:app --host 0.0.0.0 --port ${PORT} --workers 1
+# The schema is checked before uvicorn starts, and migrations are never
+# applied here -- see scripts/start.sh and supabase/MIGRATIONS.md.
+COPY supabase/ ./supabase/
+COPY scripts/ ./scripts/
+CMD ["./scripts/start.sh"]
