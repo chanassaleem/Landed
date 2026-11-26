@@ -383,6 +383,163 @@ def receive(run, sku: str, branch: str, qty: float,
             "linked": bool(shipment)}
 
 
+def correct_receipt(run, grn: str, sku: str, *, batch: str = "",
+                    qty: float | None = None,
+                    unit_cost: float | None = None,
+                    expiry: date | None = None,
+                    fx: float | None = None,
+                    why: str = "") -> dict:
+    """Put right a receipt that was wrong, without rewriting it.
+
+    A receipt is an event. The stock went on the shelf, the valuation
+    took the cost, and a month of figures was built on both. When the
+    warehouse says the pallet held ninety rather than a hundred, the
+    answer is not to edit the hundred away: somebody reconciled
+    against that hundred, and a figure that changes under them with
+    nothing to show for it is worse than a figure that was wrong.
+
+    So three rows. The original line stays as it was filed. A
+    correction line carries the right figures and points at the line
+    it replaces. The ledger gets a reversal of the original movement
+    beside the corrected one, so it still nets to what is on the
+    shelf and still only ever has rows added to it.
+
+    The superseded line stops counting everywhere at once -- the
+    outstanding quantity on the order, the basis freight is divided
+    by, the valuation -- because a correction that reaches one of
+    those and not the others is worse than no correction at all. That
+    is what grn_lines_live is for, and all three readers use it.
+    """
+    org = _org(run)
+    why = (why or "").strip()
+    if not why:
+        raise NotAllowed(
+            "A correction needs a reason. Without one it is an "
+            "unexplained change to a figure somebody has already "
+            "reconciled against.")
+
+    line = run.execute(
+        "select gl.id, gl.grn_id, gl.po_line_id, gl.item_id, gl.qty,"
+        "       gl.unit_price, gl.expiry_date, gl.batch, gl.currency,"
+        "       gl.fx_rate"
+        "  from public.grn_lines gl"
+        "  join public.goods_receipts g on g.id = gl.grn_id"
+        "  join public.items i on i.id = gl.item_id"
+        " where gl.org_id = %s and g.grn_number = %s and i.sku = %s"
+        "   and coalesce(gl.batch,'') = coalesce(%s,'')",
+        (org, grn, sku, batch or None)).fetchone()
+    if not line:
+        where = f" batch {batch}" if batch else ""
+        raise NotAllowed(
+            f"{grn} has no line for {sku}{where}. Check the receipt "
+            f"number and the batch: a correction has to name the line "
+            f"it is replacing.")
+    (line_id, grn_id, po_line_id, item_id, was_qty, was_price,
+     was_expiry, line_batch, line_ccy, line_fx) = line
+
+    done = run.execute(
+        "select id from public.grn_lines where supersedes = %s",
+        (line_id,)).fetchone()
+    if done:
+        raise NotAllowed(
+            f"That line on {grn} has already been corrected. Correct "
+            f"the correction instead, so the chain stays readable.")
+
+    new_qty = float(was_qty) if qty is None else float(qty)
+    new_price = float(was_price) if unit_cost is None else float(unit_cost)
+    new_fx = float(line_fx) if fx is None else float(fx)
+    new_expiry = was_expiry if expiry is None else expiry
+    if new_qty <= 0:
+        raise NotAllowed(
+            f"A corrected receipt of {new_qty:g} is not a receipt. If "
+            f"nothing arrived, reverse it as a return to the supplier "
+            f"or a write-off, which says what became of the goods.")
+    if new_price < 0:
+        raise NotAllowed("A cost cannot be negative.")
+    if new_fx <= 0:
+        raise NotAllowed("An exchange rate has to be above zero.")
+
+    if (new_qty == float(was_qty) and new_price == float(was_price)
+            and new_fx == float(line_fx) and new_expiry == was_expiry):
+        raise NotAllowed(
+            "That correction changes nothing. Give the figure that is "
+            "wrong and what it should be.")
+
+    location_id = run.execute(
+        "select location_id from public.goods_receipts where id = %s",
+        (grn_id,)).fetchone()[0]
+    _hold(run, org, item_id, location_id)
+
+    # Withdraw the original movement. A reversal, not a deletion: the
+    # ledger is append-only, and the row that was wrong is part of why
+    # the figures said what they said.
+    original = run.execute(
+        "select id, unit_cost from public.stock_movement"
+        " where org_id = %s and source_type = 'grn_line' and source_id = %s",
+        (org, line_id)).fetchone()
+    # The reversal carries the movement's own cost, not the landed cost
+    # the original contributed to the valuation. That looks wrong and
+    # is not, and the reason is worth writing down because the first
+    # attempt here got it the other way round.
+    #
+    # item_cost prefers a line's landed cost over the movement's cost,
+    # joining through the receipt line. Superseding the original takes
+    # it out of grn_lines_live, which landed_cost is built over, so the
+    # original movement stops joining to a landed cost in the same
+    # breath -- it falls back to its own 17,080. Withdrawing 22,680
+    # against a contribution that is now 17,080 moves the valuation by
+    # the freight. Withdrawing 17,080 cancels exactly, and the
+    # corrected line brings its own freight back through the join.
+    #
+    # Caught by correcting a price on a shipment-linked receipt and
+    # asking what the stock was then worth.
+    if original:
+        run.execute(
+            "insert into public.stock_movement (org_id, location_id,"
+            " item_id, qty, unit_cost, reason, source_type, source_id,"
+            " occurred_at, note) values (%s,%s,%s,%s,%s,'reversal',"
+            " 'movement',%s, now(), %s)",
+            (org, location_id, item_id, -float(was_qty), original[1],
+             original[0],
+             f"Corrects {grn}"
+             f"{' batch ' + line_batch if line_batch else ''}: {why}"))
+
+    # The corrected line, on the same receipt, pointing at what it
+    # replaces. Its own insert posts the corrected movement, through
+    # the same trigger as every other receipt.
+    new_id = run.execute(
+        "insert into public.grn_lines (org_id, grn_id, po_line_id, item_id,"
+        " qty, unit_price, expiry_date, batch, currency, fx_rate,"
+        " supersedes, note) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+        " returning id",
+        (org, grn_id, po_line_id, item_id, new_qty, new_price, new_expiry,
+         line_batch, line_ccy, new_fx, line_id, why)).fetchone()[0]
+
+    # The correction takes the original's place on its shipment, or it
+    # would carry no freight and the charges would stop reconciling.
+    run.execute(
+        "insert into public.shipment_lines (shipment_id, grn_line_id,"
+        " org_id, weight_kg, volume_cbm)"
+        " select shipment_id, %s, org_id, weight_kg, volume_cbm"
+        "   from public.shipment_lines where grn_line_id = %s"
+        " on conflict (shipment_id, grn_line_id) do nothing",
+        (new_id, line_id))
+
+    changed = {}
+    if new_qty != float(was_qty):
+        changed["qty"] = (float(was_qty), new_qty)
+    if new_price != float(was_price):
+        changed["unit_cost"] = (float(was_price), new_price)
+    if new_fx != float(line_fx):
+        changed["fx"] = (float(line_fx), new_fx)
+    if new_expiry != was_expiry:
+        changed["expiry"] = (str(was_expiry), str(new_expiry))
+
+    return {"grn": grn, "sku": sku, "batch": line_batch or None,
+            "corrected": line_id, "line": new_id,
+            "changed": changed, "why": why}
+
+
 def adjust(run, sku: str, branch: str, counted: float,
            when: date | None = None, note: str = "") -> dict:
     """Reconcile the ledger to a physical count.

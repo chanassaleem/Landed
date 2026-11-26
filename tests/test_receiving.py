@@ -125,8 +125,11 @@ class Importer:
     def outstanding(self) -> float:
         with as_user(self.con, self.who) as c:
             return float(c.execute(
+                # grn_lines_live: summing the raw table counts a
+                # superseded line as well, and a correction from 100
+                # to 90 reduced a 300 order by 190.
                 "with recv as (select po_line_id, sum(qty) q"
-                "   from public.grn_lines where po_line_id is not null"
+                "   from public.grn_lines_live where po_line_id is not null"
                 "  group by po_line_id)"
                 " select sum(pl.qty - coalesce(r.q, 0)) from public.po_lines pl"
                 " left join recv r on r.po_line_id = pl.id"
@@ -457,3 +460,225 @@ def test_the_valuation_uses_the_landed_cost_not_the_invoice(schema):
             (imp.org,)).fetchone()[0])
     # 17,080 invoice plus 5,600 freight a unit.
     assert round(avg, 2) == 22_680.0
+
+
+# ------------------------------------- correcting one, auditably
+
+
+def _ledger(con, who, org):
+    with as_user(con, who) as c:
+        return c.execute(
+            "select reason, qty, unit_cost from public.stock_movement"
+            " where org_id = %s order by created_at, qty desc",
+            (org,)).fetchall()
+
+
+def test_a_correction_leaves_the_original_exactly_as_filed(schema):
+    """Somebody reconciled against the hundred. A figure that changes
+    under them with nothing to show for it is worse than a figure that
+    was wrong."""
+    imp = Importer(schema, "Fix")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-1", grn="GRN-900",
+                           weight=400, volume=2.5)
+    with imp.acting() as cur:
+        out = operations.correct_receipt(
+            cur, "GRN-900", "RGT-1", batch="B-1", qty=90,
+            why="Pallet held 90; warehouse recount on arrival")
+
+    assert out["changed"] == {"qty": (100.0, 90.0)}
+    with as_user(schema, imp.who) as c:
+        rows = c.execute(
+            "select qty, supersedes is not null, note from public.grn_lines"
+            " where org_id = %s order by qty", (imp.org,)).fetchall()
+    # Both lines stay: what was filed, and what replaced it.
+    assert [(float(r[0]), r[1]) for r in rows] == [(90.0, True),
+                                                   (100.0, False)]
+    assert "recount" in rows[0][2]
+
+
+def test_the_ledger_gains_a_reversal_rather_than_losing_a_row(schema):
+    imp = Importer(schema, "Reverse")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           batch="B-1", grn="GRN-900")
+    with imp.acting() as cur:
+        operations.correct_receipt(cur, "GRN-900", "RGT-1", batch="B-1",
+                                   qty=90, why="Recount")
+
+    rows = _ledger(schema, imp.who, imp.org)
+    kinds = [(r[0], float(r[1])) for r in rows]
+    assert ("grn", 100.0) in kinds, "the original movement was removed"
+    assert ("reversal", -100.0) in kinds, "nothing withdrew the original"
+    assert ("grn", 90.0) in kinds, "the corrected figure was never posted"
+    assert sum(q for _, q in kinds) == 90.0, kinds
+
+
+def test_a_correction_reduces_the_outstanding_quantity_once(schema):
+    """The whole reason the exclusion lives in one view. Counting the
+    superseded line as well would reduce the order by 190 of 300."""
+    imp = Importer(schema, "Outstanding")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           batch="B-1", grn="GRN-900")
+    assert imp.outstanding() == 200.0
+    with imp.acting() as cur:
+        operations.correct_receipt(cur, "GRN-900", "RGT-1", batch="B-1",
+                                   qty=90, why="Recount")
+    assert imp.outstanding() == 210.0
+
+
+def test_freight_is_redivided_over_the_corrected_quantity(schema):
+    """The correction takes the original's place on the shipment, or it
+    would carry no freight and the charges would stop reconciling."""
+    imp = Importer(schema, "Redivide")
+    imp.freight(2000, "USD", 280, "value")      # 560,000 in base
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-1", grn="GRN-900",
+                           weight=400, volume=2.5)
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-2", grn="GRN-900",
+                           weight=400, volume=2.5)
+    with imp.acting() as cur:
+        operations.correct_receipt(cur, "GRN-900", "RGT-1", batch="B-1",
+                                   qty=50, why="Half the pallet was short")
+
+    with as_user(schema, imp.who) as c:
+        rows = c.execute(
+            "select gl.batch, gl.qty, lc.allocated_cost"
+            "  from public.landed_cost lc"
+            "  join public.grn_lines gl on gl.id = lc.grn_line_id"
+            " where lc.org_id = %s order by gl.batch", (imp.org,)).fetchall()
+    # Only the live lines appear, and all 560,000 is still divided.
+    assert [(r[0], float(r[1])) for r in rows] == [("B-1", 50.0),
+                                                   ("B-2", 100.0)]
+    assert round(sum(float(r[2]) for r in rows), 2) == 560_000.0
+    # By value, so the short lot carries a third of it.
+    alloc = {r[0]: float(r[2]) for r in rows}
+    assert round(alloc["B-1"] / alloc["B-2"], 4) == 0.5
+
+
+def test_correcting_a_price_moves_the_valuation(schema):
+    imp = Importer(schema, "Reprice")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, unit_cost=17080,
+                           batch="B-1", grn="GRN-900")
+    with imp.acting() as cur:
+        out = operations.correct_receipt(
+            cur, "GRN-900", "RGT-1", batch="B-1", unit_cost=18000,
+            why="Supplier invoice was revised")
+    assert out["changed"] == {"unit_cost": (17080.0, 18000.0)}
+    with as_user(schema, imp.who) as c:
+        avg = float(c.execute(
+            "select avg_unit_cost from public.item_cost where org_id = %s",
+            (imp.org,)).fetchone()[0])
+    # The reversal carries the original cost, so the average over what
+    # is really on the shelf is the corrected figure.
+    assert round(avg, 2) == 18000.0
+
+
+def test_a_correction_needs_a_reason(schema):
+    imp = Importer(schema, "Why")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, unit_cost=1,
+                           batch="B-1", grn="GRN-900")
+    with pytest.raises(NotAllowed) as e:
+        with imp.acting() as cur:
+            operations.correct_receipt(cur, "GRN-900", "RGT-1",
+                                       batch="B-1", qty=90)
+    assert "reason" in str(e.value)
+
+
+def test_a_correction_that_changes_nothing_is_refused(schema):
+    imp = Importer(schema, "Same")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, unit_cost=1,
+                           batch="B-1", grn="GRN-900")
+    with pytest.raises(NotAllowed) as e:
+        with imp.acting() as cur:
+            operations.correct_receipt(cur, "GRN-900", "RGT-1",
+                                       batch="B-1", qty=100, why="No change")
+    assert "changes nothing" in str(e.value)
+
+
+def test_a_line_is_corrected_once_and_the_chain_does_not_fork(schema):
+    """Twice and there is no longer a single answer to what the figure
+    is now. Correcting the correction is a chain, not a fork."""
+    imp = Importer(schema, "Chain")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, unit_cost=1,
+                           batch="B-1", grn="GRN-900")
+    with imp.acting() as cur:
+        operations.correct_receipt(cur, "GRN-900", "RGT-1", batch="B-1",
+                                   qty=90, why="First recount")
+    # The original cannot be corrected again -- and the lookup by
+    # (grn, sku, batch) now finds two rows, so it must find the live one.
+    with pytest.raises(NotAllowed) as e:
+        with imp.acting() as cur:
+            operations.correct_receipt(cur, "GRN-900", "RGT-1", batch="B-1",
+                                       qty=80, why="Second recount")
+    assert "already been corrected" in str(e.value)
+
+
+def test_correcting_a_line_that_is_not_there_says_so(schema):
+    imp = Importer(schema, "Missing")
+    with pytest.raises(NotAllowed) as e:
+        with imp.acting() as cur:
+            operations.correct_receipt(cur, "GRN-NOPE", "RGT-1",
+                                       qty=1, why="x")
+    assert "GRN-NOPE" in str(e.value)
+
+
+def test_a_corrected_receipt_of_nothing_is_refused(schema):
+    """If nothing arrived, that is a return or a write-off, which says
+    what became of the goods."""
+    imp = Importer(schema, "Nothing")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, unit_cost=1,
+                           batch="B-1", grn="GRN-900")
+    with pytest.raises(NotAllowed) as e:
+        with imp.acting() as cur:
+            operations.correct_receipt(cur, "GRN-900", "RGT-1", batch="B-1",
+                                       qty=0, why="Never arrived")
+    assert "write-off" in str(e.value)
+
+
+def test_correcting_a_shipment_linked_receipt_keeps_the_freight(schema):
+    """The reversal has to withdraw the figure that went in. Carrying
+    the movement's own cost instead left the freight behind: the
+    original contributed its landed cost through the join and the
+    reversal took back only the invoice, so every correction on a
+    shipment-linked receipt moved the valuation by the freight on it."""
+    imp = Importer(schema, "Freighted")
+    imp.freight(2000, "USD", 280, "value")      # 560,000 in base
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-1", grn="GRN-900",
+                           weight=400, volume=2.5)
+    with as_user(schema, imp.who) as c:
+        before = float(c.execute(
+            "select avg_unit_cost from public.item_cost where org_id = %s",
+            (imp.org,)).fetchone()[0])
+    assert round(before, 2) == 22_680.0, "17,080 invoice plus 5,600 freight"
+
+    with imp.acting() as cur:
+        # In the line's own currency, as the receipt holds it: this
+        # line is in euro at 305, so 59 is 17,995 a unit.
+        operations.correct_receipt(cur, "GRN-900", "RGT-1", batch="B-1",
+                                   unit_cost=59,
+                                   why="Supplier revised the invoice")
+
+    with as_user(schema, imp.who) as c:
+        after = float(c.execute(
+            "select avg_unit_cost from public.item_cost where org_id = %s",
+            (imp.org,)).fetchone()[0])
+        allocated = float(c.execute(
+            "select sum(allocated_cost) from public.landed_cost"
+            " where org_id = %s", (imp.org,)).fetchone()[0])
+    # One line on the shipment, so it still carries all the freight.
+    assert round(allocated, 2) == 560_000.0
+    # 17,995 invoice plus the same 5,600 a unit of freight. Not
+    # that figure moved by the freight the reversal left behind.
+    assert round(after, 2) == 23_595.0

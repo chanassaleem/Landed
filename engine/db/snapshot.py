@@ -111,8 +111,12 @@ select i.sku, l.code as branch, d.period, sum(d.quantity) as quantity
 # ordered quantity less whatever the goods receipts account for.
 OPEN_PO_SQL = """
 with received as (
+  -- grn_lines_live, not grn_lines: a line superseded by a correction
+  -- keeps its original figures for the history and stops counting
+  -- here, or a corrected receipt would reduce the outstanding
+  -- quantity twice.
   select po_line_id, sum(qty) as qty
-    from public.grn_lines
+    from public.grn_lines_live
    where po_line_id is not null
    group by po_line_id
 )
