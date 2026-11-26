@@ -540,6 +540,89 @@ def correct_receipt(run, grn: str, sku: str, *, batch: str = "",
             "changed": changed, "why": why}
 
 
+def set_shipment_basis(run, shipment: str, sku: str, *, batch: str = "",
+                       weight: float | None = None,
+                       volume: float | None = None,
+                       why: str = "") -> dict:
+    """Enter or correct the weight and volume freight is divided by.
+
+    These are the two figures a charge is apportioned on, so changing
+    one moves money between items. Entering a missing one is what
+    rescues a charge that reached nothing: a bill divided by volume
+    across lines with no volume recorded divides by zero, allocates to
+    nothing, and leaves the importer pricing stock short by the whole
+    bill with nothing on screen to say so.
+
+    The allocation is a view over the current figures, so the division
+    that produced last month's landed cost is gone the moment a figure
+    changes. That is why the change is written down: afterwards, the
+    audit row is the only thing that can explain the old number.
+    """
+    org = _org(run)
+    why = (why or "").strip()
+    if weight is None and volume is None:
+        raise NotAllowed("Give a weight, a volume, or both.")
+    if not why:
+        raise NotAllowed(
+            "Say why. Weight and volume decide how freight is split "
+            "between items, so a change here moves money with nothing "
+            "to explain it afterwards.")
+
+    row = run.execute(
+        "select sl.shipment_id, sl.grn_line_id, sl.weight_kg, sl.volume_cbm"
+        "  from public.shipment_lines sl"
+        "  join public.shipments s on s.id = sl.shipment_id"
+        "  join public.grn_lines_live gl on gl.id = sl.grn_line_id"
+        "  join public.items i on i.id = gl.item_id"
+        " where sl.org_id = %s and s.reference = %s and i.sku = %s"
+        "   and coalesce(gl.batch,'') = coalesce(%s,'')",
+        (org, shipment, sku, batch or None)).fetchone()
+    if not row:
+        where = f" batch {batch}" if batch else ""
+        raise NotAllowed(
+            f"{shipment} has no received line for {sku}{where}. Freight "
+            f"is divided across the goods that arrived, so there has to "
+            f"be a receipt against the shipment before there is "
+            f"anything to weigh.")
+    ship_id, line_id, was_weight, was_volume = row
+
+    changed = {}
+    for field, value, was in (("weight_kg", weight, was_weight),
+                              ("volume_cbm", volume, was_volume)):
+        if value is None:
+            continue
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise NotAllowed(f"The {field.split('_')[0]} is not a "
+                             f"number.") from None
+        # Zero is a figure and null is not. A line that genuinely
+        # weighs nothing still has to be stated, because that is what
+        # tells the allocation to give it no share -- rather than
+        # leaving the whole shipment with no basis at all.
+        if value < 0:
+            raise NotAllowed("A weight or a volume cannot be negative.")
+        if was is not None and float(was) == value:
+            continue
+        run.execute(
+            f"update public.shipment_lines set {field} = %s"
+            " where shipment_id = %s and grn_line_id = %s",
+            (value, ship_id, line_id))
+        run.execute(
+            "insert into public.shipment_line_changes (org_id, shipment_id,"
+            " grn_line_id, field, was, became, why)"
+            " values (%s,%s,%s,%s,%s,%s,%s)",
+            (org, ship_id, line_id, field,
+             float(was) if was is not None else None, value, why))
+        changed[field] = (float(was) if was is not None else None, value)
+
+    if not changed:
+        raise NotAllowed(
+            "That changes nothing. The line already holds those figures.")
+    return {"shipment": shipment, "sku": sku, "batch": batch or None,
+            "changed": changed, "why": why}
+
+
 def adjust(run, sku: str, branch: str, counted: float,
            when: date | None = None, note: str = "") -> dict:
     """Reconcile the ledger to a physical count.

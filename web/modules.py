@@ -345,6 +345,57 @@ def _freight(f) -> dict:
     goods_total = sum(r["goods_value"] for r in rows)
     cost_total = sum(r["landed_costs"] for r in rows)
 
+    # Which charge went nowhere, and what to go and do about it.
+    #
+    # The totals above said how much had not been allocated. That
+    # worries somebody without telling them anything: the bill is one
+    # of six on one of five shipments, and finding which meant knowing
+    # that a charge is divided by a basis and that a basis of zero
+    # cannot be divided by. shipment_charge_allocation holds that rule
+    # once, so the screen, the data-quality module and the export
+    # cannot drift into three readings of it.
+    #
+    # 'awaiting goods' is not a fault. A shipment at sea has no
+    # received lines yet, and flagging it as though somebody forgot
+    # something trains people to ignore the flags.
+    actions = {
+        "no weight recorded": (
+            "Enter the weight of each received line on this shipment, "
+            "or spread this charge by value or quantity instead."),
+        "no volume recorded": (
+            "Enter the volume of each received line on this shipment, "
+            "or spread this charge by value or quantity instead."),
+        "no goods value": (
+            "The received lines on this shipment have no price, so "
+            "there is no value to divide by. Put the unit price on the "
+            "receipt, or spread this charge by weight or quantity."),
+        "awaiting goods": (
+            "Nothing has been booked in against this shipment yet. "
+            "Add the received lines and the charge will divide across "
+            "them."),
+    }
+    problems = []
+    for r in f.conn.execute(
+        "select reference, shipment_status, kind, allocate_by, billed,"
+        "       blocked_by"
+        "  from public.shipment_charge_allocation"
+        " where blocked_by is not null"
+        " order by billed desc"
+    ).fetchall():
+        reason = r[5]
+        problems.append({
+            "shipment": r[0],
+            "status": r[1],
+            "kind": r[2],
+            "allocate_by": r[3],
+            "billed": round(float(r[4] or 0), 2),
+            "blocked_by": reason,
+            "action": actions.get(reason, ""),
+            # In transit with nothing booked in is the normal state of
+            # a shipment, not a mistake.
+            "expected": reason == "awaiting goods" and r[1] == "in_transit",
+        })
+
     # The headline uplift is measured only over shipments whose goods
     # are recorded. A shipment still at sea, or one whose receipt has
     # not been entered, contributes a cost and no denominator -- and
@@ -370,6 +421,8 @@ def _freight(f) -> dict:
         "rows": rows,
         "breakdown": breakdown,
         "lines": lines,
+        "problems": problems,
+        "needs_attention": sum(1 for p in problems if not p["expected"]),
         "totals": {
             "goods_value": round(goods_total, 2),
             "landed_costs": round(cost_total, 2),
