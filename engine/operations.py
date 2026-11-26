@@ -114,6 +114,18 @@ def record(run, sku: str, branch: str, kind: str, qty: float,
 
     sign, wants_cost, _label = KINDS[kind]
 
+    # Receiving is a document, not a bare row, so it goes the long way
+    # round even when the caller gave nothing but a quantity and a
+    # cost. Writing the movement here instead left the stock on the
+    # shelf and the order still reading its full quantity outstanding,
+    # because outstanding is the ordered quantity less what the
+    # receipt lines account for -- and there were none. Every caller
+    # that already received this way gets a traceable receipt without
+    # changing how it calls.
+    if kind == "grn":
+        return receive(run, sku, branch, qty, unit_cost, when=when,
+                       note=note, client_ref=client_ref)
+
     # A receipt with no cost is not a receipt anybody can value.
     #
     # This was a preference, not a rule: the kind knew it wanted a
@@ -184,6 +196,191 @@ def record(run, sku: str, branch: str, kind: str, qty: float,
          kind, when or date.today(), note or None, ref)).fetchone()
     return {"sku": sku, "branch": branch, "reason": kind, "qty": sign * qty,
             "recorded": done is not None}
+
+
+def receive(run, sku: str, branch: str, qty: float,
+            unit_cost: float | None = None, *,
+            po: str = "", shipment: str = "", batch: str = "",
+            expiry: date | None = None, when: date | None = None,
+            weight: float | None = None, volume: float | None = None,
+            currency: str = "", fx: float | None = None,
+            grn: str = "", note: str = "",
+            client_ref: str | None = None) -> dict:
+    """Goods arriving, as a document rather than a bare ledger row.
+
+    Receiving through `record` wrote a movement and nothing else. The
+    stock appeared on the shelf, and three things that should have
+    followed from it did not. Proven on a clean database: order 300,
+    receive 100 by hand.
+
+      movement: reason grn, qty 100, source_type null, source_id null
+      goods_receipts: 0 rows
+      grn_lines: 0 rows
+      the order still reads 300 outstanding
+
+    The third is the expensive one. Outstanding quantity is the ordered
+    quantity less what the receipts account for, so a receipt that
+    files no line never reduces it -- and the Ordering screen goes on
+    recommending stock that is already in the warehouse. In a trade
+    where one order is months of cash, that is the mistake that costs
+    the most.
+
+    The first two are what make the rest of the workflow possible.
+    Freight is allocated across the lines of a shipment, and a
+    shipment's lines are joined to receipt lines: a receipt with no
+    line can never carry freight, so its landed cost can only ever be
+    the supplier's price. And a movement with no source cannot be
+    traced back to what caused it, which is the one question an
+    auditor asks.
+
+    So this writes the document and lets the trigger post the
+    movement, which is where that rule already lives -- an import, a
+    phone and a script cannot each forget it in their own way.
+
+    Manual and shipment-linked receiving stay distinguishable without
+    a flag to keep in step: a receipt is shipment-linked exactly when a
+    shipment line joins to it. A stored flag could disagree with the
+    join; a join cannot disagree with itself.
+    """
+    org = _org(run)
+    item_id, location_id = _resolve(run, org, sku, branch)
+    try:
+        qty = float(qty)
+    except (TypeError, ValueError):
+        raise NotAllowed("The quantity is not a number.") from None
+    if qty <= 0:
+        raise NotAllowed(
+            f"{sku}: a receipt of {qty:g} is not a receipt. To take stock "
+            f"off the shelf, record a return to the supplier or a write-off.")
+
+    # The order this is against, and the line on it for this item.
+    po_id = po_line_id = None
+    order_price = order_ccy = order_fx = None
+    if po:
+        row = run.execute(
+            "select id, currency, fx_rate from public.purchase_orders"
+            " where org_id = %s and po_number = %s", (org, po)).fetchone()
+        if not row:
+            raise NotAllowed(f"There is no order numbered {po}.")
+        po_id, order_ccy, order_fx = row
+        line = run.execute(
+            "select id, unit_price from public.po_lines"
+            " where org_id = %s and po_id = %s and item_id = %s"
+            " order by created_at limit 1",
+            (org, po_id, item_id)).fetchone()
+        if not line:
+            raise NotAllowed(
+                f"{po} has no line for {sku}. Receiving an item nobody "
+                f"ordered is a receipt without an order, not a receipt "
+                f"against this one.")
+        po_line_id, order_price = line
+
+    # A receipt without a cost puts stock on the shelf that the
+    # valuation counts at nothing. Where there is an order to take the
+    # price from, take it; otherwise say so rather than guessing.
+    if unit_cost is None and order_price is not None:
+        unit_cost = float(order_price)
+    if unit_cost is None:
+        raise NotAllowed(
+            f"{sku}: a receipt needs a cost each, and there is no order "
+            f"here to take one from. Enter 0 if it genuinely cost nothing.")
+    unit_cost = float(unit_cost)
+    if unit_cost < 0:
+        raise NotAllowed("A cost cannot be negative.")
+
+    # What currency that cost is in.
+    #
+    # Against an order, the order says, and the database inherits both
+    # the currency and the rate. Without one, a bare number was taken
+    # as rupees in silence -- so a supplier's euro price typed into a
+    # manual receipt valued the stock at a three-hundredth of what it
+    # cost. This project has already paid for that once: the sample
+    # generator priced euro orders at rupee figures, and nothing
+    # noticed until a later change made the ledger multiply.
+    #
+    # So a foreign currency has to arrive with the rate it was bought
+    # at. Not looked up -- a rate looked up later is not the rate the
+    # money changed hands at, and the difference is the importer's
+    # margin.
+    base = run.execute(
+        "select currency from public.organisations where id = %s",
+        (org,)).fetchone()[0]
+    currency = (currency or "").strip().upper()
+    if currency and currency != base and fx is None and po_line_id is None:
+        raise NotAllowed(
+            f"{sku}: a cost in {currency} needs the rate it was bought "
+            f"at, or an order to take the rate from. Without one there "
+            f"is no way to tell {unit_cost:g} {currency} from "
+            f"{unit_cost:g} {base}.")
+    if fx is not None:
+        try:
+            fx = float(fx)
+        except (TypeError, ValueError):
+            raise NotAllowed("The exchange rate is not a number.") from None
+        if fx <= 0:
+            raise NotAllowed("An exchange rate has to be above zero.")
+    # Stated beats inherited: somebody typing the rate on the receipt
+    # is recording what this consignment actually cost, which is the
+    # whole point of holding a rate per receipt rather than per order.
+    line_ccy = currency or order_ccy
+    line_fx = fx if fx is not None else order_fx
+
+    # The receipt's own number, which is what says two uploads or two
+    # button presses are the same arrival. Derived from the caller's
+    # idempotency key when they did not name one, so that a retry
+    # lands on the same number and the identity below recognises it.
+    if not grn:
+        stem = (client_ref or str(uuid.uuid4())).replace("-", "")[:8].upper()
+        grn = f"GRN-{stem}"
+
+    run.execute(
+        "insert into public.goods_receipts (org_id, location_id, po_id,"
+        " grn_number, received_at, note) values (%s,%s,%s,%s,%s,%s)"
+        " on conflict (org_id, grn_number) do nothing",
+        (org, location_id, po_id, grn, when or date.today(), note or None))
+    grn_id = run.execute(
+        "select id from public.goods_receipts where org_id = %s"
+        " and grn_number = %s", (org, grn)).fetchone()[0]
+
+    # Identity is the receipt, the item and the batch -- the same three
+    # the importer uses. Two lots of one item on one arrival are two
+    # lines; the same lot twice is one.
+    already = run.execute(
+        "select id from public.grn_lines where org_id = %s and grn_id = %s"
+        " and item_id = %s and coalesce(batch,'') = coalesce(%s,'')",
+        (org, grn_id, item_id, batch or None)).fetchone()
+    if already:
+        return {"sku": sku, "branch": branch, "qty": qty, "grn": grn,
+                "po": po or None, "shipment": shipment or None,
+                "recorded": False, "linked": bool(shipment)}
+
+    line_id = run.execute(
+        "insert into public.grn_lines (org_id, grn_id, po_line_id, item_id,"
+        " qty, unit_price, expiry_date, batch, currency, fx_rate)"
+        " values (%s,%s,%s,%s,%s,%s,%s,%s,%s, coalesce(%s, 1))"
+        " returning id",
+        (org, grn_id, po_line_id, item_id, qty, unit_cost, expiry,
+         batch or None, line_ccy, line_fx)).fetchone()[0]
+
+    if shipment:
+        ship = run.execute(
+            "select id from public.shipments where org_id = %s"
+            " and reference = %s", (org, shipment)).fetchone()
+        if not ship:
+            raise NotAllowed(f"There is no shipment referenced {shipment}.")
+        # Weight and volume live on the shipment line because that is
+        # what freight is divided by. Left out here they are null, and
+        # the allocation says so rather than dividing by nothing.
+        run.execute(
+            "insert into public.shipment_lines (shipment_id, grn_line_id,"
+            " org_id, weight_kg, volume_cbm) values (%s,%s,%s,%s,%s)"
+            " on conflict (shipment_id, grn_line_id) do nothing",
+            (ship[0], line_id, org, weight, volume))
+
+    return {"sku": sku, "branch": branch, "qty": qty, "grn": grn,
+            "po": po or None, "shipment": shipment or None,
+            "unit_cost": unit_cost, "recorded": True,
+            "linked": bool(shipment)}
 
 
 def adjust(run, sku: str, branch: str, counted: float,
