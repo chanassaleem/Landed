@@ -97,6 +97,14 @@
       numeric,        // which formats are right-aligned
       views = [],     // [{ id, label, blurb, keep(row) }]
       view,           // open on this one, overriding what was remembered
+      /* mark(row, col) -> reason, or nothing. A figure the data
+         cannot yet support gets a visible mark and the reason on
+         hover, instead of being printed to the same two decimal
+         places as one that is settled. Used for a landed cost whose
+         shipment has a charge that could not be divided properly: the
+         number is the best available and worth showing, but a price
+         set off it should be set knowingly. */
+      mark,
       editable = [],  // column keys the server says may be typed into
       onEdit,         // (row, key, value) -> Promise
       onOpen,         // (row) -> void: the row's own screen
@@ -484,6 +492,24 @@
           const td = el('td', numeric.has(c.fmt) ? 'num' : '');
           td.dataset.label = c.label;
           td.textContent = (fmt[c.fmt] || fmt.text)(r[c.key]);
+          const why = mark ? mark(r, c) : null;
+          if (why) {
+            td.classList.add('unsure');
+            /* Marked in the text, not only in colour: this says the
+               figure will move, which colour alone cannot carry to
+               somebody reading a printout or not seeing the hue. */
+            const flag = el('span', 'unsure-mark', '~');
+            flag.setAttribute('aria-hidden', 'true');
+            td.prepend(flag);
+            td.title = why;
+            /* So a screen reader hears it as part of the value
+               rather than as a stray tilde. */
+            /* The figure, then the warning as a sentence. Reading
+               "provisional: Provisional." aloud is how a label
+               written by concatenation gives itself away. */
+            td.setAttribute('aria-label',
+              `${td.textContent.replace('~', '').trim()}. ${why}`);
+          }
           if (can && onEdit) {
             td.classList.add('can-edit');
             td.tabIndex = 0;

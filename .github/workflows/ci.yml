@@ -44,6 +44,17 @@ jobs:
         env:
           LANDED_TEST_DSN: postgres://postgres:postgres@localhost:5432/landed
 
+      # Installed after the suite above, not before, so a browser the
+      # runner cannot fetch fails this step alone rather than hiding
+      # every engine failure behind a setup error.
+      - name: Install the browser
+        run: python -m playwright install --with-deps chromium
+
+      - name: The pages must actually load
+        run: python -m pytest tests/test_the_pages_actually_load.py -q --no-header
+        env:
+          LANDED_TEST_DSN: postgres://postgres:postgres@localhost:5432/landed
+
   # A second job, on purpose. The one above installs requirements-dev.txt,
   # so it can pass while the production image will not start -- which is
   # exactly what happened: httpx and openpyxl were imported by shipped

@@ -2793,3 +2793,35 @@ td.can-edit input[type='checkbox'] { width: auto; }
   font-size: 12px;
   color: var(--text-3);
 }
+
+/* ------------------------------------------- a figure that will move
+   A landed cost whose shipment has a charge that could not be divided
+   properly is the best figure available and worth showing -- an
+   importer needs a working cost the day the goods land, and a blank
+   would be worse. But it will move, and a price set off it should be
+   set knowingly.
+
+   --attention, not a fifth colour: this is a decide-this-week state,
+   which is what that value already means. The tilde carries it as
+   well, because colour alone does not survive a printout, a
+   projector, or a reader who cannot separate these hues. */
+td.unsure {
+  color: var(--attention);
+}
+
+.unsure-mark {
+  /* Before the figure, outside the digits, so the column still reads
+     as a column of numbers. Tabular-aligned columns are right-aligned,
+     so this sits where the eye is not scanning for magnitude. */
+  margin-right: .15em;
+  font-weight: 500;
+  opacity: .85;
+}
+
+/* An editable cell that is also provisional keeps the edit cue: the
+   two say different things -- one is about this value being yours to
+   correct, the other about the figure underneath not being settled --
+   and a person needs both. */
+td.unsure.can-edit:hover {
+  box-shadow: inset 0 0 0 1px var(--focus);
+}

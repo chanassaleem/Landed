@@ -170,3 +170,62 @@ def test_the_three_text_weights_are_still_told_apart():
         assert got[1] - got[2] >= 0.8, (
             f"{name}: --text-2 and --text-3 are {got[1]} and {got[2]}, "
             f"too close to read as different weights")
+
+
+# -------------------------------------- a provisional figure says so
+#
+# Migration 0024 flags a landed cost whose shipment has a charge that
+# could not be divided properly. The flag is worth nothing if the
+# screen prints the figure to the same two decimal places as a settled
+# one, so these pin the marking rather than the colour.
+
+def _platform_js() -> str:
+    return (pathlib.Path(__file__).resolve().parents[1]
+            / "web" / "static" / "platform.js").read_text()
+
+
+def test_the_stock_screen_marks_every_figure_built_on_a_provisional_cost():
+    """The cost and both margins, because a margin computed off an
+    unsettled cost is exactly as unsettled -- and the margin is the
+    figure somebody actually prices against."""
+    js = _platform_js()
+    i = js.index("    stock: {")
+    block = js[i:js.index("cols: [", i)]
+    assert "mark:" in block, "the stock module no longer marks anything"
+    for col in ("unit_cost", "margin", "margin_pct"):
+        assert f"'{col}'" in block, f"{col} is no longer marked"
+
+
+def test_the_mark_is_not_carried_by_colour_alone():
+    """A printout, a projector and a reader who cannot separate these
+    hues all lose a colour-only signal."""
+    grid = (pathlib.Path(__file__).resolve().parents[1]
+            / "web" / "static" / "grid.js").read_text()
+    # The whole branch, not a fixed slice of characters after the
+    # marker: a slice breaks when somebody adds a comment inside it,
+    # which says nothing about whether the behaviour is still there.
+    start = grid.index("const why = mark ? mark(r, c) : null;")
+    depth, i = 0, grid.index("if (why) {", start)
+    j = i
+    while True:
+        if grid[j] == "{":
+            depth += 1
+        elif grid[j] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        j += 1
+    branch = grid[i:j]
+    assert "unsure-mark" in branch, "no glyph beside the figure"
+    assert "aria-label" in branch, "nothing for a screen reader"
+
+
+def test_the_provisional_colour_is_one_of_the_four():
+    """The stylesheet says the four state colours are the only
+    chromatic values in the product. A fifth hue for this would start
+    the drift that ends with a palette nobody can reason about."""
+    css = CSS[CSS.index("td.unsure {"):]
+    rule = css[:css.index("}")]
+    assert "var(--attention)" in rule, (
+        "td.unsure should use --attention, the decide-this-week value, "
+        f"not a new colour: {rule!r}")

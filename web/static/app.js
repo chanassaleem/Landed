@@ -184,40 +184,16 @@ const ICON = {
   intelligence: 'M2 3h12l-4.5 5.5V13L6.5 11V8.5z',
 };
 
-/* Where an old route goes now.
- *
- * The product grew a module registry and the modules got their own
- * screens at #m/<id>. The hand-built views they replaced stayed in the
- * page, so two generations of the same subject lived at two addresses
- * -- and the older one is the one the command palette offered and the
- * one a bookmark pointed at. "Go to Cash" opened a static panel
- * reading "Cash is not connected yet" while the Cash module sat at
- * #m/cash with a working forecast on it.
- *
- * Redirected rather than deleted outright, so a bookmark or a link in
- * somebody's notes still lands somewhere useful. The markup they used
- * to render is gone.
- */
-const MOVED_TO_MODULE = {
-  cash: 'cash',
-  owed: 'owed',
-  equipment: 'equipment',
-  stock: 'stock',
-  shipments: 'freight',
-  items: 'stock',          // there was never a renderer for this one
-};
-
+/* The screens that are not modules. Everything else people navigate
+   to comes from the rail, which is built from what the server says
+   this organisation has licensed -- so it cannot be listed here as
+   well without the two going out of step, which is exactly what
+   happened: this array went on offering Stock, Items, Cash, Money
+   owed, Equipment and On the water long after the modules replaced
+   them, and the command palette went on opening them. */
 const VIEWS = [
   { id: 'home',      label: 'Home' },
   { id: 'today',     label: 'Today' },
-  { sep: true },
-  { id: 'stock',     label: 'Stock' },
-  { id: 'shipments', label: 'On the water' },
-  { id: 'items',     label: 'Items' },
-  { sep: true },
-  { id: 'owed',      label: 'Money owed' },
-  { id: 'equipment', label: 'Equipment' },
-  { id: 'cash',      label: 'Cash' },
   { sep: true },
   { id: 'import',    label: 'Import' },
   { id: 'settings',  label: 'Settings' },
@@ -230,7 +206,7 @@ const VIEWS = [
 
 /* The money line belongs to the screens it filters, not to the chrome.
    It made no sense sitting above the import screen. */
-const WITH_LINE = new Set(['today', 'stock', 'shipments']);
+const WITH_LINE = new Set(['today']);
 
 function icon(path) {
   const ns = 'http://www.w3.org/2000/svg';
@@ -297,9 +273,9 @@ function go(view) {
   if (view === 'import') renderModel();
   $('main').scrollTop = 0;
   /* Only when the address does not already say so. go() is called
-     both from the router, which is reacting to the address, and from
-     a button, which is setting it -- and writing it unconditionally
-     from inside the router replaced the history entry the Back
+     both by the router, which is reacting to the address, and by a
+     button, which is setting it -- and writing it unconditionally
+     from inside the router replaced the very history entry the Back
      button was about to return to. */
   if (location.hash.slice(1).split('?')[0] !== view) {
     location.hash = `#${view}`;
@@ -386,18 +362,17 @@ window.addEventListener('resize', () => {
 });
 
 /* Where each part of the money band lives now.
- *
- * Clicking a segment used to filter the hand-built stock list, which
- * the stock module replaced. Three of the six segments were never
- * about stock on a shelf at all -- goods on order, on the water and
- * at the port are the freight screen's subject -- so the old
- * behaviour was only ever right for half the band.
- *
- * Each segment now opens the screen that actually holds it, with the
- * nearest named view already chosen where there is one. A segment
- * with nowhere better to go opens the module and leaves the view
- * alone rather than pretending to filter.
- */
+
+   Clicking a segment used to filter the hand-built stock list, which
+   the stock module replaced. Three of the six segments were never
+   about stock on a shelf at all -- goods on order, on the water and
+   at the port are the freight screen's subject -- so the old
+   behaviour was only ever right for half the band.
+
+   Each segment now opens the screen that actually holds it, with the
+   nearest named view already chosen where there is one. A segment
+   with nowhere better to go opens the module and leaves the view
+   alone rather than pretending to filter. */
 const SEGMENT_OPENS = {
   running_out: ['stock', 'short'],
   idle:        ['stock', 'idle'],
@@ -413,9 +388,9 @@ function pick(key) {
   S.segment = key;
   renderLine();
   const [module, view] = to;
-  /* The view is handed over in the hash so the module picks it up on
-     open, rather than being set after the fact -- which would draw
-     the screen once with everything and once with the filter. */
+  /* Handed over in the address so the module picks it up as it
+     opens, rather than being set afterwards -- which would draw the
+     screen once with everything and once with the filter. */
   location.hash = view ? `#m/${module}?view=${view}` : `#m/${module}`;
 }
 
@@ -1216,7 +1191,7 @@ function renderToday() {
     const b = el('button', 'act', c.action);
     b.type = 'button';
     b.addEventListener('click', () => {
-      S.segment = c.segment; renderLine(); pick(c.segment);
+      S.segment = c.segment; renderLine(); renderAll(); go(c.goto);
     });
     card.append(b);
     d.append(card);
@@ -1293,6 +1268,184 @@ async function loadInsights() {
     list.append(row);
   });
   host.append(list);
+}
+
+const SORTS = {
+  Item: (r) => r.description,
+  Branch: (r) => r.branch,
+  Cover: (r) => (r.cover === null ? Infinity : r.cover),
+  'On hand': (r) => r.on_hand,
+  'On order': (r) => r.on_order,
+  State: (r) => r.state,
+};
+
+function table(cols, bodyRows, rows_) {
+  const t = el('table');
+  const thead = el('thead');
+  const tr = el('tr');
+  cols.forEach(([label, cls]) => {
+    const th = el('th', cls, label);
+    if (SORTS[label]) {
+      th.dataset.sort = label;
+      th.tabIndex = 0;
+      if (S.sort && S.sort.col === label) th.setAttribute('aria-sort', S.sort.dir);
+      const flip = () => {
+        const same = S.sort && S.sort.col === label;
+        S.sort = {
+          col: label,
+          dir: same && S.sort.dir === 'ascending' ? 'descending' : 'ascending',
+        };
+            };
+      th.addEventListener('click', flip);
+      th.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); }
+      });
+    }
+    tr.append(th);
+  });
+  thead.append(tr);
+  t.append(thead);
+
+  const tb = el('tbody');
+  bodyRows.forEach((cells, n) => {
+    const r = el('tr');
+    cells.forEach((c, i) => {
+      const label = cols[i] ? cols[i][0] : '';
+      if (label) c.dataset.label = label;
+      r.append(c);
+    });
+    const row = (rows_ || [])[n];
+    if (row) {
+      r.dataset.click = '1';
+      r.tabIndex = 0;
+      r.addEventListener('click', () => openDetail(row, r));
+      r.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          openDetail(row, r);
+        }
+      });
+    }
+    tb.append(r);
+  });
+  t.append(tb);
+  return t;
+}
+
+function cell(text, cls) {
+  return el('td', cls, text);
+}
+
+function empty(title, body) {
+  const d = el('div', 'empty');
+  d.append(el('strong', null, title));
+  d.append(el('p', null, body));
+  return d;
+}
+
+/* --------------------------------------------------------------- palette */
+
+function palette() {
+  const scrim = $('scrim');
+  const q = $('q');
+  const results = $('results');
+  let items = [];
+  let sel = 0;
+
+  const open = () => {
+    scrim.hidden = false;
+    q.value = '';
+    draw('');
+    q.focus();
+  };
+  const close = () => { scrim.hidden = true; };
+
+  const draw = (term) => {
+    const t = term.trim().toLowerCase();
+    items = [];
+    VIEWS.forEach((v) => {
+      if (v.sep) return;
+      items.push({
+        label: `Go to ${v.label}`, hint: 'screen',
+        run: () => { location.hash = `#${v.id}`; },
+      });
+    });
+    /* And every module this organisation actually has. Built from the
+       rail rather than from a list in here, so a module added on the
+       server is searchable the same day instead of whenever somebody
+       remembers to add it twice. */
+    ((window.LANDED_MODULES || {}).modules || []).forEach((m) => items.push({
+      label: `Go to ${m.name}`, hint: m.title || 'module',
+      run: () => { location.hash = `#m/${m.id}`; },
+    }));
+    S.data.stock.forEach((r) => items.push({
+      label: r.description, hint: `${r.sku} · ${r.branch}`,
+      run: () => { location.hash = '#m/stock'; },
+    }));
+    S.data.shipments.forEach((x) => items.push({
+      label: x.ref, hint: x.supplier,
+      run: () => { location.hash = '#m/freight'; },
+    }));
+    if (t) {
+      items = items.filter((i) =>
+        `${i.label} ${i.hint}`.toLowerCase().includes(t));
+    }
+    items = items.slice(0, 40);
+    sel = 0;
+    paint();
+  };
+
+  const paint = () => {
+    results.textContent = '';
+    items.forEach((i, n) => {
+      const li = el('li', null);
+      li.setAttribute('role', 'option');
+      li.setAttribute('aria-selected', String(n === sel));
+      li.append(el('span', null, i.label));
+      li.append(el('span', 'hint', i.hint));
+      li.addEventListener('click', () => { i.run(); close(); });
+      results.append(li);
+    });
+  };
+
+  q.addEventListener('input', () => draw(q.value));
+  q.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { sel = Math.min(sel + 1, items.length - 1); paint(); e.preventDefault(); }
+    if (e.key === 'ArrowUp')   { sel = Math.max(sel - 1, 0); paint(); e.preventDefault(); }
+    if (e.key === 'Enter' && items[sel]) { items[sel].run(); close(); }
+    if (e.key === 'Escape') close();
+  });
+  scrim.addEventListener('click', (e) => { if (e.target === scrim) close(); });
+  $('open-palette').addEventListener('click', open);
+
+  addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      scrim.hidden ? open() : close();
+    }
+    if (e.key === 'Escape' && !scrim.hidden) close();
+  });
+}
+
+/* ------------------------------------------------------------------ boot */
+
+/* The screens that were removed, and the module that replaced each.
+   An address somebody bookmarked, or a link in an old email, still
+   lands somewhere useful instead of on nothing. "items" had no
+   renderer of its own even before the removal -- it was a dead entry
+   in the palette that opened a blank panel. */
+const MOVED_TO_MODULE = {
+  cash: 'cash',
+  owed: 'owed',
+  equipment: 'equipment',
+  stock: 'stock',
+  items: 'stock',
+  shipments: 'freight',
+};
+
+function renderAll() {
+  renderToday();
+  counts();
 }
 
 function counts() {
@@ -1506,23 +1659,22 @@ async function boot() {
   if (!listed) buildNav();
 
   /* One router, reading the address.
-   *
-   * There was none. Screens were opened by calling go() or the
-   * platform's open() directly, and the address was then written
-   * after the fact with replaceState -- so setting location.hash
-   * navigated nowhere, and the browser's own Back and Forward did
-   * nothing at all across the whole product. Every link that worked
-   * by assigning the hash, including the route from a data-quality
-   * finding to the screen that fixes it, changed the URL and left
-   * the screen where it was.
-   */
-  const route = (push) => {
+
+     There was none. Screens were opened by calling go() or the
+     platform's open() directly and the address written afterwards
+     with replaceState, so assigning location.hash navigated nowhere
+     and the browser's own Back and Forward did nothing anywhere in
+     the product. Every route that worked by setting the hash --
+     including the one from a data-quality finding to the screen that
+     fixes it -- changed the address and left the screen where it
+     was. */
+  const route = () => {
     let where = (location.hash || '#today').slice(1);
     if (MOVED_TO_MODULE[where] && listed) {
       where = `m/${MOVED_TO_MODULE[where]}`;
       history.replaceState(null, '', `#${where}`);
     }
-    // A module may carry the view it should open on: #m/stock?view=idle.
+    // A module may carry the view to open on: #m/stock?view=idle.
     const [path, query] = where.split('?');
     const view = new URLSearchParams(query || '').get('view');
     if (path.startsWith('m/') && listed) {
@@ -1531,11 +1683,11 @@ async function boot() {
       go('today');
       return;
     }
-    go(VIEWS.some((v) => v.id === path) ? path : 'today', push);
+    go(VIEWS.some((v) => v.id === path) ? path : 'today');
   };
 
-  addEventListener('hashchange', () => route(false));
-  route(false);
+  addEventListener('hashchange', route);
+  route();
   addEventListener('resize', moveMarker);
 }
 
@@ -1560,6 +1712,10 @@ window.LANDED = {
    you are holding; this says what you have already sold and not been
    paid for, which for an importer is usually the larger number. */
 
+/* Read once and kept, because the business name is on every screen
+   and it does not change between renders. */
+let orgName = null;
+
 function figure(host, label, value, note, tone) {
   const d = el('div', `deck${tone ? ' d-' + tone : ''}`);
   d.append(el('h3', null, label));
@@ -1567,13 +1723,6 @@ function figure(host, label, value, note, tone) {
   if (note) d.append(el('p', null, note));
   host.append(d);
 }
-/* ------------------------------------------------------- equipment */
-/* ------------------------------------------------------------- home
-   What this is for, in three pieces, with what each is worth today.
-   It exists because "inventory software" is four screens and a person
-   arriving at them cold cannot tell which one answers their question. */
-
-let orgName = null;
 
 function renderHome() {
   const host = $('modules');
@@ -2259,21 +2408,6 @@ async function previewFile(file) {
   }
 }
 
-
-let importWired = false;
-
-/* ---------------------------------------------------- the model
-
-   What the workbook is, on the screen where somebody is about to fill
-   one in. Three files and a list of every sheet.
-
-   The list comes from the server because the description of the
-   sheets and the code that reads them have to be one thing. The
-   template this product used to offer was built by a different file
-   and shared six sheet names out of twenty-four: downloading it,
-   filling it in and uploading it produced "These sheets are missing:
-   Items, Stock" on the first thing a customer ever did. */
-
 const MODEL_FILES = [
   ['/api/template.xlsx', 'Blank template',
    'Every sheet, no rows. Fill in what you have.'],
@@ -2325,6 +2459,10 @@ async function renderModel() {
     ])));
   host.dataset.filled = '1';
 }
+
+/* One-time, because boot() runs again after a successful import and
+   wiring the drop zone twice makes one dropped file upload twice. */
+let importWired = false;
 
 function wireImport() {
   const drop = $('drop');

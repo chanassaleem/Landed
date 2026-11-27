@@ -92,6 +92,35 @@
       /* A stock line has movements behind it and operations that write
          to them, so its rows open. Nothing else does yet. */
       opens: true,
+      /* Every figure derived from the landed cost, not just the cost
+         itself. A margin computed off a provisional cost is exactly
+         as provisional, and the margin is the figure somebody prices
+         against. See migration 0024.
+         Value at cost and margin held are left unmarked on purpose:
+         they are totals over on-hand quantity, where the skew tends
+         to wash out across lines, and marking every money column on
+         the row would make the mark mean nothing. */
+      mark: (row, col) => {
+        if (!row.cost_provisional) return null;
+        if (!['unit_cost', 'margin', 'margin_pct'].includes(col.key)) {
+          return null;
+        }
+        const of = row.cost_provisional_of, n = row.cost_receipts;
+        const part = (of && n && of < n)
+          ? `${of} of the ${n} receipts behind this cost came in`
+          : 'This cost came in';
+        /* The reason the view actually gives, not a guess at it:
+           "no volume recorded" and "weight missing on 1 of 2 lines"
+           need different work, and sending everybody to the freight
+           screen to find out which wastes the trip. */
+        /* A dash, because the view's reasons are fragments -- "no
+           volume recorded", "weight missing on 1 of 2 lines" -- and
+           no conjunction reads correctly in front of all of them. */
+        const why = row.cost_why ? ` \u2014 ${row.cost_why}` : '';
+        return `Provisional. ${part} on a shipment with a charge that `
+          + `could not be divided${why}. The figure will move once the `
+          + 'missing measurement is entered, on the Landing screen.';
+      },
       cols: [
         ['item_key', 'SKU', 'text'],
         ['description', 'Item', 'text'],
@@ -1173,6 +1202,7 @@
           ? view : undefined,
         editable: data.editable || [],
         flag: spec.flag,
+        mark: spec.mark,
         onEdit: (row, field, value) => saveItem(row, field, value),
         /* Only where the row is a stock line, because the drawer shows
            a line's movements and offers the four operations that write

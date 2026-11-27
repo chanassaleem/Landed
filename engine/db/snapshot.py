@@ -80,6 +80,12 @@ select i.sku,
        l.code                                   as branch,
        coalesce(soh.on_hand, 0)                 as on_hand,
        coalesce(c.avg_unit_cost, 0)             as unit_cost,
+       -- Carried so the screen can mark the figure rather than
+       -- presenting an approximate cost as a settled one. See 0024.
+       coalesce(c.provisional, false)           as cost_provisional,
+       coalesce(c.provisional_receipts, 0)      as cost_provisional_of,
+       coalesce(c.receipts, 0)                  as cost_receipts,
+       c.why_provisional                        as cost_why,
        coalesce(il.lead_time_days, i.lead_time_days)         as lead_time_days,
        coalesce(il.lead_time_days_std, i.lead_time_days_std) as lead_time_std,
        i.is_clinical_critical,
@@ -169,6 +175,7 @@ def read(conn, as_of: date, currency: str = "PKR") -> Snapshot:
     branches: set[str] = set()
     for row in conn.execute(ITEMS_SQL).fetchall():
         (sku, description, category, branch, on_hand, unit_cost,
+         provisional, provisional_of, receipts, why,
          lead_time, lead_time_std, is_critical, expiry) = row
         branches.add(branch)
         items.append(ItemSnapshot(
@@ -183,6 +190,10 @@ def read(conn, as_of: date, currency: str = "PKR") -> Snapshot:
             is_clinical_critical=bool(is_critical),
             expiry_date=expiry,
             location_id=branch,
+            cost_provisional=bool(provisional),
+            cost_provisional_of=int(provisional_of or 0),
+            cost_receipts=int(receipts or 0),
+            cost_why=why or "",
         ))
 
     seen: dict[tuple[str, str], dict[str, float]] = {}

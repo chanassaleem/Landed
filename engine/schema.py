@@ -168,6 +168,14 @@ class ItemSnapshot:
     expiry_date: Optional[date] = None
     entity_id: str = "default"
     location_id: str = "default"
+    # Whether unit_cost rests on a shipment charge that could not be
+    # divided properly, and how much of it does. Default False so a
+    # snapshot built from a spreadsheet, where there are no shipment
+    # charges to be uncertain about, says nothing about it. See 0024.
+    cost_provisional: bool = False
+    cost_provisional_of: int = 0
+    cost_receipts: int = 0
+    cost_why: str = ""
 
 
 @dataclass(frozen=True)

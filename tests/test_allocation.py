@@ -421,3 +421,92 @@ def test_the_screen_says_which_lines_and_what_it_does_to_the_costs(schema):
     assert "valued too high" in p["action"]
     assert got["skewed"] == 1
     assert got["needs_attention"] >= 1
+
+
+# ----------------------------------------------- is this cost trustworthy?
+#
+# 0020 made the skew visible on the freight screen. It did not reach the
+# unit cost itself, which is what the rest of the product reads: the
+# stock screen's "Landed each", the margin, the price list, the ABC
+# class. A line on a skewed shipment still presents a figure to three
+# decimal places with nothing to say it was divided by a basis that
+# half the shipment was missing.
+#
+# A reader has no way to tell that cost apart from one that is
+# complete. That is the whole problem: the number is not wrong in a way
+# anybody can see.
+
+def test_a_skewed_shipments_landed_cost_says_it_is_provisional(schema):
+    imp = Importer(schema, "Provisional")
+    imp.freight(1000, "USD", 280, "weight")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-1", grn="GRN-900",
+                           weight=500)
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-2", grn="GRN-900")
+    with as_user(schema, imp.who) as c:
+        rows = {r[0]: (r[1], r[2]) for r in c.execute(
+            "select gl.batch, lc.provisional, lc.why_provisional"
+            "  from public.landed_cost lc"
+            "  join public.grn_lines gl on gl.id = lc.grn_line_id"
+            " where lc.org_id = %s", (imp.org,)).fetchall()}
+    # Both lines, not just the unmeasured one: the measured line is the
+    # one carrying the whole charge, so its cost is the more wrong of
+    # the two.
+    assert rows["B-1"][0] is True
+    assert rows["B-2"][0] is True
+    assert "weight missing on 1 of 2 lines" in rows["B-1"][1]
+
+
+def test_a_complete_shipment_is_not_provisional(schema):
+    imp = Importer(schema, "Complete")
+    imp.freight(1000, "USD", 280, "weight")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-1", grn="GRN-900",
+                           weight=500)
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-2", grn="GRN-900",
+                           weight=500)
+    with as_user(schema, imp.who) as c:
+        flags = [r[0] for r in c.execute(
+            "select provisional from public.landed_cost where org_id = %s",
+            (imp.org,)).fetchall()]
+    assert flags == [False, False]
+
+
+def test_a_charge_that_landed_nowhere_also_makes_the_cost_provisional(schema):
+    """blocked_by, not just skewed_by: a cost missing its freight
+    entirely is as provisional as one that got somebody else's."""
+    imp = Importer(schema, "Blocked")
+    imp.freight(1000, "USD", 280, "weight")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-1", grn="GRN-900")
+    with as_user(schema, imp.who) as c:
+        flag, why = c.execute(
+            "select provisional, why_provisional"
+            "  from public.landed_cost where org_id = %s",
+            (imp.org,)).fetchone()
+    assert flag is True
+    assert "no weight recorded" in why
+
+
+def test_entering_the_weight_clears_the_provisional_flag(schema):
+    imp = Importer(schema, "Cleared")
+    imp.freight(1000, "USD", 280, "weight")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-1", grn="GRN-900",
+                           weight=500)
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-2", grn="GRN-900")
+        operations.set_shipment_basis(cur, "SHP-1", "RGT-1", batch="B-2",
+                                      weight=500, volume=None,
+                                      why="weighed at the port")
+    with as_user(schema, imp.who) as c:
+        flags = [r[0] for r in c.execute(
+            "select provisional from public.landed_cost where org_id = %s",
+            (imp.org,)).fetchall()]
+    assert flags == [False, False]

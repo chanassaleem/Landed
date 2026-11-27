@@ -129,6 +129,18 @@ def _stock_rows(blocks: Sequence[LocationBlock]) -> List[dict]:
                     "is_clinical_critical": bool(
                         item.is_clinical_critical if item else False
                     ),
+                    # Whether the cost this row prices everything off
+                    # rests on a shipment charge that could not be
+                    # divided properly. Carried, not re-derived, for
+                    # the same reason as the lead times above.
+                    "cost_provisional": bool(
+                        item.cost_provisional if item else False
+                    ),
+                    "cost_provisional_of": (
+                        item.cost_provisional_of if item else 0
+                    ),
+                    "cost_receipts": item.cost_receipts if item else 0,
+                    "cost_why": item.cost_why if item else "",
                     "mean_monthly_demand": round(cls.mean_monthly_demand, 2)
                     if cls else 0.0,
                     "annual_consumption_value": round(

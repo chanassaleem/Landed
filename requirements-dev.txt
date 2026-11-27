@@ -6,3 +6,9 @@ pytest==8.3.4
 cryptography
 # Parses .github/workflows/ci.yml in tests that check the workflow.
 pyyaml
+# Boots the pages in a real browser (tests/test_the_pages_actually_load.py).
+# node --check proves a file parses; it cannot prove that a name the code
+# calls was ever declared, which is only an error when that line runs. A
+# deletion once took five shared helpers with it, the whole suite stayed
+# green, and every screen rendered blank.
+playwright==1.49.1
