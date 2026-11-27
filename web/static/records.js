@@ -77,6 +77,13 @@
         ['unit_cost', 'Cost each', 'number',
           { hint: 'In the currency the receipt is in, which is the '
             + 'order\u2019s where there was one. Blank keeps it.' }],
+        ['fx', 'Exchange rate', 'number',
+          { hint: 'The rate this consignment was really bought at. The '
+            + 'operation has always accepted a corrected rate and this '
+            + 'form did not offer it, so a rate entered wrongly could '
+            + 'not be put right from the application at all \u2014 and '
+            + 'a wrong rate moves the landed cost by the whole '
+            + 'difference between two currencies.' }],
         ['expiry', 'Expires', 'date', {}],
         ['why', 'Why', 'text',
           { req: true, hint: 'In three months this is the only thing '

@@ -11,6 +11,19 @@ services:
     # current region list in the dashboard; Render's has changed before.
     region: singapore
     dockerfilePath: ./Dockerfile
+    # /health, not /health/supabase, and deliberately.
+    #
+    # /health/supabase is the better probe -- it checks the database is
+    # reachable and that row-level security is actually on, and returns
+    # 503 when either fails. But a platform health check is a question
+    # about something the platform can act on, and the only thing Render
+    # can do about a failing check is restart the instance. Restarting
+    # does not fix a Supabase outage; it turns one into a restart loop
+    # and takes away the logs that would have explained it.
+    #
+    # So: /health answers whether this process is up, which is what
+    # Render can do something about. /health/supabase is for monitoring
+    # and for a person reading it, and is where an alert should point.
     healthCheckPath: /health
     autoDeploy: true
     envVars:

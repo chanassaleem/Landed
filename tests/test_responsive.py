@@ -99,3 +99,74 @@ def test_nothing_paints_text_near_black_in_both_themes():
     assert not offenders, (
         f"near-black text outside a deliberately inverted surface: "
         f"{offenders}")
+
+
+def _contrast(a: str, b: str) -> float:
+    def lin(c):
+        c = c / 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    def lum(h):
+        h = h.lstrip("#")
+        r, g, bl = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+        return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(bl)
+
+    hi, lo = sorted([lum(a), lum(b)], reverse=True)
+    return round((hi + 0.05) / (lo + 0.05), 2)
+
+
+def _theme_tokens(start: str, end: str | None) -> dict:
+    """The hex tokens one theme declares.
+
+    The dark block ends at its own closing brace; the light block runs
+    to where the dark one begins, because a comment inside it contains
+    a brace and slicing on the first "\n}" cuts it short -- which is
+    how the first version of this read an empty dictionary and
+    reported no colours at all rather than the two that were failing.
+    """
+    i = CSS.index(start)
+    j = CSS.index(end, i) if end else CSS.index("\n}", i)
+    got = {name.lstrip("-"): value for name, value in re.findall(
+        r"(--[a-z0-9-]+):\s*(#[0-9A-Fa-f]{6})", CSS[i:j])}
+    assert "surface" in got and "text" in got, (
+        f"no tokens found after {start!r}; the block boundaries moved")
+    return got
+
+
+def test_every_text_colour_meets_aa_on_every_surface_it_sits_on():
+    """Measured, not eyeballed. --text-3 was 3.1:1 in the light theme
+    and 3.8:1 in the dark, against the 4.5:1 WCAG 2.2 AA asks of
+    normal text -- and it carries the metadata under every figure on
+    every screen. A grey that looks quiet and a grey that cannot be
+    read are the same grey to anyone designing in good light on a good
+    display."""
+    themes = {
+        "light": _theme_tokens(":root {", "[data-theme="),
+        "dark": _theme_tokens("[data-theme='dark'] {", None),
+    }
+    failures = []
+    for name, t in themes.items():
+        backgrounds = [t[k] for k in ("surface", "paper", "sunk") if k in t]
+        for tok in ("text", "text-2", "text-3", "attention", "urgent",
+                    "transit", "idle"):
+            if tok not in t:
+                continue
+            for bg in backgrounds:
+                got = _contrast(t[tok], bg)
+                if got < 4.5:
+                    failures.append(f"{name} --{tok} {t[tok]} on {bg}: {got}:1")
+    assert not failures, "below WCAG AA 4.5:1 — " + "; ".join(failures)
+
+
+def test_the_three_text_weights_are_still_told_apart():
+    """Making the quietest one readable must not make it the same as
+    the one above it, or the hierarchy the screens rely on collapses."""
+    for name, start, end in (("light", ":root {", "[data-theme="),
+                             ("dark", "[data-theme='dark'] {", None)):
+        t = _theme_tokens(start, end)
+        surface = t["surface"]
+        got = [_contrast(t[k], surface) for k in ("text", "text-2", "text-3")]
+        assert got[0] > got[1] > got[2], f"{name}: {got}"
+        assert got[1] - got[2] >= 0.8, (
+            f"{name}: --text-2 and --text-3 are {got[1]} and {got[2]}, "
+            f"too close to read as different weights")

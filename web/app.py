@@ -1902,20 +1902,23 @@ def list_users(claims: Claims = Depends(require)) -> JSONResponse:
                 {
                     "user_id": str(r[0]),
                     "role": r[1],
-                    # Addresses come from auth.users, which a tenant
-                    # cannot read, so a member who is not the caller
-                    # shows as their role and branches until they are
-                    # invited again. Said plainly rather than shown as
-                    # a blank.
-                    "email": claims.email if str(r[0]) == str(
-                        claims.user_id) else None,
+                    # The membership's own copy, kept because
+                    # auth.users is not readable by a tenant and an
+                    # owner who cannot tell one staff member from
+                    # another cannot administer access -- which is
+                    # the whole purpose of this screen. The caller's
+                    # own address comes from their verified claims,
+                    # which cannot be stale.
+                    "email": (claims.email if str(r[0]) == str(
+                        claims.user_id) else r[5]),
                     "is_you": str(r[0]) == str(claims.user_id),
                     "locations": [str(x) for x in (r[2] or [])],
                     "status": r[3],
                     "since": r[4].isoformat() if r[4] else None,
                 }
                 for r in conn.execute(
-                    "select user_id, role, location_ids, status, created_at"
+                    "select user_id, role, location_ids, status,"
+                    "       created_at, email"
                     "  from public.memberships order by created_at"
                 ).fetchall()
             ]

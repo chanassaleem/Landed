@@ -408,3 +408,40 @@ def test_a_manager_cannot_change_a_membership(db):
         )
     assert members(db, org)[junior][0] == "staff", \
         "a manager promoted somebody"
+
+
+
+def test_a_membership_keeps_the_address_it_was_invited_at(db):
+    """The people screen showed every member's role, branches and
+    status, and for everyone but the reader, no name. The reason was
+    sound -- addresses live in auth.users, which a tenant cannot read
+    -- but an administrator who cannot tell one staff member from
+    another cannot administer access, which is what the screen is for.
+
+    The address is in hand at the moment it is needed: the invite
+    carries it, and the trigger that turns an accepted invite into a
+    membership reads it to find the invite in the first place.
+    """
+    owner = new_user(db, "owner-named@a.test")
+    org, loc = new_org(db, owner, "Named Importer")
+    invite(db, org, owner, "warehouse@a.test", role="staff")
+    new_user(db, "warehouse@a.test")
+
+    got = dict(db.execute(
+        "select email, role from public.memberships where org_id = %s",
+        (org,)).fetchall())
+    assert got == {"owner-named@a.test": "owner",
+                   "warehouse@a.test": "staff"}
+
+
+def test_the_founder_is_named_as_well(db):
+    """Their membership is made by the organisation trigger rather
+    than by an invite, so it needed the same."""
+    owner = new_user(db, "Solo@A.test")
+    org, _ = new_org(db, owner, "Solo Importer")
+    stored = db.execute(
+        "select email from public.memberships where org_id = %s",
+        (org,)).fetchone()[0]
+    # Folded, like every other address in this schema: GoTrue does not
+    # fold them, so the schema does.
+    assert stored == "solo@a.test"

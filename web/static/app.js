@@ -622,14 +622,29 @@ const OPS = [
         if (po) {
           money[0].input.placeholder = po.currency;
           money[1].input.placeholder = String(po.fx_rate);
-          money[1].input.required = false;
           money[0].hint.hidden = false;
-          money[0].hint.textContent =
-            `Blank takes ${po.po_number}\u2019s own: ${po.currency} at `
-            + `${po.fx_rate}. Fill them in only if this consignment `
-            + `cleared at a different rate \u2014 that difference is `
-            + 'yours to keep or lose, so it is worth recording.';
-          money[1].hint.hidden = true;
+          /* An order supplies a rate only for its own currency.
+             Naming a different one here makes the rate required,
+             because the order's was quoted for the order's money and
+             valuing another by it is wrong by the whole difference
+             between the two. */
+          const said = money[0].input.value.trim().toUpperCase();
+          const differs = said && said !== String(po.currency).toUpperCase();
+          money[1].input.required = differs;
+          money[0].hint.textContent = differs
+            ? `${po.po_number} is priced in ${po.currency}. Its rate of `
+              + `${po.fx_rate} was quoted for ${po.currency} and cannot `
+              + `value ${said}, so this consignment needs the rate it `
+              + 'was actually bought at.'
+            : `Blank takes ${po.po_number}\u2019s own: ${po.currency} at `
+              + `${po.fx_rate}. Fill them in only if this consignment `
+              + `cleared at a different rate \u2014 that difference is `
+              + 'yours to keep or lose, so it is worth recording.';
+          money[1].hint.hidden = !differs;
+          if (differs) {
+            money[1].hint.textContent =
+              'The rate this consignment was bought at.';
+          }
           return;
         }
         money[0].input.placeholder = base;

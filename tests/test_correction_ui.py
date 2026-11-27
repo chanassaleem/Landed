@@ -114,3 +114,41 @@ def test_the_buttons_are_redrawn_once_the_receipts_arrive():
     drawn."""
     assert "function redrawActions(row)" in APP
     assert "if (row.receipts.length) redrawActions(row)" in APP
+
+
+def test_a_wrong_exchange_rate_can_be_corrected_from_the_form():
+    """correct_receipt has always accepted a rate and the form did not
+    offer it, so a rate entered wrongly could not be put right from the
+    application at all -- and a wrong rate moves the landed cost by the
+    whole difference between two currencies."""
+    block = RECORDS[RECORDS.index("    receipt_correction: {"):]
+    block = block[:block.index("\n    },")]
+    assert "'fx'" in block
+
+
+def test_the_receiving_form_demands_a_rate_for_a_different_currency():
+    """An order supplies a rate only for its own currency. The form
+    let somebody name another and leave the rate blank, and the
+    operation inherited the order's -- valuing a dollar receipt at a
+    euro rate."""
+    block = APP[APP.index("      const moneyHint = (po) => {"):]
+    block = block[:block.index("      const costHint = ()")]
+    assert "money[1].input.required = differs" in block
+    assert "cannot " in block and "value" in block
+
+
+def test_every_field_the_operation_takes_has_a_way_in():
+    """The sibling of the endpoint-coverage test, and the gap it
+    missed: an endpoint can have a caller and still not offer half of
+    what it accepts."""
+    ops = (ROOT / "engine" / "operations.py").read_text()
+    sig = ops[ops.index("def correct_receipt("):]
+    sig = sig[:sig.index(") -> dict:")]
+    taken = set(re.findall(r"(\w+)\s*[:=]", sig)) - {"run", "str", "float",
+                                                     "date", "None", "int"}
+    forms = RECORDS[RECORDS.index("    receipt_correction: {"):]
+    forms = forms[:forms.index("\n    },")]
+    offered = set(re.findall(r"\['(\w+)'", forms))
+    missing = {t for t in ("grn", "sku", "batch", "qty", "unit_cost",
+                           "expiry", "fx", "why")} - offered
+    assert not missing, f"the correction form cannot set: {sorted(missing)}"

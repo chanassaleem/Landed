@@ -825,3 +825,90 @@ def test_one_shipment_can_carry_several_orders_from_one_supplier(schema):
             "  join public.purchase_orders po on po.id = so.po_id"
             " where so.org_id = %s", (imp.org,)).fetchall())
     assert orders == ["PO-1", "PO-2"]
+
+
+# ------------------------------------- a rate belongs to its currency
+#
+# A receipt against an order inherits the order's currency and rate,
+# which is right and is why neither has to be typed. The inheritance did
+# not check that the two still went together. An order in euro at 305, a
+# consignment on it invoiced in dollars, no rate stated:
+#
+#   line says 60.0000 USD at 305.000000  ->  ledger 18,300 a unit
+#   60 USD at a real rate of ~280 is     ->            16,800 a unit
+#
+# Nine per cent on that pair. A yen price at a euro rate is wrong by a
+# factor of three hundred, and the figure is the unit cost the price
+# list is built on.
+
+
+def test_a_dollar_receipt_on_a_euro_order_needs_its_own_rate(schema):
+    imp = Importer(schema, "WrongRate")
+    with pytest.raises(NotAllowed) as e:
+        with imp.acting() as cur:
+            operations.receive(cur, "RGT-1", "KHI", 100, unit_cost=60,
+                               po="PO-1", currency="USD", grn="GRN-900")
+    said = str(e.value)
+    assert "USD" in said and "EUR" in said and "305" in said
+    assert imp.trace() == []
+
+
+def test_the_same_currency_as_the_order_still_inherits_its_rate(schema):
+    """Neither has to be typed, which is the whole point."""
+    imp = Importer(schema, "SameCcy")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           currency="EUR", grn="GRN-900")
+    ccy, fx = imp.trace()[0][5], imp.trace()[0][6]
+    assert (ccy, float(fx)) == ("EUR", 305.0)
+
+
+def test_a_rate_stated_on_the_receipt_is_used_for_another_currency(schema):
+    imp = Importer(schema, "StatedOther")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, unit_cost=60,
+                           po="PO-1", currency="USD", fx=280,
+                           grn="GRN-900")
+    ccy, fx = imp.trace()[0][5], imp.trace()[0][6]
+    assert (ccy, float(fx)) == ("USD", 280.0)
+    with as_user(schema, imp.who) as c:
+        cost = float(c.execute(
+            "select unit_cost from public.stock_movement"
+            " where org_id = %s and reason = 'grn'", (imp.org,)).fetchone()[0])
+    assert cost == 60 * 280
+
+
+def test_a_receipt_in_the_base_currency_needs_no_rate(schema):
+    """PKR at 1 is not a missing rate, it is the answer."""
+    imp = Importer(schema, "BaseCcy")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, unit_cost=17080,
+                           po="PO-1", currency="PKR", grn="GRN-900")
+    ccy, fx = imp.trace()[0][5], imp.trace()[0][6]
+    assert (ccy, float(fx)) == ("PKR", 1.0)
+
+
+def test_the_database_refuses_it_even_when_the_engine_is_bypassed(schema):
+    """The importer reads a currency and a rate straight off a sheet
+    and writes the line itself, so the rule has to live where every
+    writer passes."""
+    imp = Importer(schema, "Bypassed")
+    with as_user(schema, imp.who) as c:
+        grn = c.execute(
+            "insert into public.goods_receipts (org_id, location_id,"
+            " grn_number) select %s, id, 'GRN-RAW' from public.locations"
+            " where org_id = %s returning id",
+            (imp.org, imp.org)).fetchone()[0]
+        line = c.execute(
+            "select pl.id from public.po_lines pl"
+            "  join public.purchase_orders po on po.id = pl.po_id"
+            " where po.po_number = 'PO-1'").fetchone()[0]
+        item = c.execute("select id from public.items where sku = 'RGT-1'"
+                         ).fetchone()[0]
+        with pytest.raises(psycopg.errors.CheckViolation) as e:
+            c.execute(
+                "insert into public.grn_lines (org_id, grn_id, po_line_id,"
+                " item_id, qty, unit_price, currency)"
+                " values (%s,%s,%s,%s,100,60,'USD')",
+                (imp.org, grn, line, item))
+    assert "USD" in str(e.value) and "EUR" in str(e.value)

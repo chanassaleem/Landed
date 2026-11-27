@@ -306,7 +306,25 @@ def receive(run, sku: str, branch: str, qty: float,
         "select currency from public.organisations where id = %s",
         (org,)).fetchone()[0]
     currency = (currency or "").strip().upper()
-    if currency and currency != base and fx is None and po_line_id is None:
+    if currency and currency != base and fx is None:
+        # An order supplies a rate only for its own currency.
+        #
+        # This asked whether there was an order, not whether the order
+        # was in the same money. An order in euro at 305, a
+        # consignment on it invoiced in dollars, no rate stated, and
+        # the line took 305 -- so 60 USD was valued at 18,300 rather
+        # than about 16,800. Nine per cent on that pair; a yen price
+        # at a euro rate is wrong by a factor of three hundred.
+        if order_ccy is None or order_ccy == currency:
+            pass
+        else:
+            raise NotAllowed(
+                f"{sku}: this receipt is in {currency} and {po} is "
+                f"priced in {order_ccy}. The order's rate of "
+                f"{float(order_fx):g} was quoted for {order_ccy}, so it "
+                f"cannot value {currency}. Enter the rate this "
+                f"consignment was bought at.")
+    if currency and currency != base and fx is None and order_ccy is None:
         raise NotAllowed(
             f"{sku}: a cost in {currency} needs the rate it was bought "
             f"at, or an order to take the rate from. Without one there "
@@ -322,8 +340,19 @@ def receive(run, sku: str, branch: str, qty: float,
     # Stated beats inherited: somebody typing the rate on the receipt
     # is recording what this consignment actually cost, which is the
     # whole point of holding a rate per receipt rather than per order.
+    #
+    # The rate is inherited only for the currency it was quoted for.
+    # Taking the order's currency and the order's rate together is
+    # right; taking its rate for a different currency is the bug
+    # above. The database refuses that too, since the importer writes
+    # these lines itself.
     line_ccy = currency or order_ccy
-    line_fx = fx if fx is not None else order_fx
+    if fx is not None:
+        line_fx = fx
+    elif line_ccy is not None and line_ccy == order_ccy:
+        line_fx = order_fx
+    else:
+        line_fx = None
 
     # The receipt's own number, which is what says two uploads or two
     # button presses are the same arrival. Derived from the caller's
