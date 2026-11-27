@@ -104,8 +104,29 @@ const inUnit = (n, u) => {
   return `${s}${(Math.abs(n) / u.div).toFixed(u.dp)}${u.suffix}`;
 };
 
+/* One grouping for every figure in the product, pinned rather than
+   taken from the viewer's browser.
+
+   Two reasons. The first is internal consistency: this was hard-coded
+   to en-US while platform.js grouped with the browser's own locale, so
+   a browser set to en-IN -- common enough in this region -- drew
+   1,234,567 in the drawer and 12,34,567 in the grid, for the same
+   figure on the same screen. A German-locale browser made it
+   1.234.567 in one and 1,234,567 in the other.
+
+   The second is that these figures get read off a screen and typed
+   into an invoice, a customs form or a bank instruction. A quantity
+   that regroups itself according to a setting nobody in the business
+   chose is a quantity two people describe differently on the phone.
+
+   en-GB rather than en-US because the rest of the product is written
+   in British English, and because it groups the same way without
+   implying a currency this product does not use. The money formatter
+   is separate and already speaks in lakh and crore. */
+const GROUPING = 'en-GB';
+
 const qty = (n) =>
-  n === null || n === undefined ? '—' : Math.round(n).toLocaleString('en-US');
+  n === null || n === undefined ? '—' : Math.round(n).toLocaleString(GROUPING);
 
 const months = (n) =>
   n === null || n === undefined ? '—' : n >= 100 ? '99+' : n.toFixed(1);
@@ -728,6 +749,58 @@ const OPS = [
 
       const say = (el_, text) => { el_.hidden = false; el_.textContent = text; };
 
+      /* Only the shipments the chosen order may actually be received
+         onto.
+
+         The endpoint filters against every open order for this line
+         at once, because it is fetched before anybody has picked
+         one. Where a line has orders with two different suppliers
+         that union is wider than either order allows, so the second
+         supplier's shipment stayed selectable against the first
+         supplier's order -- and the only thing that said so was the
+         refusal after pressing Record. The server still refuses;
+         this stops the person getting there. */
+      let shipments = [];
+      const drawShipments = () => {
+        const po = fields.po.input.value;
+        const keep = po
+          ? shipments.filter((sh) => !sh.can_carry.length
+                             || sh.can_carry.includes(po))
+          : shipments;
+        const had = fields.shipment.input.value;
+        /* Keep the field's own empty option -- "Not on a tracked
+           shipment" -- rather than writing a second label for the
+           same thing here, where it would drift from the spec. */
+        const blank = fields.shipment.input.firstElementChild;
+        fields.shipment.input.textContent = '';
+        if (blank) fields.shipment.input.append(blank);
+        keep.forEach((sh) => {
+          const carrying = sh.for_orders.length
+            ? `, already carrying ${sh.for_orders.join(', ')}` : '';
+          const opt = el('option', null,
+            `${sh.reference} \u2014 ${said(sh.status)}`
+            + (sh.eta ? `, due ${sh.eta}` : '') + carrying);
+          opt.value = sh.reference;
+          fields.shipment.input.append(opt);
+        });
+        /* A shipment chosen before the order was changed may no
+           longer be allowed with it. Dropping it silently would let
+           somebody press Record believing it was still set. */
+        if (had && keep.some((sh) => sh.reference === had)) {
+          fields.shipment.input.value = had;
+        } else if (had) {
+          say(fields.shipment.hint,
+            `${had} cannot carry ${po}, so the shipment has been `
+            + 'cleared. Pick one of this order\u2019s.');
+        }
+        const hidden = shipments.length - keep.length;
+        if (!had && hidden > 0) {
+          say(fields.shipment.hint,
+            `${hidden} other shipment${hidden === 1 ? ' is' : 's are'} `
+            + `open but cannot carry ${po} \u2014 a different supplier.`);
+        }
+      };
+
       try {
         const r = await fetch('/api/receiving?sku='
           + encodeURIComponent(row.sku) + '&branch='
@@ -762,13 +835,8 @@ const OPS = [
             : `${orders.length} open orders for this line.`);
         }
 
-        (d.shipments || []).forEach((sh) => {
-          const opt = el('option', null,
-            `${sh.reference} \u2014 ${said(sh.status)}`
-            + (sh.eta ? `, due ${sh.eta}` : ''));
-          opt.value = sh.reference;
-          fields.shipment.input.append(opt);
-        });
+        shipments = d.shipments || [];
+        drawShipments();
       } catch (e) {
         say(fields.po.hint, 'Your open orders could not be read, so '
           + 'this receipt will not be against one. Everything else '
@@ -776,7 +844,11 @@ const OPS = [
       }
 
       costHint();
-      fields.po.input.addEventListener('change', costHint);
+      fields.po.input.addEventListener('change', () => {
+        costHint();
+        drawShipments();
+        weighable();
+      });
 
       /* Weight and volume are what freight is divided by, so they do
          nothing without a shipment to divide. Shown as unavailable
@@ -1698,6 +1770,7 @@ async function boot() {
    from this one the day somebody changed a country. */
 window.LANDED = {
   $, el, go, icon, ICON, empty, money, qty, pct, months, said, plural,
+  GROUPING,
   openDetail, closeDetail,
   get data() { return S.data; },
 };

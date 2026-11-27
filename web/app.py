@@ -1155,14 +1155,30 @@ def receiving_options(request: Request, sku: str = "", branch: str = "",
             # them. The list carries which orders each shipment is
             # already known to be carrying, so the form can say so.
             if orders:
+                # Two lists per shipment, and they are different
+                # questions. for_orders is what it is already
+                # carrying, which the form shows as a reassurance.
+                # can_carry is what it is *allowed* to carry, which
+                # is what the form narrows by.
+                #
+                # Both are needed because this is fetched before the
+                # person has picked an order. Where a line has open
+                # orders with two suppliers, the union of valid
+                # shipments is wider than any one order allows --
+                # so returning only the union left the second
+                # supplier's shipment selectable against the first
+                # supplier's order, and the only thing that said so
+                # was the refusal after pressing Record.
                 shipments = [
                     {"reference": r[0], "status": r[1], "mode": r[2],
                      "eta": r[3].isoformat() if r[3] else None,
-                     "for_orders": sorted({x for x in (r[4] or []) if x})}
+                     "for_orders": sorted({x for x in (r[4] or []) if x}),
+                     "can_carry": sorted({x for x in (r[5] or []) if x})}
                     for r in conn.execute(
                         "select s.reference, s.status, s.mode, s.eta,"
                         "       array_agg(distinct case when"
-                        "         sf.already_carrying then sf.po_number end)"
+                        "         sf.already_carrying then sf.po_number end),"
+                        "       array_agg(distinct sf.po_number)"
                         "  from public.shipment_for_order sf"
                         "  join public.shipments s on s.id = sf.shipment_id"
                         " where sf.po_number = any(%s)"
@@ -1178,7 +1194,7 @@ def receiving_options(request: Request, sku: str = "", branch: str = "",
                 shipments = [
                     {"reference": r[0], "status": r[1], "mode": r[2],
                      "eta": r[3].isoformat() if r[3] else None,
-                     "for_orders": []}
+                     "for_orders": [], "can_carry": []}
                     for r in conn.execute(
                         "select reference, status, mode, eta"
                         "  from public.shipments"

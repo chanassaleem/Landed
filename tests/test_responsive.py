@@ -229,3 +229,27 @@ def test_the_provisional_colour_is_one_of_the_four():
     assert "var(--attention)" in rule, (
         "td.unsure should use --attention, the decide-this-week value, "
         f"not a new colour: {rule!r}")
+
+
+def test_every_figure_groups_its_digits_the_same_way():
+    """One pinned grouping, not the viewer's browser locale.
+
+    app.js hard-coded en-US while platform.js passed no locale at all,
+    so a browser set to en-IN -- common enough in this region -- drew
+    1,234,567 in the drawer and 12,34,567 in the grid for the same
+    figure on the same screen, and a German-locale browser made it
+    1.234.567 in one and 1,234,567 in the other. These figures get
+    read off a screen and typed into an invoice or a bank
+    instruction, so they must not shift under a setting nobody in the
+    business chose."""
+    root = pathlib.Path(__file__).resolve().parents[1] / "web" / "static"
+    for name in ("app.js", "platform.js", "grid.js"):
+        src = (root / name).read_text()
+        # Strip comments: the explanation names the formats it replaced.
+        bare = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
+        bare = re.sub(r"(?<!:)//[^\n]*", "", bare)
+        for bad in ("toLocaleString()", "toLocaleString(undefined",
+                    "toLocaleString('en-US'"):
+            assert bad not in bare, (
+                f"{name} formats a number with {bad} -- it must pass "
+                "GROUPING, or the same figure groups two ways on one screen")

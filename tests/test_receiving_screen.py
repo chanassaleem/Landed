@@ -367,3 +367,111 @@ def test_receiving_onto_the_wrong_shipment_is_refused_by_the_server(
         "shipment": "SHP-OTHER", "qty": 10, "batch": "B-X"})
     assert r.status_code == 400
     assert "Shenzhen Comen Medical" in r.json()["error"]
+
+
+# ------------------------------ two orders, two suppliers, one item
+#
+# The endpoint filters shipments against the orders for this line --
+# all of them, together. Where a line has open orders with two
+# different suppliers, that union is wider than any single order
+# allows: picking the first order still leaves the second supplier's
+# shipment in the list, and choosing it gets a refusal from the
+# server with no hint beforehand that it was never a valid pair.
+#
+# The view already knows which orders each shipment can carry. The
+# endpoint was throwing that away and returning only which it was
+# already carrying.
+
+def _second_supplier_order(as_owner):
+    """A second open order for the same line, from another supplier,
+    with a shipment of its own."""
+    with as_owner() as c:
+        other = c.execute(
+            "insert into public.suppliers (org_id, code, name)"
+            " select id, 'MIND', 'Mindray' from public.organisations"
+            " returning id").fetchone()[0]
+        c.execute(
+            "insert into public.shipments (org_id, reference, supplier_id,"
+            " mode, status) select id, 'SHP-MIND', %s, 'air', 'arrived'"
+            "  from public.organisations", (other,))
+        po = c.execute(
+            "insert into public.purchase_orders"
+            " (org_id, po_number, supplier_id, location_id, status,"
+            "  currency, fx_rate)"
+            " select o.id, 'PO-MIND', %s, l.id, 'placed', 'USD', 280"
+            "  from public.organisations o, public.locations l"
+            " where l.code = 'KHI' returning id", (other,)).fetchone()[0]
+        # The branch lives on the order, not the line -- see 0004.
+        c.execute(
+            "insert into public.po_lines"
+            " (org_id, po_id, item_id, qty, unit_price)"
+            " select o.id, %s, i.id, 100, 90"
+            "  from public.organisations o, public.items i"
+            " where i.sku = 'RGT-1'", (po,))
+
+
+def test_each_shipment_says_which_orders_it_can_carry(signed_in):
+    client, as_owner = signed_in
+    _second_supplier_order(as_owner)
+    d = client.get("/api/receiving?sku=RGT-1&branch=KHI").json()
+    by_ref = {s["reference"]: s for s in d["shipments"]}
+    assert {"SHP-1", "SHP-MIND"} <= set(by_ref), (
+        f"both suppliers' shipments should be offered: {list(by_ref)}")
+    assert by_ref["SHP-1"]["can_carry"] == ["PO-1"]
+    assert by_ref["SHP-MIND"]["can_carry"] == ["PO-MIND"]
+
+
+def test_the_union_is_still_offered_so_the_form_can_narrow_it(signed_in):
+    """The endpoint returns both and says which is which. Narrowing
+    is the form's job, because the person has not picked an order
+    yet when this is fetched."""
+    client, as_owner = signed_in
+    _second_supplier_order(as_owner)
+    d = client.get("/api/receiving?sku=RGT-1&branch=KHI").json()
+    assert len(d["shipments"]) >= 2
+    for s in d["shipments"]:
+        assert "can_carry" in s, f"{s['reference']} cannot be narrowed"
+
+
+def test_a_consolidation_can_carry_every_order(signed_in):
+    """No supplier on the shipment means no supplier to contradict."""
+    client, as_owner = signed_in
+    _second_supplier_order(as_owner)
+    with as_owner() as c:
+        c.execute(
+            "insert into public.shipments (org_id, reference, mode, status)"
+            " select id, 'SHP-CONSOL', 'sea', 'arrived'"
+            "  from public.organisations")
+    d = client.get("/api/receiving?sku=RGT-1&branch=KHI").json()
+    consol = [s for s in d["shipments"]
+              if s["reference"] == "SHP-CONSOL"][0]
+    assert sorted(consol["can_carry"]) == ["PO-1", "PO-MIND"]
+
+
+def test_the_form_narrows_the_shipment_list_to_the_chosen_order():
+    """The server refusing is the guarantee; this is what stops
+    somebody reaching the refusal. Read from the source, because the
+    narrowing is a browser behaviour with no endpoint of its own."""
+    js = (pathlib.Path(__file__).resolve().parents[1]
+          / "web" / "static" / "app.js").read_text()
+    i = js.index("const drawShipments = () => {")
+    body = js[i:js.index("\n      };", i)]
+    assert "can_carry" in body, "the form is not using the allowed list"
+    assert "fields.po.input.value" in body, (
+        "the list is not narrowed by the chosen order")
+    # And it must be re-run when the order changes, or the narrowing
+    # only ever happens once, on open.
+    after = js[js.index("fields.po.input.addEventListener"):][:400]
+    assert "drawShipments()" in after, (
+        "changing the order does not redraw the shipments")
+
+
+def test_a_shipment_already_chosen_is_not_silently_dropped():
+    """Changing the order can invalidate a shipment already picked.
+    Clearing it without a word lets somebody press Record believing
+    it is still set."""
+    js = (pathlib.Path(__file__).resolve().parents[1]
+          / "web" / "static" / "app.js").read_text()
+    i = js.index("const drawShipments = () => {")
+    body = js[i:js.index("\n      };", i)]
+    assert "cannot carry" in body, "nothing tells the person it was cleared"

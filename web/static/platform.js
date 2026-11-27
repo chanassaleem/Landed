@@ -31,13 +31,13 @@
      app.js calls into it from boot() -- so window.LANDED does not
      exist yet at this point and destructuring it here threw before a
      single screen was drawn. */
-  let L, $, el, money, qty, pct, months, said;
+  let L, $, el, money, qty, pct, months, said, GROUPING;
 
   function bind() {
     if (L) return true;
     if (!window.LANDED) return false;
     L = window.LANDED;
-    ({ $, el, money, qty, pct, months, said } = L);
+    ({ $, el, money, qty, pct, months, said, GROUPING } = L);
     return true;
   }
 
@@ -48,14 +48,19 @@
     said: (v) => (v ? said(v) : '—'),
     money: (v) => (v === null || v === undefined ? '—' : money(v)),
     qty: (v) => (v === null || v === undefined ? '—' : qty(v)),
+    /* The same grouping as every other figure. See GROUPING in
+       app.js: taking it from the viewer's browser drew the same
+       number two ways on one screen. */
     num: (v) => (v === null || v === undefined ? '—'
-      : Number(v).toLocaleString()),
+      : Number(v).toLocaleString(GROUPING)),
     pct: (v) => (v === null || v === undefined ? '—' : pct(v)),
     months: (v) => (v === null || v === undefined ? '—' : months(v)),
     hours: (v) => (v === null || v === undefined ? '—'
-      : `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 })}h`),
+      : `${Number(v).toLocaleString(GROUPING,
+        { maximumFractionDigits: 1 })}h`),
     days: (v) => (v === null || v === undefined ? '—'
-      : `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}d`),
+      : `${Number(v).toLocaleString(GROUPING,
+        { maximumFractionDigits: 0 })}d`),
     date: (v) => {
       if (!v) return '—';
       const d = new Date(v);
