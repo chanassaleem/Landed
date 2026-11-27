@@ -2581,7 +2581,13 @@ td.can-edit input[type='checkbox'] { width: auto; }
      names get truncated rather than pushing the search box off the
      bar; the full one is in the title attribute. */
   max-width: 22ch;
-  color: var(--ink);
+  /* --text, not --ink. --ink is a fixed near-black and stays
+     near-black in the dark theme, where this put the business's own
+     name a shade away from the header behind it -- all but
+     unreadable. The same trap is documented forty lines into this
+     file for the money band, and I walked into it anyway. Seen by
+     looking at the dark theme. */
+  color: var(--text);
   font-weight: 500;
 }
 

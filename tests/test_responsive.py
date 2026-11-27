@@ -71,3 +71,31 @@ def test_nothing_declares_a_colour_token_that_does_not_exist():
     used = set(re.findall(r"var\((--[a-z0-9-]+)[,)]", plain))
     assert used <= declared, (
         f"not declared anywhere: {sorted(used - declared)}")
+
+
+def test_nothing_paints_text_near_black_in_both_themes():
+    """--ink is a fixed near-black that does not flip with the theme.
+    Used as a text colour it is invisible on a dark background, which
+    is how the business's own name in the header came to be a shade
+    away from the header behind it. The file documents this trap forty
+    lines in, for the money band, and it was walked into anyway.
+
+    The one legitimate use is a surface that deliberately inverts --
+    the tooltip, which paints itself light in the dark theme and needs
+    a near-black on top of it. So: inside a [data-theme='dark'] block
+    it is fine, and outside one it is not.
+    """
+    plain = re.sub(r"/\*.*?\*/", "", CSS, flags=re.S)
+    offenders = []
+    # (?<![-\w]) so `border-color` does not match: it ends in the same
+    # five letters, and without the guard this accused three rules
+    # that only set a border.
+    for match in re.finditer(r"(?<![-\w])color:\s*var\(--ink\)", plain):
+        brace = plain.rindex("{", 0, match.start())
+        cut = max(plain.rfind("}", 0, brace), plain.rfind("{", 0, brace))
+        selector = plain[cut + 1:brace].strip()
+        if "[data-theme='dark']" not in selector:
+            offenders.append(selector.splitlines()[-1].strip()[:60])
+    assert not offenders, (
+        f"near-black text outside a deliberately inverted surface: "
+        f"{offenders}")
