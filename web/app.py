@@ -1335,7 +1335,9 @@ async def adjust_count(request: Request,
     try:
         with _ops(claims) as conn:
             out = adjust(conn, str(b.get("sku", "")), str(b.get("branch", "")),
-                         b.get("counted"), note=str(b.get("note", "")))
+                         b.get("counted"), note=str(b.get("note", "")),
+                         client_ref=str(b.get("client_ref", "") or "")
+                         .strip()[:200] or None)
     except Exception as exc:
         return _op_error(exc)
     return JSONResponse({"ok": True, **out})
@@ -1352,7 +1354,9 @@ async def transfer_stock(request: Request,
         with _ops(claims) as conn:
             out = transfer(conn, str(b.get("sku", "")),
                            str(b.get("from", "")), str(b.get("to", "")),
-                           b.get("qty"), note=str(b.get("note", "")))
+                           b.get("qty"), note=str(b.get("note", "")),
+                           client_ref=str(b.get("client_ref", "") or "")
+                           .strip()[:200] or None)
     except Exception as exc:
         return _op_error(exc)
     return JSONResponse({"ok": True, **out})

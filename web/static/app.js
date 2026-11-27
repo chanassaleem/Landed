@@ -750,7 +750,8 @@ const OPS = [
       fields.counted.input.addEventListener('input', material);
     },
     send: (row, v) => ['/api/adjust', {
-      sku: row.sku, branch: row.branch, counted: v.counted, note: v.note }],
+      sku: row.sku, branch: row.branch, counted: v.counted, note: v.note,
+      client_ref: v.client_ref }],
   },
   {
     key: 'transfer', label: () => 'Send to another branch',
@@ -786,7 +787,8 @@ const OPS = [
       fields.to.input.addEventListener('change', where);
     },
     send: (row, v) => ['/api/transfer', {
-      sku: row.sku, from: row.branch, to: v.to, qty: v.qty, note: v.note }],
+      sku: row.sku, from: row.branch, to: v.to, qty: v.qty, note: v.note,
+      client_ref: v.client_ref }],
   },
 ];
 

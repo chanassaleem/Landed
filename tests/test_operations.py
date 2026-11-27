@@ -372,3 +372,87 @@ def test_two_different_attempts_both_record(shop):
         "select coalesce(sum(qty), 0) from public.stock_movement"
     ).fetchone()[0])
     assert before - after == 6
+
+
+def test_retrying_a_count_does_not_correct_it_twice(shop):
+    """The case the key is actually for.
+
+    A repeated count against an unchanged shelf is harmless on its
+    own: the second one finds the ledger already at the counted
+    figure and writes nothing. What is not harmless is a retry after
+    something else has moved the stock -- a sale between the lost
+    reply and the second press. Then the retry computes a different
+    delta against a different starting figure and corrects a shelf
+    that was already correct.
+    """
+    _, cur = shop
+    was = float(cur.execute(
+        "select coalesce(sum(qty), 0) from public.stock_movement"
+    ).fetchone()[0])
+    key = f"count-{uuid.uuid4()}"
+
+    first = adjust(cur, "RGT-1", "KHI", was - 7, client_ref=key)
+    assert first["recorded"] is True
+    record(cur, "RGT-1", "KHI", "sale", 5)        # the shelf moves
+
+    again = adjust(cur, "RGT-1", "KHI", was - 7, client_ref=key)
+    assert again["recorded"] is False, "the retry corrected it again"
+
+    now = float(cur.execute(
+        "select coalesce(sum(qty), 0) from public.stock_movement"
+    ).fetchone()[0])
+    assert now == was - 12, f"the shelf landed at {now}"
+
+
+def test_a_repeated_count_against_an_unchanged_shelf_writes_nothing(shop):
+    _, cur = shop
+    was = float(cur.execute(
+        "select coalesce(sum(qty), 0) from public.stock_movement"
+    ).fetchone()[0])
+    adjust(cur, "RGT-1", "KHI", was - 3)
+    second = adjust(cur, "RGT-1", "KHI", was - 3)
+    assert second["recorded"] is False
+    assert second["qty"] == 0
+
+
+def test_two_different_counts_both_land(shop):
+    """Idempotency must not swallow a second, deliberate count."""
+    _, cur = shop
+    adjust(cur, "RGT-1", "KHI", 90, client_ref=f"a-{uuid.uuid4()}")
+    adjust(cur, "RGT-1", "KHI", 80, client_ref=f"b-{uuid.uuid4()}")
+    now = float(cur.execute(
+        "select coalesce(sum(qty), 0) from public.stock_movement"
+    ).fetchone()[0])
+    assert now == 80.0
+
+
+def test_retrying_a_transfer_does_not_move_the_stock_twice(shop):
+    _, cur = shop
+    key = f"move-{uuid.uuid4()}"
+    first = transfer(cur, "RGT-1", "KHI", "LHR", 20, client_ref=key)
+    again = transfer(cur, "RGT-1", "KHI", "LHR", 20, client_ref=key)
+
+    assert first["recorded"] is True
+    assert again["recorded"] is False
+    moved = float(cur.execute(
+        "select coalesce(sum(qty), 0) from public.stock_movement"
+        " where reason = 'transfer_in'").fetchone()[0])
+    assert moved == 20.0, f"{moved} arrived at the other branch"
+    # And the ledger still balances across the two branches.
+    assert float(cur.execute(
+        "select coalesce(sum(qty), 0) from public.stock_movement"
+        " where reason in ('transfer_in','transfer_out')"
+    ).fetchone()[0]) == 0.0
+
+
+def test_a_retried_transfer_keeps_both_sides_or_neither(shop):
+    """Half a transfer is the one outcome this operation exists to
+    prevent, on a retry as on the first attempt."""
+    _, cur = shop
+    key = f"pair-{uuid.uuid4()}"
+    transfer(cur, "RGT-1", "KHI", "LHR", 15, client_ref=key)
+    transfer(cur, "RGT-1", "KHI", "LHR", 15, client_ref=key)
+    sides = dict(cur.execute(
+        "select reason, count(*) from public.stock_movement"
+        " where client_ref like %s group by reason", (f"{key}:%",)).fetchall())
+    assert sides == {"transfer_out": 1, "transfer_in": 1}

@@ -671,7 +671,8 @@ def set_shipment_basis(run, shipment: str, sku: str, *, batch: str = "",
 
 
 def adjust(run, sku: str, branch: str, counted: float,
-           when: date | None = None, note: str = "") -> dict:
+           when: date | None = None, note: str = "",
+           client_ref: str | None = None) -> dict:
     """Reconcile the ledger to a physical count.
 
     The person types what is on the shelf, not the difference. Asking
@@ -699,22 +700,39 @@ def adjust(run, sku: str, branch: str, counted: float,
 
     delta = counted - on_hand
     if delta == 0:
+        # Same shape as every other return from here. It was missing
+        # `recorded`, so a caller reading that field got a KeyError on
+        # the one path where nothing was written -- which is exactly
+        # the path a caller asks about.
         return {"sku": sku, "branch": branch, "reason": "adjustment",
-                "qty": 0, "note": "the ledger already agreed"}
+                "qty": 0, "was": on_hand, "now": counted, "recorded": False,
+                "note": "the ledger already agreed"}
 
-    run.execute(
+    # A retry must not post a second correction.
+    #
+    # This generated a fresh uuid every call, like the receipt and the
+    # sale used to. A count submitted twice -- a lost reply, a double
+    # press -- wrote two deltas against the same starting figure, and
+    # the shelf ended up further from the count than before anybody
+    # counted it.
+    ref = client_ref or str(uuid.uuid4())
+    done = run.execute(
         "insert into public.stock_movement (org_id, item_id, location_id, "
         "qty, reason, occurred_at, note, client_ref) "
-        "values (%s, %s, %s, %s, 'adjustment', %s, %s, %s)",
+        "values (%s, %s, %s, %s, 'adjustment', %s, %s, %s) "
+        "on conflict (org_id, client_ref) where client_ref is not null "
+        "do nothing returning id",
         (org, item_id, location_id, delta, when or date.today(),
          note or f"counted {counted:,.0f}, ledger said {on_hand:,.0f}",
-         str(uuid.uuid4())))
+         ref)).fetchone()
     return {"sku": sku, "branch": branch, "reason": "adjustment",
-            "qty": delta, "was": on_hand, "now": counted}
+            "qty": delta, "was": on_hand, "now": counted,
+            "recorded": done is not None}
 
 
 def transfer(run, sku: str, from_branch: str, to_branch: str, qty: float,
-             when: date | None = None, note: str = "") -> dict:
+             when: date | None = None, note: str = "",
+             client_ref: str | None = None) -> dict:
     """Move stock between branches: two rows, both or neither.
 
     Written as a pair in one statement so there is no moment where the
@@ -748,7 +766,14 @@ def transfer(run, sku: str, from_branch: str, to_branch: str, qty: float,
         raise NotAllowed(
             f"There are only {on_hand:,.0f} at {from_branch} to send.")
 
-    pair = str(uuid.uuid4())
+    # Both sides keyed off one value, so a retry is refused as a pair.
+    #
+    # The pair was a fresh uuid each call, so a transfer whose reply
+    # was lost moved the stock twice when it was sent again. Keyed off
+    # the caller's own value, the second attempt conflicts on both
+    # rows and writes neither -- which is the same both-or-neither
+    # rule the operation already holds for the first attempt.
+    pair = client_ref or str(uuid.uuid4())
     # Two execute calls, not executemany.
     #
     # Everything else here takes `run` as either a connection or a
@@ -761,17 +786,29 @@ def transfer(run, sku: str, from_branch: str, to_branch: str, qty: float,
     #
     # Both or neither still holds: they are two statements in one
     # transaction, and the caller's commit is what makes either real.
+    wrote = []
     for location, signed, reason, towards in (
             (out_id, -qty, "transfer_out", f"to {to_branch}"),
             (in_id, qty, "transfer_in", f"from {from_branch}")):
-        run.execute(
+        wrote.append(run.execute(
             "insert into public.stock_movement (org_id, item_id, "
             "location_id, qty, reason, occurred_at, note, client_ref) "
-            "values (%s, %s, %s, %s, %s, %s, %s, %s)",
+            "values (%s, %s, %s, %s, %s, %s, %s, %s) "
+            "on conflict (org_id, client_ref) where client_ref is not null "
+            "do nothing returning id",
             (org, item_id, location, signed, reason, when or date.today(),
              note or towards,
-             f"{pair}:{'out' if signed < 0 else 'in'}"))
-    return {"sku": sku, "from": from_branch, "to": to_branch, "qty": qty}
+             f"{pair}:{'out' if signed < 0 else 'in'}")).fetchone())
+    # Both or neither, on a retry as on the first attempt. One side
+    # conflicting and the other not would mean the two rows had
+    # different keys, which cannot happen -- but if it ever did, half
+    # a transfer is the one outcome this operation exists to prevent.
+    if any(wrote) and not all(wrote):
+        raise NotAllowed(
+            "Only one side of that transfer could be recorded, so "
+            "neither was kept. Try it again.")
+    return {"sku": sku, "from": from_branch, "to": to_branch, "qty": qty,
+            "recorded": all(wrote)}
 
 
 def history(run, sku: str, branch: str, limit: int = 25) -> list[dict]:

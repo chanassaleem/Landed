@@ -29,10 +29,12 @@ production one come to hold different schemas while both claim to be
 at the same version, so it is reported as its own state rather than
 being passed over as already done.
 
-Ten of the nineteen migration files open and close their own
-transaction. A file that does is run as it is written; a file that does
-not is wrapped in one here. Either way nothing is recorded as applied
-until the statements it contains have committed.
+Each migration runs in one transaction, owned here, with the record of
+it written inside the same one. Ten of the files open and close a
+transaction of their own; those keywords are stripped before the file
+is run, so the runner's is the only transaction and the schema change
+and its bookkeeping cannot come apart. The files are left alone, since
+they are already applied in production and their checksums recorded.
 """
 
 from __future__ import annotations
@@ -56,6 +58,12 @@ MIGRATIONS = ROOT / "supabase" / "migrations"
 # is the order, so a file that does not carry one has no place in the
 # sequence and is refused rather than guessed at.
 NUMBERED = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
+
+# A migration's own BEGIN or COMMIT, on a line of its own. Removed
+# before the file is run so the runner's transaction is the only one,
+# and the record of the migration commits with it.
+TRANSACTION_KEYWORD = re.compile(
+    r"(?mi)^[ \t]*(?:begin|commit)[ \t]*;[ \t]*$\n?")
 
 LEDGER = """
 create table if not exists public.schema_migrations (
@@ -242,31 +250,34 @@ def cmd_apply(args) -> int:
 
         for r in pending:
             text = r["path"].read_text()
-            # A file that opens its own transaction is run as written;
-            # the ones that do not are wrapped here, so a statement
-            # failing part way through never leaves half a migration
-            # behind.
-            brackets_itself = re.search(r"(?mi)^\s*begin\s*;", text)
-            print(f"  applying {r['file']}"
-                  f"{'' if brackets_itself else ' (wrapped)'} ... ",
-                  end="", flush=True)
+            # One transaction per migration, owned here, with the
+            # record of it written inside the same one.
+            #
+            # Ten of these files open and close their own. Running
+            # them as written meant the schema change committed and
+            # the tracking row went in afterwards, in a transaction of
+            # its own -- so a process killed between the two left a
+            # database holding the change with no record of it, and
+            # the next run would try to apply it again. A runner whose
+            # bookkeeping can come apart from the thing it is keeping
+            # books on is not much of a runner.
+            #
+            # Their BEGIN and COMMIT are stripped at execution rather
+            # than edited out of the files, because the files are
+            # already applied in production and their checksums are
+            # recorded: editing them would make every one report as
+            # changed. Each has exactly one pair, and none contains
+            # DDL that cannot run inside a transaction -- both checked
+            # across all of them.
+            body = TRANSACTION_KEYWORD.sub("", text)
+            print(f"  applying {r['file']} ... ", end="", flush=True)
             try:
-                if brackets_itself:
-                    conn.execute(text)
-                else:
-                    with conn.transaction():
-                        conn.execute(text)
-                        conn.execute(
-                            "insert into public.schema_migrations"
-                            " (version, filename, checksum)"
-                            " values (%s,%s,%s)",
-                            (r["version"], r["file"], r["now"]))
-                if brackets_itself:
-                    # Its own commit has already landed, so the record
-                    # goes in straight after rather than alongside.
+                with conn.transaction():
+                    conn.execute(body)
                     conn.execute(
                         "insert into public.schema_migrations"
-                        " (version, filename, checksum) values (%s,%s,%s)",
+                        " (version, filename, checksum)"
+                        " values (%s,%s,%s)",
                         (r["version"], r["file"], r["now"]))
             except Exception as exc:                 # noqa: BLE001
                 print("failed")

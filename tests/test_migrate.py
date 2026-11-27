@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import uuid
@@ -253,3 +254,71 @@ def test_the_container_checks_the_schema_before_serving(blank):
         "the container must not apply migrations")
     docker = (ROOT / "Dockerfile").read_text()
     assert "scripts/start.sh" in docker
+
+
+def test_a_migration_and_its_record_commit_together(blank):
+    """Ten of the files open and close their own transaction. Running
+    them as written meant the schema change committed and the tracking
+    row went in afterwards, in a transaction of its own -- so a process
+    killed between the two left a database holding the change with no
+    record of it, and the next run would try to apply it again.
+
+    The proof: a file that opens its own transaction and then fails
+    after committing it. If the runner were not the one holding the
+    transaction, the table would survive.
+    """
+    dsn, con = blank
+    sneaky = ROOT / "supabase" / "migrations" / "9995_own_commit.sql"
+    sneaky.write_text(
+        "begin;\n"
+        "create table public.committed_too_early (id int);\n"
+        "commit;\n"
+        "select 1 / 0;\n")
+    try:
+        out = run(dsn, "apply")
+        assert out.returncode == 1
+        n = con.execute(
+            "select count(*) from information_schema.tables"
+            " where table_schema = 'public'"
+            "   and table_name = 'committed_too_early'").fetchone()[0]
+        assert n == 0, (
+            "the migration's own COMMIT escaped the runner's transaction")
+        assert "9995" not in applied(con)
+    finally:
+        sneaky.unlink()
+
+
+def test_the_files_themselves_are_not_rewritten(blank):
+    """Their BEGIN and COMMIT are stripped at execution, not edited
+    out. The files are already applied in production and their
+    checksums recorded; editing them would make every one report as
+    changed on the next verify."""
+    bracketed = [p for p in MIGRATIONS
+                 if re.search(r"(?mi)^\s*begin\s*;", p.read_text())]
+    assert bracketed, "no file opens its own transaction any more"
+    dsn, _con = blank
+    assert run(dsn, "apply").returncode == 0
+    assert run(dsn, "verify").returncode == 0
+
+
+def test_no_migration_splits_itself_into_two_transactions():
+    """Stripping the keywords is only safe while each file holds one
+    pair. A file that commits halfway through to start a second
+    transaction means something, and this would silently merge it."""
+    for path in MIGRATIONS:
+        text = path.read_text()
+        begins = len(re.findall(r"(?mi)^\s*begin\s*;", text))
+        commits = len(re.findall(r"(?mi)^\s*commit\s*;", text))
+        assert begins <= 1 and commits <= 1, (
+            f"{path.name} opens {begins} transactions and closes "
+            f"{commits}; the runner assumes at most one of each")
+
+
+def test_no_migration_needs_to_run_outside_a_transaction():
+    """CREATE INDEX CONCURRENTLY and friends cannot, and wrapping one
+    would turn a working migration into an error."""
+    bad = re.compile(r"(?i)create\s+index\s+concurrently|^\s*vacuum\b"
+                     r"|alter\s+type\s+\S+\s+add\s+value", re.M)
+    for path in MIGRATIONS:
+        assert not bad.search(path.read_text()), (
+            f"{path.name} contains DDL that cannot run in a transaction")
