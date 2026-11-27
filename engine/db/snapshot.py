@@ -522,15 +522,19 @@ def read_commitments(conn, as_of: date | None = None):
             amount=float(r[3] or 0),
             is_recurring=bool(r[4]),
             recurs_every_days=int(r[5] or 0),
-            location_id=str(r[6]) if r[6] else "default",
+            # The branch's code, like every other reader here. See
+            # read_employees for why the uuid is a trap even where no
+            # screen shows it today.
+            location_id=r[6] or "default",
         )
         for r in conn.execute(
-            "select label, kind, due_date, amount, is_recurring,"
-            "       recurs_every_days, location_id"
-            "  from public.commitments"
-            " where is_settled = false"
-            "   and (due_date >= %s or is_recurring)"
-            " order by due_date",
+            "select c.label, c.kind, c.due_date, c.amount, c.is_recurring,"
+            "       c.recurs_every_days, l.code"
+            "  from public.commitments c"
+            "  left join public.locations l on l.id = c.location_id"
+            " where c.is_settled = false"
+            "   and (c.due_date >= %s or c.is_recurring)"
+            " order by c.due_date",
             (as_of,),
         ).fetchall()
     ]
@@ -561,7 +565,15 @@ def read_employees(conn):
     return [
         Employee(
             employee_id=r[0], name=r[1], entity_id="default",
-            location_id=str(r[2]) if r[2] else "default",
+            # The branch's code, as every other reader in this file
+            # emits it, not the raw uuid. It was the uuid: nothing on
+            # the payroll screen shows the branch, so it was invisible
+            # -- but location_id means a branch code everywhere else
+            # in the product, and the first per-branch payroll report
+            # anybody wrote would have matched nothing and looked
+            # like an empty month. engine/exporter.py already joins
+            # for the code here; this brings the two into line.
+            location_id=r[2] or "default",
             department=r[3] or "",
             basic_monthly=float(r[4] or 0),
             allowances_monthly=float(r[5] or 0),
@@ -574,11 +586,14 @@ def read_employees(conn):
             is_active=bool(r[13]),
         )
         for r in conn.execute(
-            "select employee_no, name, location_id, department,"
-            "       basic_monthly, allowances_monthly, medical_monthly,"
-            "       employer_pf_rate, employee_pf_rate, joined, left_on,"
-            "       eobi_registered, social_security, is_active"
-            "  from public.employees order by name"
+            "select e.employee_no, e.name, l.code, e.department,"
+            "       e.basic_monthly, e.allowances_monthly,"
+            "       e.medical_monthly, e.employer_pf_rate,"
+            "       e.employee_pf_rate, e.joined, e.left_on,"
+            "       e.eobi_registered, e.social_security, e.is_active"
+            "  from public.employees e"
+            "  left join public.locations l on l.id = e.location_id"
+            " order by e.name"
         ).fetchall()
     ]
 
@@ -599,7 +614,10 @@ def read_opportunities(conn):
             customer_key=r[1] or "",
             customer_name=r[2] or "(none)",
             entity_id="default",
-            location_id=str(r[3]) if r[3] else "default",
+            # The branch's code, like every other reader here. See
+            # read_employees for why the uuid is a trap even where no
+            # screen shows it today.
+            location_id=r[3] or "default",
             stage=r[4],
             value=float(r[5] or 0),
             expected_close=r[6],
@@ -611,12 +629,13 @@ def read_opportunities(conn):
             closed=r[12],
         )
         for r in conn.execute(
-            "select o.reference, c.code, c.name, o.location_id, o.stage,"
+            "select o.reference, c.code, c.name, l.code, o.stage,"
             "       o.value, o.expected_close, i.sku, o.quantity,"
             "       o.source, o.owner_name, o.opened, o.closed"
             "  from public.opportunities o"
             "  left join public.customers c on c.id = o.customer_id"
             "  left join public.items i on i.id = o.item_id"
+            "  left join public.locations l on l.id = o.location_id"
             " order by o.expected_close nulls last, o.value desc"
         ).fetchall()
     ]

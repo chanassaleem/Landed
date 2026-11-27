@@ -292,3 +292,40 @@ def test_selling_a_fitted_reagent_is_what_moves_the_recovery(books):
     assert m.reagent_revenue_to_date > 0, (
         "twelve packs of a reagent that fits this machine were sold "
         "and the recovery did not move")
+
+
+def test_an_employee_carries_the_branch_code_not_its_uuid(books):
+    """location_id means a branch code everywhere else in the
+    product. Here it was the raw uuid, stringified. Nothing on the
+    payroll screen shows the branch, so it was invisible -- but the
+    first per-branch payroll report anybody wrote would have matched
+    nothing and looked like an empty month."""
+    from engine.db.snapshot import read_employees
+    conn, cur, org = books
+    loc = cur.execute(
+        "select id, code from public.locations limit 1").fetchone()
+    cur.execute(
+        "insert into public.employees (org_id, employee_no, name,"
+        " location_id, department, basic_monthly, allowances_monthly,"
+        " medical_monthly, employer_pf_rate, employee_pf_rate, joined,"
+        " eobi_registered, social_security, is_active)"
+        " values (%s,'E-1','Ayesha Raza',%s,'sales',90000,10000,4000,"
+        " 0.05,0.05,'2024-01-01',true,false,true)", (org, loc[0]))
+
+    e = [x for x in read_employees(cur) if x.employee_id == "E-1"][0]
+    assert e.location_id == loc[1], (
+        f"got {e.location_id!r}, expected the branch code {loc[1]!r}")
+
+
+def test_an_employee_with_no_branch_does_not_become_the_word_none(books):
+    from engine.db.snapshot import read_employees
+    conn, cur, org = books
+    cur.execute(
+        "insert into public.employees (org_id, employee_no, name,"
+        " department, basic_monthly, allowances_monthly, medical_monthly,"
+        " employer_pf_rate, employee_pf_rate, joined, eobi_registered,"
+        " social_security, is_active)"
+        " values (%s,'E-2','Head Office','admin',120000,0,0,0.05,0.05,"
+        " '2024-01-01',true,false,true)", (org,))
+    e = [x for x in read_employees(cur) if x.employee_id == "E-2"][0]
+    assert e.location_id == "default"
