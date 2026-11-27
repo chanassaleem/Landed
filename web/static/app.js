@@ -542,24 +542,154 @@ const OPS = [
   {
     key: 'grn', label: () => 'Receive stock', primary: true,
     title: 'Receive stock',
-    note: 'Goods arriving at this branch. Cost is per unit, landed if '
-      + 'you know it. Enter 0 if it genuinely cost nothing \u2014 a '
-      + 'blank would let these units take the price of whatever else '
-      + 'is on the shelf.',
+    note: 'Goods arriving at this branch. Say which order they are '
+      + 'against and the price and rate come from it; without one, '
+      + 'the cost is whatever you type and is read as being in your '
+      + 'own currency.',
     fields: [
-      { name: 'qty', label: 'How many', type: 'number', required: true },
-      { name: 'unit_cost', label: 'Cost each', type: 'number',
+      { name: 'po', label: 'Against which order', type: 'choice',
+        empty: 'No order \u2014 the goods just arrived',
+        hint: 'Reading your open orders\u2026' },
+      { name: 'shipment', label: 'On which shipment', type: 'choice',
+        empty: 'Not on a tracked shipment',
+        hint: 'Freight is divided across the goods on a shipment, so '
+          + 'a receipt with no shipment carries none of it.' },
+      { name: 'qty', label: 'How many arrived', type: 'number',
         required: true },
+      { name: 'unit_cost', label: 'Cost each', type: 'number',
+        hint: 'Leave blank to take the order\u2019s price. Enter 0 if '
+          + 'it genuinely cost nothing \u2014 a blank with no order '
+          + 'would let these units take the price of whatever else '
+          + 'is on the shelf.' },
+      { name: 'batch', label: 'Batch or lot', type: 'text',
+        placeholder: 'optional',
+        hint: 'Two lots of one item on one arrival are two lines. '
+          + 'Giving each its batch is what keeps them apart.' },
+      { name: 'expiry', label: 'Expires', type: 'date' },
+      { name: 'weight', label: 'Weight (kg)', type: 'number',
+        placeholder: 'optional' },
+      { name: 'volume', label: 'Volume (cbm)', type: 'number',
+        placeholder: 'optional' },
       { name: 'note', label: 'Note', type: 'text' },
     ],
+
+    /* The three figures a person needs before typing a quantity:
+       ordered, arrived, still outstanding. For this item at this
+       branch, not in general.
+
+       Asked for when the form opens rather than carried in the stock
+       payload -- it is one row of a screen that lists hundreds, and
+       most of them are never received against. */
+    enrich: async (row, fields) => {
+      const cost = fields.unit_cost;
+      const weigh = [fields.weight, fields.volume];
+      let orders = [];
+
+      const costHint = () => {
+        const po = orders.find((o) => o.po_number === fields.po.input.value);
+        if (!po) {
+          cost.input.required = true;
+          cost.hint.textContent = `In ${S.data ? S.data.currency : 'PKR'}, `
+            + 'per unit. Enter 0 if it genuinely cost nothing \u2014 a '
+            + 'blank would let these units take the price of whatever '
+            + 'else is on the shelf.';
+          return;
+        }
+        /* The order knows the price and the rate, so neither has to
+           be typed and neither can be mistyped. Said out loud,
+           because a figure that arrives from somewhere a person
+           cannot see is a figure they cannot check. */
+        cost.input.required = false;
+        cost.input.placeholder = String(po.unit_price);
+        cost.hint.textContent =
+          `${po.po_number} prices this at ${po.unit_price} `
+          + `${po.currency} a unit at ${po.fx_rate} to the `
+          + `${S.data ? S.data.currency : 'PKR'}. Leave it blank to use `
+          + 'that, or type the price on the invoice if it differs.';
+      };
+
+      const say = (el_, text) => { el_.hidden = false; el_.textContent = text; };
+
+      try {
+        const r = await fetch('/api/receiving?sku='
+          + encodeURIComponent(row.sku) + '&branch='
+          + encodeURIComponent(row.branch));
+        const d = await r.json();
+        if (!d.ok) throw new Error(d.error || 'could not be read');
+        orders = d.orders || [];
+
+        if (!orders.length) {
+          say(fields.po.hint, `Nothing is on order for ${row.sku} at `
+            + `${row.branch}. Receiving without an order is fine; the `
+            + 'cost is then whatever you type.');
+        } else {
+          orders.forEach((o) => {
+            const opt = el('option', null,
+              `${o.po_number} \u2014 ${qty(o.outstanding)} of `
+              + `${qty(o.ordered)} still to come`
+              + (o.expected_at ? `, due ${o.expected_at}` : ''));
+            opt.value = o.po_number;
+            fields.po.input.append(opt);
+          });
+          /* One open order is almost always the right one, and
+             making somebody pick it from a list of one is a step
+             that exists only because the form was built generically. */
+          if (orders.length === 1) {
+            fields.po.input.value = orders[0].po_number;
+          }
+          say(fields.po.hint, orders.length === 1
+            ? `${orders[0].received > 0 ? qty(orders[0].received)
+              + ' of ' + qty(orders[0].ordered) + ' has arrived; '
+              : ''}${qty(orders[0].outstanding)} still outstanding.`
+            : `${orders.length} open orders for this line.`);
+        }
+
+        (d.shipments || []).forEach((sh) => {
+          const opt = el('option', null,
+            `${sh.reference} \u2014 ${said(sh.status)}`
+            + (sh.eta ? `, due ${sh.eta}` : ''));
+          opt.value = sh.reference;
+          fields.shipment.input.append(opt);
+        });
+      } catch (e) {
+        say(fields.po.hint, 'Your open orders could not be read, so '
+          + 'this receipt will not be against one. Everything else '
+          + 'still works.');
+      }
+
+      costHint();
+      fields.po.input.addEventListener('change', costHint);
+
+      /* Weight and volume are what freight is divided by, so they do
+         nothing without a shipment to divide. Shown as unavailable
+         rather than hidden: a field that vanishes leaves somebody
+         wondering where to put the figure on the packing list. */
+      const weighable = () => {
+        const on = !!fields.shipment.input.value;
+        weigh.forEach((f) => { f.input.disabled = !on; });
+        say(weigh[0].hint, on
+          ? 'Divided across this shipment\u2019s goods to work out '
+            + 'their share of the freight.'
+          : 'Only used when the goods are on a shipment, which is '
+            + 'what the freight is divided across.');
+        weigh[1].hint.hidden = true;
+      };
+      weighable();
+      fields.shipment.input.addEventListener('change', weighable);
+    },
+
     /* Number(), not `|| null`. A cost of 0 is a cost -- a free sample,
        a warranty replacement -- and `0 || null` is null, so the one
-       figure the server now insists on was the one the browser threw
+       figure the server insists on was the one the browser threw
        away. */
-    send: (row, v) => ['/api/movement', {
-      sku: row.sku, branch: row.branch, kind: 'grn',
+    send: (row, v) => ['/api/receive', {
+      sku: row.sku, branch: row.branch,
+      po: v.po, shipment: v.shipment,
       qty: v.qty,
       unit_cost: v.unit_cost === '' ? null : Number(v.unit_cost),
+      batch: v.batch, expiry: v.expiry,
+      weight: v.weight === '' ? null : Number(v.weight),
+      volume: v.volume === '' ? null : Number(v.volume),
       note: v.note, client_ref: v.client_ref }],
   },
   {
@@ -613,6 +743,7 @@ function openForm(op, row) {
 
   const form = el('form', 'op-form');
   const inputs = {};
+  const fields = {};
   op.fields.forEach((f) => {
     const lab = el('label', null, f.label);
     lab.htmlFor = `op-${f.name}`;
@@ -626,16 +757,43 @@ function openForm(op, row) {
           o.value = b;
           input.append(o);
         });
+    } else if (f.type === 'choice') {
+      /* Filled in after the form is on screen, from the server. The
+         alternative is holding every open order for every item in
+         the stock payload, which is a year of orders to render one
+         dropdown somebody opens twice a week. */
+      input = el('select');
+      const o = el('option', null, f.empty || '—');
+      o.value = '';
+      input.append(o);
     } else {
       input = el('input');
-      input.type = f.type === 'number' ? 'number' : 'text';
-      if (f.type === 'number') { input.step = 'any'; input.min = '0'; }
+      if (f.type === 'number') {
+        input.type = 'number'; input.step = 'any'; input.min = '0';
+      } else if (f.type === 'date') {
+        input.type = 'date';
+      } else {
+        input.type = 'text';
+      }
     }
     input.id = `op-${f.name}`;
     if (f.required) input.required = true;
+    if (f.placeholder) input.placeholder = f.placeholder;
     inputs[f.name] = input;
     form.append(input);
+    /* Under the field it belongs to, and rewritten as the form is
+       used -- the cost field's hint says which currency the chosen
+       order is in, and that changes when the order does. */
+    const hint = el('p', 'note-quiet', f.hint || '');
+    hint.id = `hint-${f.name}`;
+    if (!f.hint) hint.hidden = true;
+    form.append(hint);
+    fields[f.name] = { spec: f, input, hint };
   });
+
+  /* Anything the form needs that only the server knows. Runs after
+     the fields exist, so it can fill them in and explain them. */
+  if (op.enrich) op.enrich(row, fields, form);
 
   const err = el('p', 'gate-error');
   err.hidden = true;

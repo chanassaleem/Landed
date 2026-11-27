@@ -2612,3 +2612,29 @@ td.can-edit input[type='checkbox'] { width: auto; }
    Commit, and "3 changed" beside a Commit button implies it can. */
 .tile[data-attention='1'] { background: var(--attention-bg); }
 .tile[data-attention='1'] .tile-v { color: var(--attention); }
+
+/* --------------------------------------------------- the op form's hints
+
+   What a field means, under the field it means it about. Written as a
+   paragraph, so without this it inherits a browser's default margins
+   and floats midway between its own field and the next one -- which
+   reads as a hint about the wrong thing.
+
+   The input above it already carries 14px of bottom margin, so that
+   is pulled back and spent below the hint instead. */
+.op-form .note-quiet {
+  margin: -10px 0 14px;
+  line-height: 1.45;
+  max-width: 54ch;
+}
+
+/* Weight and volume do nothing without a shipment to divide freight
+   across, so they are disabled until one is chosen -- and a disabled
+   field that looks exactly like an enabled one is worse than no
+   disabling at all: somebody types into it and nothing happens.
+   Seen in a browser looking identical to the field above it. */
+.op-form input:disabled, .op-form select:disabled {
+  background: var(--paper);
+  color: var(--text-3);
+  cursor: not-allowed;
+}

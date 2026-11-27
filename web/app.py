@@ -1110,6 +1110,183 @@ async def movement(request: Request,
     return JSONResponse({"ok": True, **out})
 
 
+@app.get("/api/receiving")
+def receiving_options(request: Request, sku: str = "", branch: str = "",
+                      claims: Claims = Depends(require)) -> JSONResponse:
+    """What this line is on order against, and what is carrying it.
+
+    The three figures a person needs before typing a quantity --
+    ordered, arrived, still outstanding -- and they need them for this
+    item at this branch, not in general. Asked for when the form opens
+    rather than carried in the stock payload: it is one row of a
+    screen that lists hundreds, and most of them are never received
+    against.
+    """
+    try:
+        with _ops(claims) as conn:
+            orders = [
+                {"po_number": r[0], "ordered": float(r[1]),
+                 "received": float(r[2]), "outstanding": float(r[3]),
+                 "unit_price": float(r[4]), "currency": r[5],
+                 "fx_rate": float(r[6]),
+                 "expected_at": r[7].isoformat() if r[7] else None}
+                for r in conn.execute(
+                    "select o.po_number, o.ordered, o.received,"
+                    "       o.outstanding, pl.unit_price, o.currency,"
+                    "       o.fx_rate, o.expected_at"
+                    "  from public.po_outstanding o"
+                    "  join public.po_lines pl on pl.id = o.po_line_id"
+                    "  join public.items i on i.id = o.item_id"
+                    "  join public.locations l on l.id = o.location_id"
+                    " where i.sku = %s and l.code = %s"
+                    "   and o.outstanding > 0"
+                    "   and o.status not in ('cancelled', 'closed')"
+                    " order by o.expected_at nulls last, o.po_number",
+                    (sku, branch)).fetchall()
+            ]
+            # Anything that could still be carrying goods. A closed
+            # shipment is history; offering it would invite somebody
+            # to hang a receipt off the wrong one.
+            shipments = [
+                {"reference": r[0], "status": r[1], "mode": r[2],
+                 "eta": r[3].isoformat() if r[3] else None}
+                for r in conn.execute(
+                    "select reference, status, mode, eta"
+                    "  from public.shipments"
+                    " where status in ('in_transit', 'arrived', 'cleared')"
+                    " order by coalesce(eta, etd) desc nulls last"
+                    " limit 40").fetchall()
+            ]
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({"ok": True, "orders": orders,
+                         "shipments": shipments})
+
+
+@app.post("/api/receive")
+async def receive_goods(request: Request,
+                        claims: Claims = Depends(require)) -> JSONResponse:
+    """Goods arriving: the document, not a bare ledger row."""
+    from datetime import date as _date
+
+    from engine.operations import receive
+
+    b = await request.json()
+
+    def day(key):
+        raw = str(b.get(key, "") or "").strip()
+        if not raw:
+            return None
+        try:
+            return _date.fromisoformat(raw)
+        except ValueError:
+            return None
+
+    def num(key):
+        raw = b.get(key)
+        if raw in (None, ""):
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    try:
+        with _ops(claims) as conn:
+            out = receive(
+                conn, str(b.get("sku", "")), str(b.get("branch", "")),
+                b.get("qty"), num("unit_cost"),
+                po=str(b.get("po", "") or ""),
+                shipment=str(b.get("shipment", "") or ""),
+                batch=str(b.get("batch", "") or ""),
+                expiry=day("expiry"), when=day("when"),
+                weight=num("weight"), volume=num("volume"),
+                currency=str(b.get("currency", "") or ""),
+                fx=num("fx"),
+                note=str(b.get("note", "") or ""),
+                client_ref=str(b.get("client_ref", "") or "").strip()[:200]
+                or None)
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({"ok": True, **out})
+
+
+@app.post("/api/receipt/correct")
+async def correct_a_receipt(request: Request,
+                            claims: Claims = Depends(require)) -> JSONResponse:
+    """Put a receipt right without rewriting what happened."""
+    from datetime import date as _date
+
+    from engine.operations import correct_receipt
+
+    b = await request.json()
+
+    def num(key):
+        raw = b.get(key)
+        if raw in (None, ""):
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    expiry = None
+    raw = str(b.get("expiry", "") or "").strip()
+    if raw:
+        try:
+            expiry = _date.fromisoformat(raw)
+        except ValueError:
+            expiry = None
+
+    try:
+        with _ops(claims) as conn:
+            out = correct_receipt(
+                conn, str(b.get("grn", "")), str(b.get("sku", "")),
+                batch=str(b.get("batch", "") or ""),
+                qty=num("qty"), unit_cost=num("unit_cost"),
+                expiry=expiry, fx=num("fx"),
+                why=str(b.get("why", "") or ""))
+    except Exception as exc:
+        return _op_error(exc)
+    # The ids are uuid.UUID, which JSONResponse cannot serialise -- the
+    # endpoint raised a TypeError after the correction had already
+    # been written, reporting a success as a failure. Stringified here
+    # rather than in the operation, because the operation's caller in
+    # Python wants the real thing.
+    out["corrected"] = str(out["corrected"])
+    out["line"] = str(out["line"])
+    return JSONResponse({"ok": True, **out})
+
+
+@app.post("/api/shipment/basis")
+async def shipment_basis(request: Request,
+                         claims: Claims = Depends(require)) -> JSONResponse:
+    """The weight and volume freight is divided by."""
+    from engine.operations import set_shipment_basis
+
+    b = await request.json()
+
+    def num(key):
+        raw = b.get(key)
+        if raw in (None, ""):
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    try:
+        with _ops(claims) as conn:
+            out = set_shipment_basis(
+                conn, str(b.get("shipment", "")), str(b.get("sku", "")),
+                batch=str(b.get("batch", "") or ""),
+                weight=num("weight"), volume=num("volume"),
+                why=str(b.get("why", "") or ""))
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({"ok": True, **out})
+
+
 @app.post("/api/adjust")
 async def adjust_count(request: Request,
                        claims: Claims = Depends(require)) -> JSONResponse:
