@@ -682,3 +682,146 @@ def test_correcting_a_shipment_linked_receipt_keeps_the_freight(schema):
     # 17,995 invoice plus the same 5,600 a unit of freight. Not
     # that figure moved by the freight the reversal left behind.
     assert round(after, 2) == 23_595.0
+
+
+# ------------------------------------- the order and the shipment
+#
+# Receiving checked three things: the order exists, it has a line for
+# this item, and the shipment exists. It never checked that the two
+# had anything to do with each other. PO-1001 from Supplier A received
+# onto SHP-01, which is Supplier B's, was accepted without complaint,
+# and Supplier B's 280,000 of freight was allocated to Supplier A's
+# inventory -- both suppliers' costs wrong, in opposite directions.
+
+
+def _second_supplier(con, imp, code="OTHER"):
+    with as_user(con, imp.who) as c:
+        return c.execute(
+            "insert into public.suppliers (org_id, code, name)"
+            " values (%s,%s,'Shenzhen Comen Medical') returning id",
+            (imp.org, code)).fetchone()[0]
+
+
+def test_one_suppliers_goods_cannot_arrive_on_anothers_shipment(schema):
+    imp = Importer(schema, "Crossed")
+    other = _second_supplier(schema, imp)
+    with as_user(schema, imp.who) as c:
+        c.execute("update public.shipments set supplier_id = %s"
+                  " where reference = 'SHP-1'", (other,))
+
+    with pytest.raises(NotAllowed) as e:
+        with imp.acting() as cur:
+            operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                               shipment="SHP-1", grn="GRN-900")
+    said = str(e.value)
+    assert "SHP-1" in said and "PO-1" in said
+    assert "Shenzhen Comen Medical" in said and "Acme GmbH" in said
+    assert imp.trace() == [], "it wrote the line anyway"
+
+
+def test_a_shipment_with_no_supplier_is_a_consolidation_and_is_allowed(
+        schema):
+    """A forwarder's container really does carry two suppliers' goods,
+    and leaving the supplier blank is the honest way to say so."""
+    imp = Importer(schema, "Consolidated")
+    with as_user(schema, imp.who) as c:
+        c.execute("update public.shipments set supplier_id = null"
+                  " where reference = 'SHP-1'")
+    with imp.acting() as cur:
+        out = operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                                 shipment="SHP-1", grn="GRN-900")
+    assert out["linked"] is True
+
+
+def test_the_shipment_the_order_is_on_is_recorded(schema):
+    """Recorded, not demanded: written the first time goods arrive
+    against the pair, so no manifest has to be declared up front."""
+    imp = Importer(schema, "Manifest")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", grn="GRN-900", batch="B-1")
+    with as_user(schema, imp.who) as c:
+        rows = c.execute(
+            "select po.po_number, s.reference"
+            "  from public.shipment_orders so"
+            "  join public.purchase_orders po on po.id = so.po_id"
+            "  join public.shipments s on s.id = so.shipment_id"
+            " where so.org_id = %s", (imp.org,)).fetchall()
+    assert rows == [("PO-1", "SHP-1")]
+
+    # And a second receipt against the same pair does not duplicate it.
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 50, po="PO-1",
+                           shipment="SHP-1", grn="GRN-901", batch="B-2")
+    with as_user(schema, imp.who) as c:
+        assert c.execute("select count(*) from public.shipment_orders"
+                         " where org_id = %s", (imp.org,)).fetchone()[0] == 1
+
+
+def test_a_shipment_already_carrying_the_order_stays_valid(schema):
+    """Even if somebody later changes the shipment's supplier. The
+    goods are on it; that is a fact, and a correction to the shipment
+    record does not unmake it."""
+    imp = Importer(schema, "Already")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", grn="GRN-900", batch="B-1")
+    other = _second_supplier(schema, imp, "LATER")
+    with as_user(schema, imp.who) as c:
+        c.execute("update public.shipments set supplier_id = %s"
+                  " where reference = 'SHP-1'", (other,))
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 20, po="PO-1",
+                           shipment="SHP-1", grn="GRN-902", batch="B-3")
+    assert len(imp.trace()) == 2
+
+
+def test_an_order_can_arrive_on_more_than_one_shipment(schema):
+    """A part-shipped order is the normal case, not an exception."""
+    imp = Importer(schema, "Parts")
+    with as_user(schema, imp.who) as c:
+        c.execute(
+            "insert into public.shipments (org_id, reference, supplier_id,"
+            " mode, status) select %s, 'SHP-2', supplier_id, 'air',"
+            " 'arrived' from public.shipments where reference = 'SHP-1'",
+            (imp.org,))
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", grn="GRN-900", batch="B-1")
+        operations.receive(cur, "RGT-1", "KHI", 80, po="PO-1",
+                           shipment="SHP-2", grn="GRN-901", batch="B-2")
+    with as_user(schema, imp.who) as c:
+        refs = sorted(r[0] for r in c.execute(
+            "select s.reference from public.shipment_orders so"
+            "  join public.shipments s on s.id = so.shipment_id"
+            " where so.org_id = %s", (imp.org,)).fetchall())
+    assert refs == ["SHP-1", "SHP-2"]
+    assert imp.outstanding() == 120.0
+
+
+def test_one_shipment_can_carry_several_orders_from_one_supplier(schema):
+    """A consolidated container from one supplier is ordinary."""
+    imp = Importer(schema, "TwoOrders")
+    with as_user(schema, imp.who) as c:
+        c.execute(
+            "insert into public.purchase_orders (org_id, location_id,"
+            " supplier_id, po_number, currency, fx_rate, status,"
+            " ordered_at) select org_id, location_id, supplier_id,"
+            " 'PO-2', currency, fx_rate, 'placed', ordered_at"
+            "  from public.purchase_orders where po_number = 'PO-1'")
+        c.execute(
+            "insert into public.po_lines (org_id, po_id, item_id, qty,"
+            " unit_price) select %s, p.id, i.id, 100, 56"
+            "  from public.purchase_orders p, public.items i"
+            " where p.po_number = 'PO-2' and i.sku = 'RGT-1'", (imp.org,))
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", grn="GRN-900", batch="B-1")
+        operations.receive(cur, "RGT-1", "KHI", 60, po="PO-2",
+                           shipment="SHP-1", grn="GRN-900", batch="B-2")
+    with as_user(schema, imp.who) as c:
+        orders = sorted(r[0] for r in c.execute(
+            "select po.po_number from public.shipment_orders so"
+            "  join public.purchase_orders po on po.id = so.po_id"
+            " where so.org_id = %s", (imp.org,)).fetchall())
+    assert orders == ["PO-1", "PO-2"]

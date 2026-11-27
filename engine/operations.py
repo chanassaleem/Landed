@@ -364,10 +364,57 @@ def receive(run, sku: str, branch: str, qty: float,
 
     if shipment:
         ship = run.execute(
-            "select id from public.shipments where org_id = %s"
-            " and reference = %s", (org, shipment)).fetchone()
+            "select s.id, s.supplier_id, sup.name"
+            "  from public.shipments s"
+            "  left join public.suppliers sup on sup.id = s.supplier_id"
+            " where s.org_id = %s and s.reference = %s",
+            (org, shipment)).fetchone()
         if not ship:
             raise NotAllowed(f"There is no shipment referenced {shipment}.")
+
+        # The order and the shipment have to have something to do with
+        # each other.
+        #
+        # Nothing checked this. PO-1001 from Supplier A, received onto
+        # SHP-01 which is Supplier B's, was accepted without
+        # complaint, and Supplier B's freight was then allocated to
+        # Supplier A's inventory -- both suppliers' costs wrong, in
+        # opposite directions, feeding the unit cost the price list is
+        # built on.
+        #
+        # Only a contradiction is refused. A shipment with no supplier
+        # recorded is a forwarder's consolidation, which is the honest
+        # way to hold a container of two suppliers' goods, and it
+        # stays open.
+        if po_id is not None and ship[1] is not None:
+            po_supplier = run.execute(
+                "select supplier_id, (select name from public.suppliers"
+                "  where id = purchase_orders.supplier_id)"
+                "  from public.purchase_orders where id = %s",
+                (po_id,)).fetchone()
+            carrying = run.execute(
+                "select 1 from public.shipment_orders"
+                " where shipment_id = %s and po_id = %s",
+                (ship[0], po_id)).fetchone()
+            if (not carrying and po_supplier[0] is not None
+                    and po_supplier[0] != ship[1]):
+                raise NotAllowed(
+                    f"{shipment} is {ship[2]}'s shipment and {po} is "
+                    f"{po_supplier[1]}'s order. Receiving one "
+                    f"supplier's goods onto another's shipment puts "
+                    f"their freight on the wrong inventory. If this "
+                    f"container really is carrying both, clear the "
+                    f"supplier on the shipment.")
+
+        # Recorded, not demanded: the link is written the first time
+        # goods arrive against the pair, so nobody has to declare a
+        # manifest before they can book in a delivery.
+        if po_id is not None:
+            run.execute(
+                "insert into public.shipment_orders (org_id, shipment_id,"
+                " po_id) values (%s,%s,%s)"
+                " on conflict (shipment_id, po_id) do nothing",
+                (org, ship[0], po_id))
         # Weight and volume live on the shipment line because that is
         # what freight is divided by. Left out here they are null, and
         # the allocation says so rather than dividing by nothing.

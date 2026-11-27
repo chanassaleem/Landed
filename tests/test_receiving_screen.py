@@ -303,3 +303,67 @@ def test_each_hint_sits_under_the_field_it_is_about():
     block = CSS[CSS.index(".op-form .note-quiet {"):]
     block = block[:block.index("}")]
     assert "margin: -10px 0 14px" in block
+
+
+def test_the_form_is_not_offered_another_suppliers_shipment(signed_in):
+    """Offering every shipment in the business against every order is
+    how one supplier's goods came to be received onto another's, with
+    that supplier's freight allocated to them."""
+    client, as_owner = signed_in
+    with as_owner() as c:
+        other = c.execute(
+            "insert into public.suppliers (org_id, code, name)"
+            " select id, 'COMEN', 'Shenzhen Comen Medical'"
+            "  from public.organisations returning id").fetchone()[0]
+        c.execute(
+            "insert into public.shipments (org_id, reference, supplier_id,"
+            " mode, status) select id, 'SHP-OTHER', %s, 'sea', 'arrived'"
+            "  from public.organisations", (other,))
+
+    d = client.get("/api/receiving?sku=RGT-1&branch=KHI").json()
+    refs = {s["reference"] for s in d["shipments"]}
+    assert "SHP-1" in refs, "the order's own supplier's shipment is gone"
+    assert "SHP-OTHER" not in refs
+
+
+def test_a_consolidation_with_no_supplier_is_still_offered(signed_in):
+    client, as_owner = signed_in
+    with as_owner() as c:
+        c.execute(
+            "insert into public.shipments (org_id, reference, mode, status)"
+            " select id, 'SHP-CONSOL', 'sea', 'arrived'"
+            "  from public.organisations")
+    d = client.get("/api/receiving?sku=RGT-1&branch=KHI").json()
+    assert "SHP-CONSOL" in {s["reference"] for s in d["shipments"]}
+
+
+def test_the_form_is_told_which_orders_a_shipment_already_carries(signed_in):
+    client, _ = signed_in
+    client.post("/api/receive", json={
+        "sku": "RGT-1", "branch": "KHI", "po": "PO-1", "shipment": "SHP-1",
+        "qty": 50, "batch": "B-1"})
+    d = client.get("/api/receiving?sku=RGT-1&branch=KHI").json()
+    ship = [s for s in d["shipments"] if s["reference"] == "SHP-1"][0]
+    assert ship["for_orders"] == ["PO-1"]
+
+
+def test_receiving_onto_the_wrong_shipment_is_refused_by_the_server(
+        signed_in):
+    """The filter is a kindness; the refusal is the guarantee. A
+    request that names the shipment directly must not get through."""
+    client, as_owner = signed_in
+    with as_owner() as c:
+        other = c.execute(
+            "insert into public.suppliers (org_id, code, name)"
+            " select id, 'COMEN', 'Shenzhen Comen Medical'"
+            "  from public.organisations returning id").fetchone()[0]
+        c.execute(
+            "insert into public.shipments (org_id, reference, supplier_id,"
+            " mode, status) select id, 'SHP-OTHER', %s, 'sea', 'arrived'"
+            "  from public.organisations", (other,))
+
+    r = client.post("/api/receive", json={
+        "sku": "RGT-1", "branch": "KHI", "po": "PO-1",
+        "shipment": "SHP-OTHER", "qty": 10, "batch": "B-X"})
+    assert r.status_code == 400
+    assert "Shenzhen Comen Medical" in r.json()["error"]

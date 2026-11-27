@@ -1147,16 +1147,45 @@ def receiving_options(request: Request, sku: str = "", branch: str = "",
             # Anything that could still be carrying goods. A closed
             # shipment is history; offering it would invite somebody
             # to hang a receipt off the wrong one.
-            shipments = [
-                {"reference": r[0], "status": r[1], "mode": r[2],
-                 "eta": r[3].isoformat() if r[3] else None}
-                for r in conn.execute(
-                    "select reference, status, mode, eta"
-                    "  from public.shipments"
-                    " where status in ('in_transit', 'arrived', 'cleared')"
-                    " order by coalesce(eta, etd) desc nulls last"
-                    " limit 40").fetchall()
-            ]
+            #
+            # Per order, where there is one. Offering every shipment
+            # in the business against every order is how one
+            # supplier's goods came to be received onto another's
+            # shipment, with that supplier's freight allocated to
+            # them. The list carries which orders each shipment is
+            # already known to be carrying, so the form can say so.
+            if orders:
+                shipments = [
+                    {"reference": r[0], "status": r[1], "mode": r[2],
+                     "eta": r[3].isoformat() if r[3] else None,
+                     "for_orders": sorted({x for x in (r[4] or []) if x})}
+                    for r in conn.execute(
+                        "select s.reference, s.status, s.mode, s.eta,"
+                        "       array_agg(distinct case when"
+                        "         sf.already_carrying then sf.po_number end)"
+                        "  from public.shipment_for_order sf"
+                        "  join public.shipments s on s.id = sf.shipment_id"
+                        " where sf.po_number = any(%s)"
+                        " group by s.reference, s.status, s.mode, s.eta,"
+                        "          coalesce(s.eta, s.etd)"
+                        " order by coalesce(s.eta, s.etd) desc nulls last"
+                        " limit 40",
+                        ([o["po_number"] for o in orders],)).fetchall()
+                ]
+            else:
+                # No order to receive against, so nothing to
+                # contradict: a shipment can be chosen freely.
+                shipments = [
+                    {"reference": r[0], "status": r[1], "mode": r[2],
+                     "eta": r[3].isoformat() if r[3] else None,
+                     "for_orders": []}
+                    for r in conn.execute(
+                        "select reference, status, mode, eta"
+                        "  from public.shipments"
+                        " where status in ('in_transit','arrived','cleared')"
+                        " order by coalesce(eta, etd) desc nulls last"
+                        " limit 40").fetchall()
+                ]
     except Exception as exc:
         return _op_error(exc)
     return JSONResponse({"ok": True, "orders": orders,
