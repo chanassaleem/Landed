@@ -357,3 +357,130 @@ def test_the_whole_workflow(schema, monkeypatch):
     assert float(other.one(
         "select coalesce(sum(quantity), 0)"
         " from public.demand_monthly")[0]) == 0.0
+
+
+def test_a_shipment_that_was_never_fully_measured(schema, monkeypatch):
+    """The same walk, with one weight never entered.
+
+    This is the ordinary case, not the exceptional one. A clearing
+    agent's note arrives for one line and not the other, somebody
+    means to come back to it, and in the meantime every figure
+    downstream is quietly built on a charge divided across half the
+    goods.
+
+    The test exists because the arithmetic succeeds. There is no
+    error, no zero, no blank -- a complete-looking allocation and a
+    confident unit cost, too high on the measured line and too low
+    on the other. What must be true is that the product says so, at
+    every place the figure surfaces.
+    """
+    imp = Importer(schema, monkeypatch, "Partial Measure Traders",
+                   "partial@acceptance.test")
+    with imp.db() as c:
+        c.execute("insert into public.locations (org_id, code, name)"
+                  " values (%s,'KHI','Karachi')", (imp.org,))
+        c.execute("insert into public.suppliers (org_id, code, name)"
+                  " values (%s,'ROCHE','Roche Diagnostics')", (imp.org,))
+        c.execute("insert into public.items (org_id, sku, description,"
+                  " uom, lead_time_days) values"
+                  " (%s,'RGT-100','HbA1c reagent kit','kit',90)", (imp.org,))
+        po = c.execute(
+            "insert into public.purchase_orders (org_id, po_number,"
+            " supplier_id, location_id, status, currency, fx_rate)"
+            " select %s,'PO-1',s.id,l.id,'placed','EUR',305"
+            "  from public.suppliers s, public.locations l"
+            " where s.org_id = %s and l.org_id = %s returning id",
+            (imp.org, imp.org, imp.org)).fetchone()[0]
+        c.execute("insert into public.po_lines (org_id, po_id, item_id,"
+                  " qty, unit_price) select %s,%s,i.id,200,56"
+                  "  from public.items i where i.org_id = %s",
+                  (imp.org, po, imp.org))
+        c.execute("insert into public.shipments (org_id, reference,"
+                  " supplier_id, mode, status)"
+                  " select %s,'SHP-1',s.id,'sea','arrived'"
+                  "  from public.suppliers s where s.org_id = %s",
+                  (imp.org, imp.org))
+        # One charge, divided by weight.
+        c.execute("insert into public.shipment_costs (org_id, shipment_id,"
+                  " kind, allocate_by, amount, currency, fx_rate)"
+                  " select %s,s.id,'freight','weight',1000,'USD',280"
+                  "  from public.shipments s where s.org_id = %s",
+                  (imp.org, imp.org))
+
+    # Two lots. One weighed at the port, one never measured.
+    for batch, qty, weight in (("B-A", 100, 500), ("B-B", 100, None)):
+        body = {"sku": "RGT-100", "branch": "KHI", "po": "PO-1",
+                "shipment": "SHP-1", "qty": qty, "batch": batch,
+                "grn": "GRN-1"}
+        if weight is not None:
+            body["weight"] = weight
+        r = imp.http.post("/api/receive", json=body)
+        assert r.status_code == 200, r.text[:300]
+
+    # The arithmetic succeeded, and it is wrong.
+    alloc = {r[0]: float(r[1]) for r in imp.all(
+        "select gl.batch, lc.allocated_cost from public.landed_cost lc"
+        "  join public.grn_lines_live gl on gl.id = lc.grn_line_id")}
+    assert alloc == {"B-A": 280_000.0, "B-B": 0.0}, (
+        "the whole charge should have landed on the measured line -- "
+        "if this changed, the premise of the test did")
+
+    # 1. The freight screen names the charge and what is missing.
+    charge = imp.one(
+        "select billed, allocated, blocked_by, skewed_by"
+        "  from public.shipment_charge_allocation")
+    assert float(charge[0]) == float(charge[1]) == 280_000.0
+    assert charge[2] is None, "nothing was blocked; it all landed"
+    assert charge[3] == "weight missing on 1 of 2 lines"
+
+    # 2. Both lines' landed costs say they are provisional -- the
+    #    measured one included, because it is carrying the whole
+    #    charge and is the more wrong of the two.
+    flags = {r[0]: (r[1], r[2]) for r in imp.all(
+        "select gl.batch, lc.provisional, lc.why_provisional"
+        "  from public.landed_cost lc"
+        "  join public.grn_lines_live gl on gl.id = lc.grn_line_id")}
+    assert flags["B-A"][0] is True and flags["B-B"][0] is True
+    assert "weight missing on 1 of 2 lines" in flags["B-A"][1]
+
+    # 3. So does the item's average, which is what the stock screen
+    #    shows and what the margin is taken against.
+    avg = imp.one(
+        "select provisional, provisional_receipts, receipts,"
+        "       why_provisional from public.item_cost")
+    assert avg[0] is True
+    assert (avg[1], avg[2]) == (2, 2)
+    assert "weight missing" in avg[3]
+
+    # 4. The stock screen marks it rather than printing it as settled.
+    stock = imp.http.get("/api/module/stock")
+    assert stock.status_code == 200, stock.text[:300]
+    row = stock.json()["data"]["rows"][0]
+    assert row["cost_provisional"] is True
+    assert row["cost_provisional_of"] == 2
+    assert "weight missing" in row["cost_why"]
+
+    # 5. And Checks lists it, with somewhere to go and something to do.
+    checks = imp.http.get("/api/module/quality")
+    assert checks.status_code == 200, checks.text[:300]
+    found = [r for r in checks.json()["data"]["rows"]
+             if r["code"] == "cost_provisional"]
+    assert found, "the data-quality screen did not mention it"
+    assert found[0]["fix"] and found[0]["effect"]
+
+    # 6. Entering the weight clears every one of them, and the charge
+    #    redistributes without anything being re-entered.
+    fix = imp.http.post("/api/shipment/basis", json={
+        "shipment": "SHP-1", "sku": "RGT-100", "batch": "B-B",
+        "weight": 500, "why": "weighed at the port"})
+    assert fix.status_code == 200, fix.text[:300]
+
+    after = {r[0]: float(r[1]) for r in imp.all(
+        "select gl.batch, lc.allocated_cost from public.landed_cost lc"
+        "  join public.grn_lines_live gl on gl.id = lc.grn_line_id")}
+    assert after == {"B-A": 140_000.0, "B-B": 140_000.0}
+    assert all(r[0] is False for r in imp.all(
+        "select provisional from public.landed_cost"))
+    assert imp.one("select provisional from public.item_cost")[0] is False
+    assert not [r for r in imp.http.get("/api/module/quality")
+                .json()["data"]["rows"] if r["code"] == "cost_provisional"]
