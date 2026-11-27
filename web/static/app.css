@@ -2606,3 +2606,9 @@ td.can-edit input[type='checkbox'] { width: auto; }
 @media (max-width: 560px) {
   .whose { display: none; }
 }
+
+/* The one count on the import preview that is not just information.
+   A receipt that already moved stock cannot be put right by pressing
+   Commit, and "3 changed" beside a Commit button implies it can. */
+.tile[data-attention='1'] { background: var(--attention-bg); }
+.tile[data-attention='1'] .tile-v { color: var(--attention); }

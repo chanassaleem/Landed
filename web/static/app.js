@@ -2100,13 +2100,13 @@ function importReport(d) {
     rows.map(([label, n]) => [cell(label, 'lead'), cell(qty(n), 'num')])));
 
   if (d.value) {
-    const p = el('p', 'drop-sub',
+    host.append(el('p', 'note',
       `Opening stock at cost: ${S.data ? S.data.currency : 'PKR'} `
       + `${money(d.value)}. Sense-check that against your own figure `
-      + 'before writing.');
-    p.style.padding = '10px 14px';
-    host.append(p);
+      + 'before writing.'));
   }
+
+  againstRecorded(host, d.against_recorded);
 
   if (d.problems && d.problems.length) {
     const h = el('div', 'section-head');
@@ -2125,6 +2125,155 @@ function importReport(d) {
   }
 
   $('import-go').hidden = !d.ok;
+}
+
+/* What committing will do to what is already recorded.
+
+   The server has answered this since the receipt-correction work went
+   in -- counts per table, what changed, the recorded figure beside the
+   incoming one -- and nothing on the screen read it. A person saw how
+   many rows were in their file and pressed the button.
+
+   Three fates, and the difference between them is the whole point:
+
+     update   the recorded row changes to match the file
+     added    new rows go in, the ones already there are left alone
+     correct  the file disagrees with something that already happened,
+              and committing will not resolve it
+
+   The third is the one worth a person's attention. A receipt moved
+   stock and a valuation took its cost; a later file saying it was
+   really ninety does not unhappen that, so it needs an entry of its
+   own. Said plainly here, because "3 changed" next to a Commit button
+   implies the commit deals with them. */
+
+const FATE = {
+  update: ['Updates', 'Committing changes these to match your file.'],
+  skip: ['Adds what is new',
+         'Committing adds the rows that are not recorded yet and '
+         + 'leaves the rest as they are.'],
+  correct: ['Needs a correction',
+            'These already happened: the stock moved and the valuation '
+            + 'took the cost. Committing records nothing new for them '
+            + 'and does not change them. Correcting one is its own '
+            + 'entry, from the receipt.'],
+};
+
+function againstRecorded(host, a) {
+  if (!a || !a.totals) return;
+
+  const head = el('div', 'section-head');
+  head.append(el('h2', null, 'Against what is already recorded'));
+  host.append(head);
+
+  /* .note, not .drop-sub. drop-sub is `margin: 0 auto; max-width:
+     54ch` -- built to sit centred under the drop zone -- so used in a
+     1,194px report it centres a 389px column of text under a
+     left-aligned heading. It reads as a layout fault. Seen in a
+     browser; the line below had the same problem and was there
+     already. */
+  const line = el('p',
+    a.needs_correction ? 'note note-warn' : 'note', a.headline || '');
+  host.append(line);
+
+  /* Counted separately rather than as one "changed" figure, because
+     the four mean four different things to the person deciding. */
+  /* The house tile, not a new one. These already carry their own
+     hairline as an outline rather than letting a container background
+     show through the grid gap -- which rendered as a grey slab
+     whenever the last row was short, twice in this file. */
+  const tiles = el('div', 'tiles');
+  [['New', a.totals.new, 'not recorded yet'],
+   ['Updates', (a.totals.changed || 0) - (a.needs_correction || 0),
+    'recorded rows your file changes'],
+   ['Needs a correction', a.needs_correction || 0,
+    'already happened; committing will not change them'],
+   ['Already recorded', a.totals.unchanged, 'nothing to do'],
+  ].forEach(([label, n, why]) => {
+    const t = el('div', 'tile');
+    if (label === 'Needs a correction' && n > 0) t.dataset.attention = '1';
+    t.append(el('div', 'tile-v num', qty(n || 0)));
+    t.append(el('div', 'tile-k', label));
+    t.append(el('div', 'note-quiet', why));
+    tiles.append(t);
+  });
+  host.append(tiles);
+
+  /* Only the sheets where something is actually going to happen. A
+     table of twenty-four rows reading zero, zero, zero is a way of
+     hiding the two that matter. */
+  const busy = (a.tables || []).filter(
+    (t) => t.new > 0 || t.changed > 0);
+  if (!busy.length) return;
+
+  host.append(table(
+    [['Sheet', ''], ['New', 'num'], ['Changed', 'num'],
+     ['Already there', 'num'], ['On commit', '']],
+    busy.map((t) => {
+      const [name] = FATE[t.action] || ['Updates'];
+      return [
+        cell(t.label, 'lead'),
+        cell(qty(t.new), 'num'),
+        cell(qty(t.changed), t.action === 'correct' && t.changed
+          ? 'num bad' : 'num'),
+        cell(qty(t.unchanged), 'num'),
+        cell(name, t.action === 'correct' ? 'warn' : ''),
+      ];
+    })));
+
+  /* The three fates explained once, under the table, and only the
+     ones that are actually on screen.
+
+     They were a sentence in every row first. Twenty-one rows of
+     "Committing changes these to match your file" squeezed the column
+     to ninety pixels, and the Goods received row -- whose sentence is
+     the long one, and the one that matters -- wrapped into a
+     four-hundred-pixel ribbon of two-word lines. Seen in a browser.
+     Saying a thing once is also just better than saying it twenty-one
+     times. */
+  const fates = [...new Set(busy.map((t) => t.action))];
+  fates.forEach((action) => {
+    const [name, why] = FATE[action] || [];
+    if (!name) return;
+    const n = el('p', action === 'correct' ? 'note note-warn' : 'note');
+    n.append(el('b', null, `${name}. `));
+    n.append(document.createTextNode(why));
+    host.append(n);
+  });
+
+  /* Before and after, for the rows that changed. A count tells
+     somebody something moved; this tells them whether it is the thing
+     they meant to change. */
+  const shown = busy.filter((t) => (t.examples || []).length);
+  shown.forEach((t) => {
+    const h = el('div', 'section-head');
+    h.append(el('h3', null, `${t.label}: what changed`));
+    if (t.changed > t.examples.length) {
+      h.append(el('span', 'asof',
+        `showing ${t.examples.length} of ${t.changed}`));
+    }
+    host.append(h);
+    host.append(table(
+      [['Which row', ''], ['Recorded', ''], ['In your file', '']],
+      t.examples.map((x) => [
+        cell(x.key, 'lead'),
+        cell(fmtVals(x.recorded), ''),
+        cell(fmtVals(x.incoming), 'warn'),
+      ])));
+  });
+}
+
+/* A row of values as one readable line. Empty and null are not the
+   same as zero and must not print as it: "not entered" and "entered as
+   nothing" are different facts, and this screen is where somebody
+   decides whether a figure is wrong. */
+function fmtVals(vals) {
+  if (!Array.isArray(vals)) return String(vals == null ? '—' : vals);
+  return vals.map((v) => {
+    if (v === null || v === undefined || v === '') return '—';
+    if (typeof v === 'number') return qty(v);
+    return String(v);
+  }).join(' · ');
 }
 
 /* A free instance sleeps after fifteen idle minutes and takes most of
