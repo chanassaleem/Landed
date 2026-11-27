@@ -1351,10 +1351,43 @@ async function needsOrganisation() {
     const d = await r.json();
     if (!d.signed_in) return false;          // auth is off; sample data
     if (d.organisations === null) return false;   // database unreachable
+    /* The same answer already says whose business this is, so the
+       chrome is named from it rather than fetching it again. */
+    showWhose(d.organisations[0]);
     return d.organisations.length === 0;
   } catch (e) {
     return false;
   }
+}
+
+/* Whose business this is, and what you may do in it.
+
+   One person is one business, so there is nothing to switch between
+   and no menu pretending otherwise. But a figure on screen belongs to
+   somebody, and an importer running two companies on two logins should
+   never have to work out which one they are looking at.
+
+   Left empty until it is known, so it never flashes the wrong name. */
+function showWhose(org) {
+  const host = $('whose');
+  if (!host || !org || !org.name) return;
+  const name = $('whose-org');
+  name.textContent = org.name;
+  /* The full name in the tooltip, because the visible one is truncated
+     -- a supplier here can be called Shenzhen Mindray Bio-Medical
+     Electronics Co., Ltd., and so can a customer's own company. */
+  name.title = org.name;
+  const role = $('whose-role');
+  if (org.role) {
+    role.textContent = org.role;
+    /* Said in full to a screen reader. "owner" beside a company name
+       reads as a word, not a role, when it arrives with no context. */
+    role.setAttribute('aria-label', `your role: ${org.role}`);
+    role.hidden = false;
+  } else {
+    role.hidden = true;
+  }
+  host.hidden = false;
 }
 
 function showSetup() {

@@ -426,10 +426,19 @@ def me(request: Request) -> JSONResponse:
         from engine.db.supabase import NotConfigured, database
 
         with database().as_user(claims.user_id) as conn:
+            # The role comes back with the organisation because the two
+            # answer one question: whose business is this, and what am
+            # I allowed to do in it. A person who cannot receive stock
+            # should be able to see why from the chrome rather than
+            # from a button that does nothing.
             orgs = [
-                {"id": str(i), "name": n}
-                for i, n in conn.execute(
-                    "select id, name from public.organisations order by name"
+                {"id": str(i), "name": n, "role": r}
+                for i, n, r in conn.execute(
+                    "select o.id, o.name, m.role"
+                    "  from public.organisations o"
+                    "  join public.memberships m on m.org_id = o.id"
+                    " where m.user_id = %s and m.status = 'active'"
+                    " order by o.name", (claims.user_id,)
                 ).fetchall()
             ]
     except NotConfigured:

@@ -1311,7 +1311,20 @@ td.warn { color: var(--attention); }
     left: 0; right: 0; top: auto; bottom: 0;
     width: auto; height: 2px; border-radius: 0;
   }
-  .rail .sep, .rail-pin, .rail .count { display: none; }
+  /* .rail-section was missed when the rest of these were hidden, and
+     a section heading in a horizontal scroller has nothing to head
+     anyway. Each one collapsed to a 20px box with overflow hidden,
+     so five of them -- Goods, Money, People, Service, Decide --
+     rendered as two-letter slivers of clipped capitals wedged
+     between the real items. Seen at 430px; it reads as a rendering
+     fault, which is the worst kind of thing to have in navigation. */
+  .rail .sep, .rail-pin, .rail .count,
+  /* Scoped under .rail deliberately. The base .rail-section rule is
+     four hundred lines further down this file, so a bare
+     .rail-section here has equal specificity and loses on order --
+     the rule applies, and nothing happens. Verified at 430px before
+     and after. */
+  .rail .rail-section { display: none; }
   .rail-label { opacity: 1; }
 
   /* The panel takes the screen, because on a phone there is no "beside". */
@@ -2538,4 +2551,58 @@ td.can-edit input[type='checkbox'] { width: auto; }
   margin-top: 4px;
   font: 400 12px/1.5 var(--sans);
   color: var(--text-2);
+}
+
+/* ---------------------------------------------------------------- whose
+
+   Whose business this is, and what you may do in it. One person is one
+   business, so there is nothing to switch between -- but a figure on
+   screen belongs to somebody, and an importer with two companies on
+   two logins should never have to work out which one they are looking
+   at.
+
+   Quiet by design. It is orientation, not a control: a name set in the
+   same weight as the wordmark would read as a second brand, and a role
+   set like a button would read as something to press. */
+.whose {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12.5px;
+}
+
+.whose-org {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* A supplier in this trade can be called Shenzhen Mindray Bio-Medical
+     Electronics Co., Ltd., and so can a customer's own company. Long
+     names get truncated rather than pushing the search box off the
+     bar; the full one is in the title attribute. */
+  max-width: 22ch;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.whose-role {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  color: var(--text-3);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+
+/* Below this the top bar is tight enough that a business name and the
+   search box cannot both have room. The whole thing goes, not just the
+   name: a pill reading "owner" with nothing beside it says who you are
+   to a business it no longer names, which is less use than saying
+   nothing. On a phone you are one tap from Settings, which names the
+   business in full -- and the search box is how anything gets found on
+   a small screen. */
+@media (max-width: 560px) {
+  .whose { display: none; }
 }

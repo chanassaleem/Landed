@@ -90,6 +90,17 @@
          screen. It is on the screens now, next to the figures it
          actually moves, and the ones it cannot move say so. -->
 
+    <!-- Whose business this is, and what you may do in it. One person
+         is one business, so there is nothing to switch between and no
+         menu pretending otherwise -- but a figure on screen belongs to
+         somebody, and an importer with two companies on two logins
+         should never have to work out which one they are looking at.
+         Empty until it is known, so it never flashes a wrong name. -->
+    <span class="whose" id="whose" hidden>
+      <span class="whose-org" id="whose-org"></span>
+      <span class="whose-role" id="whose-role"></span>
+    </span>
+
     <button class="iconbtn" id="theme" type="button" aria-label="Switch theme">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
            stroke="currentColor" stroke-width="1.4" aria-hidden="true">
