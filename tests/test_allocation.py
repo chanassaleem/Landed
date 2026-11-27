@@ -274,3 +274,150 @@ def test_a_change_to_the_same_figure_is_refused(schema):
                                           batch="B-1", volume=2.5,
                                           why="No change")
     assert "changes nothing" in str(e.value)
+
+
+# ------------------------------------- landed in full, in the wrong place
+#
+# 0019 asked one question of each charge: is the basis it divides by
+# zero? Necessary, and not sufficient. One shipment, two lines, freight
+# by weight, and only one line weighed:
+#
+#   the diagnostic said:  billed 280,000  allocated 280,000
+#                         unallocated 0   nothing missing
+#   where it went:        A 280,000, landed 3,800 a unit
+#                         B       0, landed 1,000 a unit
+#
+# A charge that reaches nothing at least shows up as a figure that has
+# not moved. This one produces a complete-looking allocation and a
+# confident unit cost, too high on the measured goods and too low on
+# the rest, and feeds the ABC class, the service target and the price
+# list from there.
+
+
+def test_a_charge_split_across_only_some_of_the_goods_is_reported(schema):
+    imp = Importer(schema, "Skewed")
+    imp.freight(1000, "USD", 280, "weight")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-1", grn="GRN-900",
+                           weight=500)
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-2", grn="GRN-900")
+
+    with as_user(schema, imp.who) as c:
+        billed, allocated, blocked, skewed, lines, missing = c.execute(
+            "select billed, allocated, blocked_by, skewed_by, lines,"
+            "       lines_missing_basis"
+            "  from public.shipment_charge_allocation where org_id = %s",
+            (imp.org,)).fetchone()
+    # It all landed, which is why nothing caught it.
+    assert float(allocated) == float(billed) == 280_000.0
+    assert blocked is None
+    assert skewed == "weight missing on 1 of 2 lines"
+    assert (lines, missing) == (2, 1)
+
+
+def test_the_skew_is_what_it_says_it_is(schema):
+    """The whole charge on the measured line, none on the other."""
+    imp = Importer(schema, "Proof")
+    imp.freight(1000, "USD", 280, "weight")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-1", grn="GRN-900",
+                           weight=500)
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-2", grn="GRN-900")
+    with as_user(schema, imp.who) as c:
+        got = {r[0]: float(r[1]) for r in c.execute(
+            "select gl.batch, lc.allocated_cost from public.landed_cost lc"
+            "  join public.grn_lines gl on gl.id = lc.grn_line_id"
+            " where lc.org_id = %s", (imp.org,)).fetchall()}
+    assert got == {"B-1": 280_000.0, "B-2": 0.0}
+
+
+def test_entering_the_missing_weight_clears_it_and_resplits(schema):
+    imp = Importer(schema, "Clears")
+    imp.freight(1000, "USD", 280, "weight")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-1", grn="GRN-900",
+                           weight=500)
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-2", grn="GRN-900")
+    with imp.acting() as cur:
+        operations.set_shipment_basis(cur, "SHP-1", "RGT-1", batch="B-2",
+                                      weight=500, why="Weighbridge ticket")
+
+    with as_user(schema, imp.who) as c:
+        skewed, missing = c.execute(
+            "select skewed_by, lines_missing_basis"
+            "  from public.shipment_charge_allocation where org_id = %s",
+            (imp.org,)).fetchone()
+        got = {r[0]: float(r[1]) for r in c.execute(
+            "select gl.batch, lc.allocated_cost from public.landed_cost lc"
+            "  join public.grn_lines gl on gl.id = lc.grn_line_id"
+            " where lc.org_id = %s", (imp.org,)).fetchall()}
+    assert (skewed, missing) == (None, 0)
+    assert got == {"B-1": 140_000.0, "B-2": 140_000.0}
+
+
+def test_a_stated_zero_weight_is_not_a_missing_one(schema):
+    """A line carried free really does take no share. Only a null is
+    an unanswered question."""
+    imp = Importer(schema, "ZeroNotNull")
+    imp.freight(1000, "USD", 280, "weight")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-1", grn="GRN-900",
+                           weight=500)
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-2", grn="GRN-900",
+                           weight=0)
+    with as_user(schema, imp.who) as c:
+        skewed = c.execute(
+            "select skewed_by from public.shipment_charge_allocation"
+            " where org_id = %s", (imp.org,)).fetchone()[0]
+    assert skewed is None
+
+
+def test_value_and_quantity_bases_are_never_called_incomplete(schema):
+    """They come from the receipt line, where both columns are not
+    null. A line priced at zero contributes nothing to a value split
+    and that is correct, not missing: free goods attract no duty by
+    value."""
+    imp = Importer(schema, "ByValue")
+    imp.freight(1000, "USD", 280, "value")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-1", grn="GRN-900")
+        operations.receive(cur, "RGT-1", "KHI", 50, unit_cost=0,
+                           shipment="SHP-1", batch="B-FREE", grn="GRN-900")
+    with as_user(schema, imp.who) as c:
+        skewed, missing = c.execute(
+            "select skewed_by, lines_missing_basis"
+            "  from public.shipment_charge_allocation where org_id = %s",
+            (imp.org,)).fetchone()
+    assert (skewed, missing) == (None, 0)
+
+
+def test_the_screen_says_which_lines_and_what_it_does_to_the_costs(schema):
+    imp = Importer(schema, "Said")
+    imp.freight(1000, "USD", 280, "weight")
+    with imp.acting() as cur:
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-1", grn="GRN-900",
+                           weight=500)
+        operations.receive(cur, "RGT-1", "KHI", 100, po="PO-1",
+                           shipment="SHP-1", batch="B-2", grn="GRN-900")
+
+    from web import modules
+    with as_user(schema, imp.who) as c:
+        class F:
+            conn = c
+        got = modules._freight(F())
+    p = [x for x in got["problems"] if x["shipment"] == "SHP-1"][0]
+    assert p["blocked_by"] == "weight missing on 1 of 2 lines"
+    assert p["expected"] is False
+    assert "valued too high" in p["action"]
+    assert got["skewed"] == 1
+    assert got["needs_attention"] >= 1

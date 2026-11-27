@@ -377,22 +377,46 @@ def _freight(f) -> dict:
     problems = []
     for r in f.conn.execute(
         "select reference, shipment_status, kind, allocate_by, billed,"
-        "       blocked_by"
+        "       blocked_by, skewed_by, lines, lines_missing_basis"
         "  from public.shipment_charge_allocation"
-        " where blocked_by is not null"
+        " where blocked_by is not null or skewed_by is not null"
         " order by billed desc"
     ).fetchall():
-        reason = r[5]
+        reason, skew, lines, missing = r[5], r[6], int(r[7] or 0), int(r[8] or 0)
+        if reason:
+            why, action = reason, actions.get(reason, "")
+        else:
+            # Landed in full, on only some of the goods.
+            #
+            # This is the worse of the two and the one that looks
+            # fine: the whole bill reaches the shipment, the
+            # allocation reconciles, and every rupee of it piles onto
+            # the lines that happen to have been measured. The ones
+            # that were not come out at the invoice price and the
+            # ones that were come out far too high.
+            basis = str(r[3])
+            why = skew
+            action = (
+                f"Enter the {basis} of the {missing} line"
+                f"{'' if missing == 1 else 's'} that {'has' if missing == 1 else 'have'}"
+                f" none, or spread this charge by value or quantity. "
+                f"Until then the whole charge sits on the "
+                f"{lines - missing} line"
+                f"{'' if lines - missing == 1 else 's'} that "
+                f"{'was' if lines - missing == 1 else 'were'} measured, "
+                f"so those are valued too high and the rest too low.")
         problems.append({
             "shipment": r[0],
             "status": r[1],
             "kind": r[2],
             "allocate_by": r[3],
             "billed": round(float(r[4] or 0), 2),
-            "blocked_by": reason,
-            "action": actions.get(reason, ""),
+            "blocked_by": why,
+            "action": action,
+            "lines": lines,
+            "lines_missing_basis": missing,
             # In transit with nothing booked in is the normal state of
-            # a shipment, not a mistake.
+            # a shipment, not a mistake. A skewed basis never is.
             "expected": reason == "awaiting goods" and r[1] == "in_transit",
         })
 
@@ -423,6 +447,11 @@ def _freight(f) -> dict:
         "lines": lines,
         "problems": problems,
         "needs_attention": sum(1 for p in problems if not p["expected"]),
+        # Counted apart because the money is not missing -- it all
+        # landed. What is wrong is which goods it landed on, and a
+        # figure that reconciles is exactly why nobody noticed.
+        "skewed": sum(1 for p in problems
+                      if p["lines_missing_basis"] and not p["expected"]),
         "totals": {
             "goods_value": round(goods_total, 2),
             "landed_costs": round(cost_total, 2),
