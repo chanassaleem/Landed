@@ -184,6 +184,29 @@ const ICON = {
   intelligence: 'M2 3h12l-4.5 5.5V13L6.5 11V8.5z',
 };
 
+/* Where an old route goes now.
+ *
+ * The product grew a module registry and the modules got their own
+ * screens at #m/<id>. The hand-built views they replaced stayed in the
+ * page, so two generations of the same subject lived at two addresses
+ * -- and the older one is the one the command palette offered and the
+ * one a bookmark pointed at. "Go to Cash" opened a static panel
+ * reading "Cash is not connected yet" while the Cash module sat at
+ * #m/cash with a working forecast on it.
+ *
+ * Redirected rather than deleted outright, so a bookmark or a link in
+ * somebody's notes still lands somewhere useful. The markup they used
+ * to render is gone.
+ */
+const MOVED_TO_MODULE = {
+  cash: 'cash',
+  owed: 'owed',
+  equipment: 'equipment',
+  stock: 'stock',
+  shipments: 'freight',
+  items: 'stock',          // there was never a renderer for this one
+};
+
 const VIEWS = [
   { id: 'home',      label: 'Home' },
   { id: 'today',     label: 'Today' },
@@ -271,11 +294,16 @@ function go(view) {
   closeDetail();
   if (view === 'home' && S.data) renderHome();
   if (view === 'settings') renderSettings();
-  if (view === 'owed') renderOwed();
-  if (view === 'equipment') renderEquipment();
   if (view === 'import') renderModel();
   $('main').scrollTop = 0;
-  history.replaceState(null, '', `#${view}`);
+  /* Only when the address does not already say so. go() is called
+     both from the router, which is reacting to the address, and from
+     a button, which is setting it -- and writing it unconditionally
+     from inside the router replaced the history entry the Back
+     button was about to return to. */
+  if (location.hash.slice(1).split('?')[0] !== view) {
+    location.hash = `#${view}`;
+  }
 }
 
 /* ------------------------------------------------------------ money line
@@ -357,11 +385,38 @@ window.addEventListener('resize', () => {
   resizeTimer = setTimeout(() => { if (S.data) renderLine(); moveMarker(); }, 120);
 });
 
+/* Where each part of the money band lives now.
+ *
+ * Clicking a segment used to filter the hand-built stock list, which
+ * the stock module replaced. Three of the six segments were never
+ * about stock on a shelf at all -- goods on order, on the water and
+ * at the port are the freight screen's subject -- so the old
+ * behaviour was only ever right for half the band.
+ *
+ * Each segment now opens the screen that actually holds it, with the
+ * nearest named view already chosen where there is one. A segment
+ * with nowhere better to go opens the module and leaves the view
+ * alone rather than pretending to filter.
+ */
+const SEGMENT_OPENS = {
+  running_out: ['stock', 'short'],
+  idle:        ['stock', 'idle'],
+  on_shelf:    ['stock', null],
+  on_order:    ['freight', null],
+  on_water:    ['freight', 'water'],
+  at_port:     ['freight', null],
+};
+
 function pick(key) {
-  S.segment = S.segment === key ? null : key;
+  const to = SEGMENT_OPENS[key];
+  if (!to) return;
+  S.segment = key;
   renderLine();
-  renderAll();
-  renderHome();
+  const [module, view] = to;
+  /* The view is handed over in the hash so the module picks it up on
+     open, rather than being set after the fact -- which would draw
+     the screen once with everything and once with the filter. */
+  location.hash = view ? `#m/${module}?view=${view}` : `#m/${module}`;
 }
 
 /* ---------------------------------------------------------- the panel
@@ -1161,7 +1216,7 @@ function renderToday() {
     const b = el('button', 'act', c.action);
     b.type = 'button';
     b.addEventListener('click', () => {
-      S.segment = c.segment; renderLine(); renderAll(); go(c.goto);
+      S.segment = c.segment; renderLine(); pick(c.segment);
     });
     card.append(b);
     d.append(card);
@@ -1238,404 +1293,6 @@ async function loadInsights() {
     list.append(row);
   });
   host.append(list);
-}
-
-/* Named views, because a filter is a mechanism and a view is a
-   question. "Running out" is what somebody came here to find; "state
-   equals running out and sort by cover ascending" is how you would
-   have to ask for it otherwise. */
-const STOCK_VIEWS = [
-  { id: 'all', label: 'Everything', pick: () => true,
-    sort: (a, b) => (b.idle_value + b.shortfall_value)
-                  - (a.idle_value + a.shortfall_value) },
-  { id: 'order', label: 'Order today',
-    pick: (r) => r.state === 'running out' || r.state === 'reorder',
-    sort: (a, b) => (a.cover ?? 99) - (b.cover ?? 99) },
-  { id: 'idle', label: 'Money standing still',
-    pick: (r) => r.idle_value > 0,
-    sort: (a, b) => b.idle_value - a.idle_value },
-  { id: 'expiring', label: 'Expiring',
-    pick: (r) => r.state === 'expiring' || (r.days_to_expiry ?? 9e9) < 180,
-    sort: (a, b) => (a.days_to_expiry ?? 9e9) - (b.days_to_expiry ?? 9e9) },
-  { id: 'quiet', label: 'No demand',
-    pick: (r) => r.cover === null,
-    sort: (a, b) => b.value - a.value },
-];
-
-const SORTS = {
-  Item: (r) => r.description,
-  Branch: (r) => r.branch,
-  Cover: (r) => (r.cover === null ? Infinity : r.cover),
-  'On hand': (r) => r.on_hand,
-  'On order': (r) => r.on_order,
-  State: (r) => r.state,
-};
-
-function stockRows() {
-  const view = STOCK_VIEWS.find((v) => v.id === S.view_stock)
-            || STOCK_VIEWS[0];
-  let r = rows().filter(view.pick);
-
-  const q = (S.q || '').trim().toLowerCase();
-  if (q) {
-    r = r.filter((x) => x.description.toLowerCase().includes(q)
-                     || x.sku.toLowerCase().includes(q));
-  }
-  if (S.f_state) r = r.filter((x) => x.state === S.f_state);
-  if (S.f_class) r = r.filter((x) => x.demand_class === S.f_class);
-
-  r = r.slice();
-  if (S.sort) {
-    const get = SORTS[S.sort.col];
-    const dir = S.sort.dir === 'ascending' ? 1 : -1;
-    r.sort((a, b) => {
-      const x = get(a);
-      const y = get(b);
-      if (x === y) return 0;
-      return (typeof x === 'string' ? x.localeCompare(y) : x - y) * dir;
-    });
-  } else {
-    r.sort(view.sort);
-  }
-  return r;
-}
-
-function renderViews() {
-  const host = $('views');
-  if (!host) return;
-  host.textContent = '';
-  const base = rows();
-  STOCK_VIEWS.forEach((v) => {
-    const b = el('button', 'view-chip');
-    b.type = 'button';
-    b.append(v.label);
-    const n = base.filter(v.pick).length;
-    b.append(el('span', 'n', String(n)));
-    b.setAttribute('aria-pressed', String((S.view_stock || 'all') === v.id));
-    b.addEventListener('click', () => {
-      S.view_stock = v.id;
-      S.sort = null;               // the view brings its own order
-      renderStock();
-    });
-    host.append(b);
-  });
-}
-
-function fillFilterOptions() {
-  const base = rows();
-  const fill = (id, values, blank) => {
-    const sel = $(id);
-    if (!sel) return;
-    const was = sel.value;
-    sel.textContent = '';
-    const any = el('option', null, blank);
-    any.value = '';
-    sel.append(any);
-    values.forEach((v) => {
-      const o = el('option', null, v);
-      o.value = v;
-      sel.append(o);
-    });
-    sel.value = was;
-  };
-  fill('f-state', [...new Set(base.map((r) => r.state))].sort(), 'Any state');
-  fill('f-class', [...new Set(base.map((r) => r.demand_class))].sort(),
-       'Any pattern');
-}
-
-function renderStock() {
-  renderViews();
-  fillFilterOptions();
-  const all = rows();
-  let r = stockRows();
-
-  const narrowed = r.length !== all.length;
-  const shown = $('shown');
-  if (shown) {
-    shown.textContent = narrowed
-      ? `${qty(r.length)} of ${qty(all.length)}` : `${qty(all.length)} lines`;
-  }
-  const clear = $('clear-filters');
-  if (clear) clear.hidden = !(S.q || S.f_state || S.f_class
-                              || (S.view_stock && S.view_stock !== 'all'));
-
-  $('stock-sub').textContent = S.segment
-    ? `${plural(all.length, 'line')} in ${SEGMENTS.find((s) => s.key === S.segment).label.toLowerCase()}.`
-    : `${plural(all.length, 'line')} across ${plural(S.data.branches.length - 1, 'branch')}.`;
-
-  const host = $('stock');
-  host.textContent = '';
-  if (!r.length) {
-    host.append(empty('Nothing here',
-      S.segment ? 'No stock is in that part of the journey right now. Click the band again to clear the filter.'
-                : 'No stock matches this branch.'));
-    return;
-  }
-
-  /* A column that is empty for every row is width spent on nothing, so
-     it is not drawn. On order is empty until purchase orders are in the
-     system, which for a business on its first day is all of them. */
-  const anyOrdered = r.some((x) => x.on_order);
-  const u = unit(r.flatMap((x) => [x.value, x.idle_value]));
-
-  const cols = [['Item', ''], ['Branch', ''], ['Cover', 'num'],
-                ['On hand', 'num']];
-  if (anyOrdered) cols.push(['On order', 'num']);
-  cols.push([`Value ${u.suffix}`.trim(), 'num'],
-            [`Standing still ${u.suffix}`.trim(), 'num'], ['State', '']);
-
-  host.append(table(cols, r.map((x) => {
-    const cells = [
-      cell(x.description, 'lead'),
-      cell(x.branch, 'dim'),
-      coverCell(x),
-      cell(qty(x.on_hand), 'num'),
-    ];
-    if (anyOrdered) cells.push(cell(x.on_order ? qty(x.on_order) : '—', 'num'));
-    cells.push(
-      cell(inUnit(x.value, u), 'num'),
-      cell(inUnit(x.idle_value, u), 'num idle'),
-      stateCell(x.state),
-    );
-    return cells;
-  }), r));
-}
-
-function renderShipments() {
-  const s = S.data.shipments.filter(
-    (x) => S.branch === 'ALL' || x.branch === S.branch);
-  $('ship-sub').textContent = s.length
-    ? `${plural(s.length, 'shipment')} between the supplier and your shelf.`
-    : '';
-
-  const host = $('shipments');
-  host.textContent = '';
-  if (!s.length) {
-    host.append(empty('Nothing in transit',
-      'Shipments appear here once a purchase order is marked as shipped.'));
-    return;
-  }
-
-  host.append(table(
-    [['Reference', ''], ['Supplier', ''], ['Mode', ''], ['Lines', 'num'],
-     ['Goods', 'num'], ['Freight and duty', 'num'], ['Landed', 'num'],
-     ['Arrives', ''], ['State', '']],
-    s.map((x) => [
-      cell(x.ref, 'lead mono'),
-      cell(x.supplier, 'dim'),
-      cell(x.mode, 'dim'),
-      cell(qty(x.lines), 'num'),
-      cell(money(x.goods), 'num'),
-      cell(money(x.landed_cost), 'num'),
-      cell(money(x.goods + x.landed_cost), 'num'),
-      cell(x.eta, 'dim'),
-      stateCell(x.state),
-    ])));
-}
-
-/* ----------------------------------------------------------- table parts */
-
-/* The same table, readable on a phone without scrolling sideways.
-
-   Every column label is copied onto its own cell as a data attribute.
-   At full width that is unused; below the breakpoint the stylesheet
-   stops laying the rows out as a grid and shows each cell as a labelled
-   line, so a row becomes a small record instead of the seventh column
-   of something you have to drag into view.
-
-   The alternative -- the one that was here -- was a minimum width and a
-   horizontal scrollbar. Nothing is cut off, so it looks like it works,
-   and in practice nobody drags a table sideways to find the number they
-   came for. */
-function table(cols, bodyRows, rows_) {
-  const t = el('table');
-  const thead = el('thead');
-  const tr = el('tr');
-  cols.forEach(([label, cls]) => {
-    const th = el('th', cls, label);
-    if (SORTS[label]) {
-      th.dataset.sort = label;
-      th.tabIndex = 0;
-      if (S.sort && S.sort.col === label) th.setAttribute('aria-sort', S.sort.dir);
-      const flip = () => {
-        const same = S.sort && S.sort.col === label;
-        S.sort = {
-          col: label,
-          dir: same && S.sort.dir === 'ascending' ? 'descending' : 'ascending',
-        };
-        renderStock();
-      };
-      th.addEventListener('click', flip);
-      th.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); }
-      });
-    }
-    tr.append(th);
-  });
-  thead.append(tr);
-  t.append(thead);
-
-  const tb = el('tbody');
-  bodyRows.forEach((cells, n) => {
-    const r = el('tr');
-    cells.forEach((c, i) => {
-      const label = cols[i] ? cols[i][0] : '';
-      if (label) c.dataset.label = label;
-      r.append(c);
-    });
-    const row = (rows_ || [])[n];
-    if (row) {
-      r.dataset.click = '1';
-      r.tabIndex = 0;
-      r.addEventListener('click', () => openDetail(row, r));
-      r.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          openDetail(row, r);
-        }
-      });
-    }
-    tb.append(r);
-  });
-  t.append(tb);
-  return t;
-}
-
-function cell(text, cls) {
-  return el('td', cls, text);
-}
-
-/* Cover is the number that decides everything, so it gets the only bar in
-   the table: the fill is months of cover against the target, and the tick
-   is the target itself. The figure is still there to be read. */
-function coverCell(r) {
-  const td = el('td', 'num');
-  if (r.cover === null) { td.textContent = '—'; return td; }
-  const g = el('div', 'gauge');
-  const tone = r.cover < 1 ? 'var(--urgent)'
-    : r.cover < r.target_cover ? 'var(--attention)'
-    : r.cover > r.excess_cover ? 'var(--idle)'
-    : 'var(--text-3)';
-  g.style.color = tone;
-  const track = el('div', 'track');
-  const fill = el('span', 'fill');
-  const span = Math.max(r.excess_cover * 1.4, 1);
-  fill.style.width = `${Math.min(r.cover / span, 1) * 100}%`;
-  track.append(fill);
-  const mark = el('span', 'mark');
-  mark.style.left = `${Math.min(r.target_cover / span, 1) * 100}%`;
-  track.append(mark);
-  g.append(track);
-  g.append(el('span', null, months(r.cover)));
-  td.append(g);
-  return td;
-}
-
-const STATE_CLASS = {
-  'running out': 'st-out',
-  'reorder': 'st-order',
-  'standing still': 'st-idle',
-  'within policy': 'st-ok',
-  'no demand': 'st-ok',
-  'no history': 'st-ok',
-  'expiring': 'st-order',
-  'on the water': 'st-water',
-  'at the port': 'st-order',
-  'cleared': 'st-ok',
-};
-
-function stateCell(state) {
-  const td = el('td');
-  const s = el('span', `state ${STATE_CLASS[state] || 'st-ok'}`, state);
-  td.append(s);
-  return td;
-}
-
-function empty(title, body) {
-  const d = el('div', 'empty');
-  d.append(el('strong', null, title));
-  d.append(el('p', null, body));
-  return d;
-}
-
-/* --------------------------------------------------------------- palette */
-
-function palette() {
-  const scrim = $('scrim');
-  const q = $('q');
-  const results = $('results');
-  let items = [];
-  let sel = 0;
-
-  const open = () => {
-    scrim.hidden = false;
-    q.value = '';
-    draw('');
-    q.focus();
-  };
-  const close = () => { scrim.hidden = true; };
-
-  const draw = (term) => {
-    const t = term.trim().toLowerCase();
-    items = [];
-    VIEWS.forEach((v) => items.push({
-      label: `Go to ${v.label}`, hint: 'view', run: () => go(v.id),
-    }));
-    S.data.stock.forEach((r) => items.push({
-      label: r.description, hint: `${r.sku} · ${r.branch}`,
-      run: () => { S.segment = null; renderLine(); go('stock'); },
-    }));
-    S.data.shipments.forEach((x) => items.push({
-      label: x.ref, hint: x.supplier, run: () => go('shipments'),
-    }));
-    if (t) {
-      items = items.filter((i) =>
-        `${i.label} ${i.hint}`.toLowerCase().includes(t));
-    }
-    items = items.slice(0, 40);
-    sel = 0;
-    paint();
-  };
-
-  const paint = () => {
-    results.textContent = '';
-    items.forEach((i, n) => {
-      const li = el('li', null);
-      li.setAttribute('role', 'option');
-      li.setAttribute('aria-selected', String(n === sel));
-      li.append(el('span', null, i.label));
-      li.append(el('span', 'hint', i.hint));
-      li.addEventListener('click', () => { i.run(); close(); });
-      results.append(li);
-    });
-  };
-
-  q.addEventListener('input', () => draw(q.value));
-  q.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowDown') { sel = Math.min(sel + 1, items.length - 1); paint(); e.preventDefault(); }
-    if (e.key === 'ArrowUp')   { sel = Math.max(sel - 1, 0); paint(); e.preventDefault(); }
-    if (e.key === 'Enter' && items[sel]) { items[sel].run(); close(); }
-    if (e.key === 'Escape') close();
-  });
-  scrim.addEventListener('click', (e) => { if (e.target === scrim) close(); });
-  $('open-palette').addEventListener('click', open);
-
-  addEventListener('keydown', (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-      e.preventDefault();
-      scrim.hidden ? open() : close();
-    }
-    if (e.key === 'Escape' && !scrim.hidden) close();
-  });
-}
-
-/* ------------------------------------------------------------------ boot */
-
-function renderAll() {
-  renderToday();
-  renderStock();
-  renderShipments();
-  counts();
 }
 
 function counts() {
@@ -1810,7 +1467,6 @@ async function boot() {
   buildNav();
   theme();
   wireImport();
-  wireFilters();
 
   const res = await fetch('/api/state');
   if (!res.ok) {
@@ -1849,15 +1505,37 @@ async function boot() {
   }
   if (!listed) buildNav();
 
-  const start = (location.hash || '#today').slice(1);
-  if (start.startsWith('m/') && listed) {
-    const want = start.slice(2);
-    const mod = listed.modules.find((m) => m.id === want);
-    if (mod) { window.LANDED_PLATFORM.open(mod); }
-    else go('today');
-  } else {
-    go(VIEWS.some((v) => v.id === start) ? start : 'today');
-  }
+  /* One router, reading the address.
+   *
+   * There was none. Screens were opened by calling go() or the
+   * platform's open() directly, and the address was then written
+   * after the fact with replaceState -- so setting location.hash
+   * navigated nowhere, and the browser's own Back and Forward did
+   * nothing at all across the whole product. Every link that worked
+   * by assigning the hash, including the route from a data-quality
+   * finding to the screen that fixes it, changed the URL and left
+   * the screen where it was.
+   */
+  const route = (push) => {
+    let where = (location.hash || '#today').slice(1);
+    if (MOVED_TO_MODULE[where] && listed) {
+      where = `m/${MOVED_TO_MODULE[where]}`;
+      history.replaceState(null, '', `#${where}`);
+    }
+    // A module may carry the view it should open on: #m/stock?view=idle.
+    const [path, query] = where.split('?');
+    const view = new URLSearchParams(query || '').get('view');
+    if (path.startsWith('m/') && listed) {
+      const mod = listed.modules.find((m) => m.id === path.slice(2));
+      if (mod) { window.LANDED_PLATFORM.open(mod, { view }); return; }
+      go('today');
+      return;
+    }
+    go(VIEWS.some((v) => v.id === path) ? path : 'today', push);
+  };
+
+  addEventListener('hashchange', () => route(false));
+  route(false);
   addEventListener('resize', moveMarker);
 }
 
@@ -1889,139 +1567,7 @@ function figure(host, label, value, note, tone) {
   if (note) d.append(el('p', null, note));
   host.append(d);
 }
-
-async function renderOwed() {
-  const host = $('owed');
-  const figs = $('owed-figures');
-  if (!host) return;
-  host.textContent = '';
-  figs.textContent = '';
-
-  let d;
-  try {
-    const r = await fetch('/api/owed');
-    ({ data: d } = await readResponse(r, 'Money owed'));
-    if (!d.ok) throw new Error(d.error || 'It could not be read.');
-  } catch (e) {
-    host.append(empty('Money owed could not be read', e.message));
-    return;
-  }
-
-  if (!d.invoices.length) {
-    figs.textContent = '';
-    host.append(empty('Nothing outstanding',
-      'No unpaid invoices. Import them, or raise one against a customer.'));
-    return;
-  }
-
-  const cur = S.data ? S.data.currency : 'PKR';
-  const u = unit([d.outstanding, d.overdue, d.cash_released_at_target]);
-  figure(figs, 'Owed to you', `${cur} ${inUnit(d.outstanding, u)}`,
-         `${qty(d.invoices.length)} invoices still open.`, 'water');
-  figure(figs, 'Already overdue', `${cur} ${inUnit(d.overdue, u)}`,
-         d.intercompany_excluded
-           ? `Your own companies owe a further ${cur} `
-             + `${inUnit(d.intercompany_excluded, u)}, which is not counted.`
-           : 'Past its due date.', 'urgent');
-  figure(figs, 'Days to get paid',
-         `${months(d.dso_days)} days`,
-         `Target is ${qty(d.target_dso_days)} days. Meeting it would free `
-         + `${cur} ${inUnit(d.cash_released_at_target, u)}.`, 'idle');
-
-  const iu = unit(d.invoices.map((i) => i.open));
-  host.append(table(
-    [['Invoice', ''], ['Customer', ''], ['Due', ''],
-     ['Days late', 'num'], [`Open ${iu.suffix}`.trim(), 'num'],
-     ['Counted?', '']],
-    d.invoices.map((i) => [
-      cell(i.invoice, 'lead'),
-      cell(i.customer + (i.public_sector ? '  · public sector' : ''), 'dim'),
-      cell(i.due, 'dim'),
-      cell(i.days_overdue ? qty(i.days_overdue) : '—',
-           i.days_overdue > 60 ? 'num bad' : 'num'),
-      cell(inUnit(i.open, iu), 'num'),
-      cell(i.intercompany ? 'own company' : 'yes', 'dim'),
-    ])));
-}
-
 /* ------------------------------------------------------- equipment */
-
-async function renderEquipment() {
-  const host = $('machines');
-  const shop = $('workshop');
-  const figs = $('equip-figures');
-  if (!host) return;
-  host.textContent = ''; shop.textContent = ''; figs.textContent = '';
-
-  let d;
-  try {
-    const r = await fetch('/api/equipment');
-    ({ data: d } = await readResponse(r, 'Equipment'));
-    if (!d.ok) throw new Error(d.error || 'It could not be read.');
-  } catch (e) {
-    host.append(empty('Equipment could not be read', e.message));
-    return;
-  }
-
-  const cur = S.data ? S.data.currency : 'PKR';
-  const w = d.service;
-
-  if (!d.machines.length) {
-    host.append(empty('No machines placed',
-      'A machine you put in a customer\'s lab, free or on contract, '
-      + 'belongs here. The question it answers is whether the reagent '
-      + 'it pulls has paid for it yet.'));
-  } else {
-    const mu = unit(d.machines.flatMap((m) => [m.capital, m.recovered]));
-    const placed = d.machines.reduce((t, m) => t + m.capital, 0);
-    const back = d.machines.reduce((t, m) => t + m.recovered, 0);
-    figure(figs, 'Capital out there', `${cur} ${inUnit(placed, mu)}`,
-           `${qty(d.machines.length)} machines placed.`, 'idle');
-    figure(figs, 'Earned back', `${cur} ${inUnit(back, mu)}`,
-           `${pct(placed ? back / placed : 0)} of what you put out.`,
-           'water');
-
-    host.append(table(
-      [['Machine', ''], ['Customer', ''], [`Cost ${mu.suffix}`.trim(), 'num'],
-       [`Back ${mu.suffix}`.trim(), 'num'], ['Recovered', 'num'],
-       ['Months in', 'num'], ['State', '']],
-      d.machines.map((m) => [
-        cell(`${m.key}  ${m.model}`, 'lead'),
-        cell(m.customer, 'dim'),
-        cell(inUnit(m.capital, mu), 'num'),
-        cell(inUnit(m.recovered, mu), 'num'),
-        cell(pct(m.recovery_pct), (m.recovery_pct || 0) < 0.5
-             ? 'num warn' : 'num'),
-        cell(months(m.months_elapsed), 'num'),
-        stateCell(said(m.status)),
-      ])));
-  }
-
-  if (!w.jobs) {
-    shop.append(empty('No service jobs yet',
-      'Hours worked and hours invoiced, kept apart. The gap between them '
-      + 'is work you did and did not charge for.'));
-    return;
-  }
-  const su = unit([w.labour_value_lost, w.parts_value_lost, w.parts_cost]);
-  shop.append(table(
-    [['', ''], ['Done', 'num'], ['Charged', 'num'], ['Given away', 'num']],
-    [
-      [cell('Labour, hours', 'lead'), cell(hours(w.hours), 'num'),
-       cell(hours(w.hours - w.hours_unbilled), 'num'),
-       cell(hours(w.hours_unbilled),
-            w.hours_unbilled ? 'num warn' : 'num')],
-      [cell(`Parts, ${cur} ${su.suffix}`.trim(), 'lead'),
-       cell(inUnit(w.parts_cost, su), 'num'),
-       cell(inUnit(w.parts_cost - w.parts_uncharged, su), 'num'),
-       cell(inUnit(w.parts_uncharged, su),
-            w.parts_uncharged ? 'num warn' : 'num')],
-      [cell('What that is worth', 'lead'), cell('', 'num'), cell('', 'num'),
-       cell(`${cur} ` + inUnit(w.labour_value_lost + w.parts_value_lost, su),
-            'num warn')],
-    ]));
-}
-
 /* ------------------------------------------------------------- home
    What this is for, in three pieces, with what each is worth today.
    It exists because "inventory software" is four screens and a person
@@ -2713,33 +2259,6 @@ async function previewFile(file) {
   }
 }
 
-function wireFilters() {
-  const q = $('q-stock');
-  if (!q || q.dataset.wired) return;
-  q.dataset.wired = '1';
-
-  /* Typing filters as you type, but not on every keystroke: at 104
-     lines it is instant, and at ten thousand it would not be. */
-  let t = null;
-  q.addEventListener('input', () => {
-    clearTimeout(t);
-    t = setTimeout(() => { S.q = q.value; renderStock(); }, 120);
-  });
-  ['f-state', 'f-class'].forEach((id) => {
-    $(id).addEventListener('change', () => {
-      S[id.replace('-', '_')] = $(id).value;
-      renderStock();
-    });
-  });
-  $('clear-filters').addEventListener('click', () => {
-    S.q = ''; S.f_state = ''; S.f_class = ''; S.view_stock = 'all';
-    S.sort = null;
-    q.value = '';
-    $('f-state').value = '';
-    $('f-class').value = '';
-    renderStock();
-  });
-}
 
 let importWired = false;
 

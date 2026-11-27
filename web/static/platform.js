@@ -902,7 +902,7 @@
     return d;
   }
 
-  async function open(mod) {
+  async function open(mod, { view } = {}) {
     if (!bind()) return;
     const wrap = host();
     document.querySelectorAll('.view').forEach((v) => {
@@ -914,7 +914,10 @@
     });
     const line = $('money-line');
     if (line) line.hidden = true;
-    history.replaceState(null, '', `#m/${mod.id}`);
+    /* The router already put us here, so this only tidies a call
+       that came from a button rather than the address. */
+    const want = view ? `#m/${mod.id}?view=${view}` : `#m/${mod.id}`;
+    if (location.hash !== want) history.replaceState(null, '', want);
 
     wrap.textContent = '';
     const sec = el('div', 'section');
@@ -1163,6 +1166,11 @@
         fmt: FMT,
         numeric: NUMERIC,
         views: spec.views || [],
+        /* Opened at a particular view -- from the money band, or from
+           a link somebody saved -- the grid starts there instead of
+           drawing everything first and filtering a beat later. */
+        view: view && (spec.views || []).some((v) => v.id === view)
+          ? view : undefined,
         editable: data.editable || [],
         flag: spec.flag,
         onEdit: (row, field, value) => saveItem(row, field, value),

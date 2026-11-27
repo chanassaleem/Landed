@@ -194,58 +194,6 @@
       </div>
     </section>
 
-    <section class="view" id="v-stock">
-      <div class="wrap">
-        <div class="section">
-          <div class="section-head">
-            <h2>Stock</h2>
-            <p id="stock-sub"></p>
-          </div>
-
-          <!-- Views first, then the narrowing. A named view is the
-               question somebody actually has; the filters are for when
-               none of them is quite it. -->
-          <div class="views" id="views"></div>
-          <div class="filters">
-            <input type="search" id="q-stock" placeholder="Item or SKU"
-                   autocomplete="off" spellcheck="false"
-                   aria-label="Search items">
-            <select id="f-state" aria-label="State"></select>
-            <select id="f-class" aria-label="Demand pattern"></select>
-            <span class="grow"></span>
-            <span class="shown" id="shown"></span>
-            <button class="btn" id="clear-filters" type="button" hidden>
-              Clear</button>
-          </div>
-          <div class="panel" id="stock"></div>
-        </div>
-      </div>
-    </section>
-
-    <section class="view" id="v-shipments">
-      <div class="wrap">
-        <div class="section">
-          <div class="section-head">
-            <h2>On the water</h2>
-            <p id="ship-sub"></p>
-          </div>
-          <div class="panel" id="shipments"></div>
-        </div>
-      </div>
-    </section>
-
-    <section class="view" id="v-items">
-      <div class="wrap">
-        <div class="section">
-          <div class="section-head">
-            <h2>Items</h2>
-            <p id="items-sub"></p>
-          </div>
-          <div class="panel" id="items"></div>
-        </div>
-      </div>
-    </section>
-
     <section class="view" id="v-import">
       <div class="wrap">
         <div class="section">
@@ -288,54 +236,7 @@
       </div>
     </section>
 
-    <section class="view" id="v-owed">
-      <div class="wrap">
-        <div class="section">
-          <div class="section-head">
-            <h2>Money owed</h2>
-            <p>What customers owe you, oldest first. Money owed by your
-               own companies is counted separately, because it is not
-               money owed.</p>
-          </div>
-          <div id="owed-figures" class="deck-row"></div>
-          <div class="panel" id="owed"></div>
-        </div>
-      </div>
-    </section>
-
-    <section class="view" id="v-equipment">
-      <div class="wrap">
-        <div class="section">
-          <div class="section-head">
-            <h2>Equipment</h2>
-            <p>Machines you placed, and whether the reagent they pull has
-               paid for them yet.</p>
-          </div>
-          <div id="equip-figures" class="deck-row"></div>
-          <div class="panel" id="machines"></div>
-        </div>
-        <div class="section">
-          <div class="section-head">
-            <h2>What the workshop gave away</h2>
-            <p>Hours worked against hours invoiced, and parts fitted
-               against parts charged.</p>
-          </div>
-          <div class="panel" id="workshop"></div>
-        </div>
-      </div>
-    </section>
-
-    <section class="view" id="v-cash">
-      <div class="wrap">
-        <div class="empty">
-          <strong>Cash is not connected yet</strong>
-          <p>It needs your bank balance and what you have already committed
-             to pay. Both live on the Settings screen.</p>
-        </div>
-      </div>
-    </section>
-
-  </main>
+    </main>
   </div><!-- /stage -->
 
   <!-- Opens over the right of the stage when a line is clicked. The

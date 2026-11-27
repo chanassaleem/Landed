@@ -96,6 +96,7 @@
       fmt,            // the formatter table from platform.js
       numeric,        // which formats are right-aligned
       views = [],     // [{ id, label, blurb, keep(row) }]
+      view,           // open on this one, overriding what was remembered
       editable = [],  // column keys the server says may be typed into
       onEdit,         // (row, key, value) -> Promise
       onOpen,         // (row) -> void: the row's own screen
@@ -106,7 +107,10 @@
     state.widths = state.widths || {};
     state.hidden = state.hidden || [];
     state.order = state.order || [];
-    state.view = state.view || (views[0] ? views[0].id : 'all');
+    /* An asked-for view wins over the remembered one: somebody who
+       clicked "running out" wants to see what is running out, not
+       whatever they were last looking at on this screen. */
+    state.view = view || state.view || (views[0] ? views[0].id : 'all');
     state.display = state.display || 'comfortable';
     state.sort = state.sort || null;        // { key, dir } or none
 
