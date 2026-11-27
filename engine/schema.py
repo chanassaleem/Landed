@@ -264,6 +264,13 @@ class PaybackStatus(str, Enum):
     RAMPING = "RAMPING"          # too early to judge; inside the observation window
     STALLED = "STALLED"          # no reagent pull in the measured window
     UNRECOVERABLE = "UNRECOVERABLE"  # contract ends before capital is repaid
+    # Not a verdict: there is nothing to judge. No reagent sale has
+    # been recorded against this placement, so recovery is unknown
+    # rather than zero. STALLED is a finding -- the customer has
+    # stopped pulling reagent -- and reporting one as the other sends
+    # somebody to a hospital to retrieve an analyser that is working
+    # fine and selling well under a reagent nobody has linked to it.
+    UNMEASURED = "UNMEASURED"
 
 
 class TransferUrgency(str, Enum):
@@ -324,6 +331,16 @@ class MachinePlacement:
     capital_cost: float
     contract_months: int
     reagent_revenue_to_date: float = 0.0
+    # Whether that figure came from reagent sales in the ledger or
+    # from the placement's own forecast. It used to be the forecast,
+    # always, while the screen called it "recovered so far" -- so a
+    # customer who stopped buying a year ago read exactly like one
+    # performing to plan. See engine/db/snapshot.read_machines.
+    reagent_revenue_measured: bool = False
+    # Reagent sales that fit this machine but also fit another placed
+    # machine at the same branch, so they cannot be attributed to one.
+    # Counted rather than split, because splitting is a guess.
+    unattributed_reagent_sales: int = 0
     reagent_margin_pct: float = 0.35
     expected_monthly_tests: float = 0.0
     actual_monthly_tests: float = 0.0
@@ -424,6 +441,14 @@ class MachineResult:
     # figure on a dashboard tile and the figure in the sentence beneath it
     # cannot disagree.
     unrecoverable_shortfall: float = 0.0
+    # Whether the recovery figures above rest on recorded reagent
+    # sales or on nothing at all. False means unknown, not zero: see
+    # engine/db/snapshot.read_machines for what this replaced.
+    recovery_measured: bool = False
+    # Reagent sales that fit this machine but also fit another placed
+    # machine at the same branch, so they could not be attributed to
+    # one. The recovery above excludes them.
+    unattributed_reagent_sales: int = 0
 
 
 @dataclass(frozen=True)

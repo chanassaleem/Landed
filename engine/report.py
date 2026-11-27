@@ -239,6 +239,8 @@ def _machine_rows(results) -> List[dict]:
             "downtime_days_ytd": m.downtime_days_ytd,
             "revenue_lost_to_downtime": m.revenue_lost_to_downtime,
             "status": m.status.value,
+            "recovery_measured": m.recovery_measured,
+            "unattributed_reagent_sales": m.unattributed_reagent_sales,
             "unrecoverable_shortfall": m.unrecoverable_shortfall,
             "reason": m.reason,
         }

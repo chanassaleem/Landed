@@ -283,15 +283,91 @@ def read_invoices(conn):
     ]
 
 
+# Reagent revenue per placed machine, from sales that actually
+# happened.
+#
+# This replaces a line that read:
+#
+#     actual = float(expected or 0)       # until meter readings are in
+#     revenue = actual * months_run * float(per_test or 0)
+#
+# -- the placement's own forecast volume times the months since
+# placement times the list price per test. No reagent sale was ever
+# consulted, while the screen labelled the result "recovered so far".
+# On the test fixture that produced PKR 21.3 lakh of claimed revenue
+# against a machine with no sales at all, on capital of PKR 32 lakh.
+#
+# Attribution. item_machines already records which reagents fit which
+# analyser. A sale is attributed to a machine when the item fits it
+# and fits no other placed machine at the same branch. Where a branch
+# has two placed machines taking the same reagent, the sale is
+# genuinely ambiguous: it is counted as unattributed rather than
+# split, because splitting it is a guess dressed as a measurement.
+#
+# Revenue is quantity times list price, because the ledger records
+# what a movement cost and not what it sold for. That is an
+# approximation -- an invoice may be discounted -- but it is an
+# approximation over sales that happened, which is a different kind
+# of figure from a forecast.
+REAGENT_REVENUE_SQL = """
+with fitted as (
+  select im.machine_id, im.item_id, m.location_id
+    from public.item_machines im
+    join public.machines m on m.id = im.machine_id
+   where m.status = 'placed'
+),
+-- How many placed machines at one branch take each reagent.
+rivals as (
+  select item_id, location_id, count(*) as machines
+    from fitted group by item_id, location_id
+),
+sales as (
+  select sm.item_id, sm.location_id, -sm.qty as qty, i.list_price
+    from public.stock_movement sm
+    join public.items i on i.id = sm.item_id
+   where sm.reason = 'sale' and sm.qty < 0
+     -- An unpriced reagent cannot contribute revenue, so a sale of
+     -- one is not evidence of recovery. Excluded here rather than
+     -- summing to zero, which would read as "sold and recovered
+     -- nothing" instead of "cannot be valued".
+     and i.list_price is not null and i.list_price > 0
+)
+select f.machine_id,
+       coalesce(sum(case when r.machines = 1
+                         then s.qty * coalesce(s.list_price, 0) end), 0),
+       count(s.*) filter (where r.machines = 1),
+       count(s.*) filter (where r.machines > 1)
+  from fitted f
+  left join sales s
+         on s.item_id = f.item_id and s.location_id = f.location_id
+  left join rivals r
+         on r.item_id = f.item_id and r.location_id = f.location_id
+ group by f.machine_id
+"""
+
+
 def read_machines(conn):
     """Placed machines, with what they have actually pulled.
 
-    reagent_revenue_to_date and the test counts come from the ledger
+    reagent_revenue_to_date and the service spend come from the ledger
     and the service log rather than from columns on the machine. A
     stored total is a second number that drifts from the movements
     behind it, and this is the figure the whole record exists for.
+
+    Where a machine has no reagent sales behind it,
+    reagent_revenue_measured is False and the revenue is zero. Nothing
+    sold and nothing recorded are different facts, and the modules
+    that read this must be able to tell them apart -- which is why
+    the forecast is not substituted here. The forecast still has a
+    job: expected_monthly_tests is what utilisation is measured
+    against. It is not evidence of recovery.
     """
     from engine.schema import MachinePlacement
+
+    pulled = {
+        row[0]: (float(row[1] or 0), int(row[2] or 0), int(row[3] or 0))
+        for row in conn.execute(REAGENT_REVENUE_SQL).fetchall()
+    }
 
     out = []
     for r in conn.execute(MACHINES_SQL).fetchall():
@@ -302,12 +378,7 @@ def read_machines(conn):
             "       coalesce(sum(j.downtime_days), 0) "
             "  from public.service_jobs j where j.machine_id = %s", (mid,)
         ).fetchone()
-        months_run = 0.0
-        if placed:
-            months_run = max(
-                0.0, (date.today() - placed).days / 30.44)
-        actual = float(expected or 0)       # until meter readings are in
-        revenue = actual * months_run * float(per_test or 0)
+        revenue, matched, ambiguous = pulled.get(mid, (0.0, 0, 0))
         out.append(MachinePlacement(
             machine_key=key, model=model, customer_key=ckey or key,
             customer_name=cname or "(unassigned)",
@@ -315,9 +386,16 @@ def read_machines(conn):
             capital_cost=float(capital or 0),
             contract_months=int(months or 36),
             reagent_revenue_to_date=revenue,
+            reagent_revenue_measured=matched > 0,
+            unattributed_reagent_sales=ambiguous,
             reagent_margin_pct=float(margin or 0),
             expected_monthly_tests=float(expected or 0),
-            actual_monthly_tests=actual,
+            # No meter reading exists anywhere in the schema, so there
+            # is no actual test count to report. Left at zero rather
+            # than set to the forecast: equal to the forecast made
+            # utilisation exactly 100% for every machine in the
+            # business, for ever, which is not a measurement.
+            actual_monthly_tests=0.0,
             downtime_days_ytd=float(spend[1] or 0),
             service_cost_to_date=float(spend[0] or 0),
             revenue_per_test=float(per_test or 0),

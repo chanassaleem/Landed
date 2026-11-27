@@ -149,6 +149,11 @@ const SAID = {
   paid_back: 'paid back', at_risk: 'at risk', behind: 'behind',
   on_track: 'on track', ramping: 'still ramping up',
   ended: 'contract ended',
+  /* Not "unmeasured", which reads as a judgement on the machine. The
+     machine is fine; the link between it and its reagents has not
+     been made. */
+  unmeasured: 'nothing linked yet',
+  unrecoverable: 'will not repay', stalled: 'nothing coming back',
   /* The five stock states in the words the rest of the product uses.
      The engine's enum is REORDER and EXCESS because that is what the
      arithmetic is doing; a person reading a row wants to know whether

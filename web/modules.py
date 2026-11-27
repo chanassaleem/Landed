@@ -741,19 +741,100 @@ def _people(f) -> dict:
 def _equipment(f) -> dict:
     rows = f.machines
     capital = sum(r["capital_cost"] for r in rows)
-    recovered = sum(r["net_recovered"] for r in rows)
+
+    # The fleet percentage is computed over the placements that have
+    # something to measure, not over all of them.
+    #
+    # A placement with no reagent sale linked to it recovers zero, and
+    # summing that zero into the numerator while its capital stays in
+    # the denominator reports the whole fleet as further behind than
+    # it is. Four machines performing to plan and one unlinked became
+    # "62% recovered" when the real answer was "78% across the four we
+    # can see, and one we cannot".
+    measured = [r for r in rows if r.get("recovery_measured")]
+    measured_capital = sum(r["capital_cost"] for r in measured)
+    recovered = sum(r["net_recovered"] for r in measured)
+
+    # An unmeasured placement's recovery figures are not approximate,
+    # they are absent -- and the arithmetic turns that absence into
+    # something worse than a zero. With no reagent revenue, net
+    # recovered is zero minus the service spend, so the screen read
+    # "recovered −55k" against a machine whose customer may well be
+    # buying every month. Blanked here, where the rows are assembled
+    # for the screen, rather than in the engine, which other callers
+    # compute with.
+    for r in rows:
+        if not r.get("recovery_measured"):
+            for field in ("net_recovered", "recovery_pct",
+                          "payback_months", "monthly_margin_rate",
+                          "margin_recovered"):
+                r[field] = None
     return {
         "rows": rows,
         "totals": {
             "placements": len(rows),
             "capital_deployed": round(capital, 2),
-            "capital_recovered": round(recovered, 2),
-            "recovery_pct": round(recovered / capital, 4)
-            if capital > 0 else None,
+            # None, not zero, when there is nothing to measure.
+            "capital_recovered": round(recovered, 2) if measured else None,
+            "recovery_pct": round(recovered / measured_capital, 4)
+            if measured_capital > 0 else None,
+            # So the tile can say what it is a percentage of, rather
+            # than implying it covers everything placed.
+            "measured_placements": len(measured),
+            "unmeasured_placements": len(rows) - len(measured),
+            "unmeasured_capital": round(capital - measured_capital, 2),
             "downtime_margin_lost": round(
                 sum(r["revenue_lost_to_downtime"] for r in rows), 2),
         },
+        # Said once, above the figures, because a reader who does not
+        # know the percentage excludes something will read it as
+        # covering everything placed.
+        "unmeasured_note": _unmeasured_note(
+            rows, capital - measured_capital, f.thresholds),
     }
+
+
+def _unmeasured_note(rows, unmeasured_capital, thresholds):
+    """Said once, above the figures.
+
+    A reader who does not know the percentage excludes something will
+    read it as covering everything placed -- which is the reading that
+    makes an unlinked machine look like a failing one.
+
+    Written out case by case rather than assembled from conditionals
+    inside one sentence. "1 of 1 placements has no reagent sale linked
+    to it, so the percentage above is across the rest" is both
+    ungrammatical and false: there is no rest.
+    """
+    from engine.fmt import money as fmt_money
+
+    n = sum(1 for r in rows if not r.get("recovery_measured"))
+    if not n:
+        return None
+    held = fmt_money(unmeasured_capital, thresholds.currency,
+                     thresholds.number_scale)
+    fix = ("Link the reagents each model takes and the figures follow "
+           "from sales already in the ledger.")
+
+    if n == len(rows):
+        which = ("The only placement has no reagent sale linked to it"
+                 if n == 1
+                 else f"None of the {n} placements has a reagent sale "
+                      "linked to it")
+        return (
+            f"{which}, so there is no recovery to report against "
+            f"{held} of capital. It is unknown rather than zero. {fix}"
+        )
+
+    many = n != 1
+    return (
+        f"{n} of the {len(rows)} placements "
+        f"{'have' if many else 'has'} no reagent sale linked to "
+        f"{'them' if many else 'it'}, holding {held} of capital. "
+        f"Recovery for {'those' if many else 'that one'} is unknown "
+        f"rather than zero, so the percentage above is across the "
+        f"other {len(rows) - n}. {fix}"
+    )
 
 
 def _service(f) -> dict:

@@ -78,7 +78,29 @@ def evaluate(
 
         shortfall = 0.0
 
-        if elapsed < thresholds.placement_min_months_to_judge:
+        # The flag only has to settle the ambiguous case, which is a
+        # zero: nothing sold and nothing recorded look identical in
+        # the figure and mean opposite things. A revenue above zero
+        # came from somewhere, so a placement built by hand -- from a
+        # spreadsheet import, or a test -- needs no flag to be
+        # believed.
+        measured = m.reagent_revenue_measured or m.reagent_revenue_to_date > 0
+        if not measured:
+            # Nothing to judge. Not STALLED: that is a finding -- the
+            # customer has stopped pulling reagent -- and reporting
+            # one as the other sends somebody to a hospital to
+            # retrieve an analyser that is working fine and selling
+            # well under a reagent nobody has linked to it.
+            status = PaybackStatus.UNMEASURED
+            why = (
+                f"No reagent sale has been recorded against this "
+                f"placement, so there is nothing to measure recovery "
+                f"from. {money(m.capital_cost, thresholds.currency, thresholds.number_scale)} of capital is "
+                f"placed. Link the reagents this model takes to it, "
+                f"and the recovery follows from the sales already in "
+                f"the ledger."
+            )
+        elif elapsed < thresholds.placement_min_months_to_judge:
             status = PaybackStatus.RAMPING
             why = (
                 f"Placed {elapsed:.0f} months ago. Too early to judge payback: "
@@ -150,6 +172,8 @@ def evaluate(
                 downtime_days_ytd=m.downtime_days_ytd,
                 revenue_lost_to_downtime=round(downtime_lost, 2),
                 status=status,
+                recovery_measured=measured,
+                unattributed_reagent_sales=m.unattributed_reagent_sales,
                 reason=why,
                 unrecoverable_shortfall=round(shortfall, 2),
             )
@@ -159,9 +183,20 @@ def evaluate(
     priority = {
         PaybackStatus.UNRECOVERABLE: 0,
         PaybackStatus.STALLED: 1,
-        PaybackStatus.ON_TRACK: 2,
-        PaybackStatus.RAMPING: 3,
-        PaybackStatus.AHEAD: 4,
+        # Above the healthy verdicts, below the two that are findings.
+        # An unmeasured placement is capital whose position nobody
+        # knows, which deserves attention before a machine that is
+        # paying back to plan -- but it is not evidence of trouble,
+        # so it must not outrank a placement that is actually
+        # stalling.
+        PaybackStatus.UNMEASURED: 2,
+        PaybackStatus.ON_TRACK: 3,
+        PaybackStatus.RAMPING: 4,
+        PaybackStatus.AHEAD: 5,
     }
-    out.sort(key=lambda r: (priority[r.status], -(r.capital_cost - r.net_recovered)))
+    # .get, with the worst rank as the fallback: a status added later
+    # and forgotten here used to raise a KeyError that took the whole
+    # module down, which is a worse outcome than sorting it first.
+    out.sort(key=lambda r: (priority.get(r.status, 0),
+                            -(r.capital_cost - r.net_recovered)))
     return tuple(out)

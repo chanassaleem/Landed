@@ -485,8 +485,40 @@
             .includes(String(r.status).toLowerCase()) },
         { id: 'unrecovered', label: 'Under half recovered',
           blurb: 'Capital still sitting in somebody else\'s building.',
-          keep: (r) => r.recovery_pct !== null && r.recovery_pct < 0.5 },
+          keep: (r) => r.recovery_measured
+            && r.recovery_pct !== null && r.recovery_pct < 0.5 },
+        { id: 'unmeasured', label: 'Nothing to go on',
+          blurb: 'No reagent sale is linked to these placements, so '
+            + 'their recovery is unknown rather than zero. Link the '
+            + 'reagents each model takes and the figures follow from '
+            + 'sales already in the ledger.',
+          keep: (r) => !r.recovery_measured },
       ],
+      /* An unmeasured placement's recovery is not a low figure, it is
+         an absent one. Shown marked rather than hidden: a blank where
+         a percentage belongs invites somebody to assume it is zero,
+         and zero is the one reading that sends them to a hospital to
+         retrieve a working analyser. */
+      mark: (row, col) => {
+        if (row.recovery_measured) {
+          if (col.key === 'net_recovered'
+              && row.unattributed_reagent_sales > 0) {
+            const n = row.unattributed_reagent_sales;
+            return `Understated. ${n} reagent sale`
+              + `${n === 1 ? '' : 's'} fit this machine and another at `
+              + 'the same branch, so they could not be attributed to '
+              + 'one and are excluded. Splitting them would be a guess.';
+          }
+          return null;
+        }
+        if (!['net_recovered', 'recovery_pct', 'payback_months']
+            .includes(col.key)) {
+          return null;
+        }
+        return 'Not measured. No reagent sale is linked to this '
+          + 'placement, so its recovery is unknown rather than zero. '
+          + 'Link the reagents this model takes to it.';
+      },
       cols: [
         ['machine_key', 'Machine', 'text'],
         ['model', 'Model', 'text'],
@@ -504,6 +536,7 @@
         ['downtime_margin_lost', 'Lost to downtime', 'money'],
         ['placements', 'Placements', 'num'],
       ],
+      notes: ['unmeasured_note'],
     },
     service: {
       views: [

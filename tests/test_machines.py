@@ -28,6 +28,13 @@ def machine(key="MX-1", **kw):
         placed_date=placed_days_ago(600),  # exactly 20 months
         capital_cost=3_000_000.0,
         contract_months=60,
+        # These placements are built by hand with the revenue stated,
+        # so the figure is given rather than missing. The distinction
+        # matters only for a zero -- nothing sold and nothing recorded
+        # look identical in the number and mean opposite things -- so
+        # it is set here and a test that wants the missing case says
+        # so by passing False.
+        reagent_revenue_measured=True,
     )
     base.update(kw)
     return MachinePlacement(**base)
@@ -94,10 +101,41 @@ def test_payback_beyond_the_contract_is_unrecoverable():
 
 
 def test_no_reagent_pull_at_all_is_stalled():
+    """Measured, and the measurement is zero: the customer really has
+    stopped buying. That is a finding worth acting on."""
     r = one(reagent_revenue_to_date=0, service_cost_to_date=50_000)
     assert r.monthly_margin_rate is not None
     assert r.payback_months is None
     assert r.status is PaybackStatus.STALLED
+    assert r.recovery_measured is True
+
+
+def test_nothing_recorded_is_not_the_same_finding_as_nothing_sold():
+    """Both are a zero and they mean opposite things.
+
+    STALLED sends somebody to a hospital to retrieve an analyser.
+    Doing that because nobody linked the reagent to the machine --
+    while the customer buys it every month -- is the most expensive
+    mistake this module could make."""
+    r = one(reagent_revenue_to_date=0, service_cost_to_date=50_000,
+            reagent_revenue_measured=False)
+    assert r.status is PaybackStatus.UNMEASURED
+    assert r.recovery_measured is False
+    assert "no reagent sale has been recorded" in r.reason.lower()
+    assert "retrieve" not in r.reason.lower()
+
+
+def test_an_unmeasured_placement_ranks_below_a_stalling_one():
+    """It deserves attention -- capital whose position nobody knows --
+    but it is not evidence of trouble, and ranking it first would
+    bury the placements that are actually failing."""
+    out = evaluate([
+        machine(key="UNKNOWN", reagent_revenue_to_date=0,
+                reagent_revenue_measured=False),
+        machine(key="STALLING", reagent_revenue_to_date=0,
+                service_cost_to_date=50_000),
+    ], T, AS_OF)
+    assert [r.machine_key for r in out] == ["STALLING", "UNKNOWN"]
 
 
 def test_service_cost_exceeding_margin_is_stalled_not_negative_payback():
@@ -220,3 +258,116 @@ def test_the_observation_window_is_configurable():
 
 def test_no_placements_is_safe():
     assert evaluate([], T, AS_OF) == ()
+
+
+# -------------------------------- a fleet figure over what can be seen
+
+def test_the_fleet_percentage_ignores_capital_it_cannot_measure():
+    """Four machines performing to plan and one with no reagent
+    linked read as 62% recovered when the true answer is "78% across
+    the four we can see, and one we cannot". The unmeasured placement
+    contributed a zero to the top of the fraction while its capital
+    stayed at the bottom."""
+    from web.modules import _equipment
+
+    class F:
+        thresholds = T
+        machines = [
+            {"capital_cost": 1_000_000.0, "net_recovered": 780_000.0,
+             "recovery_measured": True, "revenue_lost_to_downtime": 0.0}
+            for _ in range(4)
+        ] + [
+            {"capital_cost": 1_000_000.0, "net_recovered": 0.0,
+             "recovery_measured": False, "revenue_lost_to_downtime": 0.0}
+        ]
+
+    t = _equipment(F())["totals"]
+    assert t["recovery_pct"] == pytest.approx(0.78)
+    assert t["capital_deployed"] == 5_000_000
+    assert t["unmeasured_placements"] == 1
+    assert t["unmeasured_capital"] == 1_000_000
+    assert t["measured_placements"] == 4
+
+
+def test_a_fleet_with_nothing_linked_reports_no_percentage_at_all():
+    """Not zero. Zero is a finding; this is an empty measurement."""
+    from web.modules import _equipment
+
+    class F:
+        thresholds = T
+        machines = [{"capital_cost": 2_000_000.0, "net_recovered": 0.0,
+                     "recovery_measured": False,
+                     "revenue_lost_to_downtime": 0.0}]
+
+    t = _equipment(F())["totals"]
+    assert t["recovery_pct"] is None
+    assert t["unmeasured_capital"] == 2_000_000
+
+
+def test_the_unmeasured_note_reads_as_english_in_every_case():
+    """It is assembled from counts, which is how "1 of 1 placements
+    has no reagent sale linked to it, so the percentage above is
+    across the rest" got shipped -- ungrammatical, and false, because
+    there is no rest."""
+    from web.modules import _unmeasured_note
+
+    mk = lambda measured: {"capital_cost": 1_000_000.0,
+                           "recovery_measured": measured}
+    cases = {
+        "one, unmeasured": [mk(False)],
+        "three, none measured": [mk(False)] * 3,
+        "one of five": [mk(True)] * 4 + [mk(False)],
+        "two of five": [mk(True)] * 3 + [mk(False)] * 2,
+    }
+    for name, rows in cases.items():
+        got = _unmeasured_note(rows, 1_000_000.0, T)
+        assert got, name
+        # The failure that shipped: a whole-fleet case claiming the
+        # percentage covers everyone else.
+        if all(not r["recovery_measured"] for r in rows):
+            assert "the rest" not in got, name
+            assert "across the other" not in got, name
+        # The failure that nearly shipped: the sentence saying the
+        # opposite of what it means.
+        assert ("has no reagent sale" in got
+                or "have no reagent sale" in got
+                or "None of the" in got), f"{name}: {got}"
+        for wrong in ("placements has a reagent sale linked to them",
+                      "1 of 1 placements"):
+            assert wrong not in got, f"{name}: {got}"
+
+
+def test_a_measured_fleet_gets_no_note_at_all():
+    from web.modules import _unmeasured_note
+    rows = [{"capital_cost": 1_000_000.0, "recovery_measured": True}]
+    assert _unmeasured_note(rows, 0.0, T) is None
+
+
+def test_an_unmeasured_placement_shows_no_figure_rather_than_a_negative():
+    """With no reagent revenue, net recovered is zero minus the
+    service spend -- so the screen read "recovered −55k" against a
+    machine whose customer may well be buying every month. That is
+    not an approximation of the truth; it is an artefact of having
+    no revenue data at all."""
+    from web.modules import _equipment
+
+    class F:
+        thresholds = T
+        machines = [{
+            "capital_cost": 6_500_000.0, "net_recovered": -55_000.0,
+            "recovery_pct": -0.009, "payback_months": None,
+            "monthly_margin_rate": -2_750.0,
+            "margin_recovered": 0.0,
+            "recovery_measured": False,
+            "revenue_lost_to_downtime": 0.0,
+        }]
+
+    out = _equipment(F())
+    row = out["rows"][0]
+    for field in ("net_recovered", "recovery_pct", "margin_recovered"):
+        assert row[field] is None, f"{field} still shows a figure"
+    assert out["totals"]["capital_recovered"] is None, (
+        "the fleet tile shows a confident zero for a fleet with "
+        "nothing measured")
+    # The capital is still real and still reported.
+    assert out["totals"]["capital_deployed"] == 6_500_000

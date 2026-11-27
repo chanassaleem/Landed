@@ -497,10 +497,18 @@
             td.classList.add('unsure');
             /* Marked in the text, not only in colour: this says the
                figure will move, which colour alone cannot carry to
-               somebody reading a printout or not seeing the hue. */
-            const flag = el('span', 'unsure-mark', '~');
-            flag.setAttribute('aria-hidden', 'true');
-            td.prepend(flag);
+               somebody reading a printout or not seeing the hue.
+
+               Except where there is no figure. The tilde means
+               approximate, and "~—" reads as approximately nothing,
+               which is not what an absent value means. The dash
+               carries it there, in the same colour, with the same
+               explanation on hover. */
+            if (td.textContent !== '—') {
+              const flag = el('span', 'unsure-mark', '~');
+              flag.setAttribute('aria-hidden', 'true');
+              td.prepend(flag);
+            }
             td.title = why;
             /* So a screen reader hears it as part of the value
                rather than as a stray tilde. */
@@ -508,7 +516,9 @@
                "provisional: Provisional." aloud is how a label
                written by concatenation gives itself away. */
             td.setAttribute('aria-label',
-              `${td.textContent.replace('~', '').trim()}. ${why}`);
+              td.textContent === '—'
+                ? why
+                : `${td.textContent.replace('~', '').trim()}. ${why}`);
           }
           if (can && onEdit) {
             td.classList.add('can-edit');

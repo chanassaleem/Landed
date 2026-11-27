@@ -255,6 +255,27 @@ def seeded():
             (org, public_hosp, khi,
              TODAY - timedelta(days=500))).fetchone()[0]
 
+        # The reagent this analyser takes, and the sales that are the
+        # only real evidence of recovery. Before this the module was
+        # fed the placement's own forecast volume and called the
+        # result "recovered so far", so a machine whose customer had
+        # stopped buying read exactly like one performing to plan.
+        #
+        # Sales at both branches on purpose: the analyser is at
+        # Karachi, so only Karachi's sales may be attributed to it.
+        c.execute("update public.items set list_price = 26000"
+                  " where id = %s", (reagent,))
+        c.execute(
+            "insert into public.item_machines (org_id, item_id, machine_id)"
+            " values (%s,%s,%s)", (org, reagent, machine))
+        for loc, qty, ago in ((khi, 40, 300), (khi, 55, 180),
+                              (khi, 48, 60), (lhe, 12, 90)):
+            c.execute(
+                "insert into public.stock_movement (org_id, location_id,"
+                " item_id, qty, unit_cost, reason, occurred_at)"
+                " values (%s,%s,%s,%s,18500,'sale',%s)",
+                (org, loc, reagent, -qty, TODAY - timedelta(days=ago)))
+
         for no, opened, hours, billed, parts, charged, warranty, repeat in (
                 ("JOB-01", 120, 6.0, 4.0, 38_000, 0, False, False),
                 ("JOB-02", 60, 9.5, 9.5, 12_000, 12_000, False, True),
