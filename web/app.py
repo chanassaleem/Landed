@@ -1203,6 +1203,15 @@ async def receive_goods(request: Request,
                 weight=num("weight"), volume=num("volume"),
                 currency=str(b.get("currency", "") or ""),
                 fx=num("fx"),
+                # The receipt's own number, and the reason the
+                # duplicate check exists: identity is the receipt, the
+                # item and the batch. Left out of this call at first,
+                # so every receipt invented a number of its own from
+                # the idempotency key -- two lots of one arrival
+                # landed on two different receipts, and re-sending one
+                # could never be recognised as the same arrival.
+                # Found by walking the fifteen-step scenario.
+                grn=str(b.get("grn", "") or ""),
                 note=str(b.get("note", "") or ""),
                 client_ref=str(b.get("client_ref", "") or "").strip()[:200]
                 or None)

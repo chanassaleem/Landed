@@ -702,16 +702,28 @@ def transfer(run, sku: str, from_branch: str, to_branch: str, qty: float,
             f"There are only {on_hand:,.0f} at {from_branch} to send.")
 
     pair = str(uuid.uuid4())
-    run.executemany(
-        "insert into public.stock_movement (org_id, item_id, location_id, "
-        "qty, reason, occurred_at, note, client_ref) "
-        "values (%s, %s, %s, %s, %s, %s, %s, %s)",
-        [
-            (org, item_id, out_id, -qty, "transfer_out", when or date.today(),
-             note or f"to {to_branch}", f"{pair}:out"),
-            (org, item_id, in_id, qty, "transfer_in", when or date.today(),
-             note or f"from {from_branch}", f"{pair}:in"),
-        ])
+    # Two execute calls, not executemany.
+    #
+    # Everything else here takes `run` as either a connection or a
+    # cursor -- the tests pass a cursor, the API passes a connection
+    # -- and psycopg's Connection has execute but not executemany. So
+    # this was the one operation that worked everywhere except through
+    # the endpoint a person actually uses, failing with "'Connection'
+    # object has no attribute 'executemany'". Found by walking the
+    # whole workflow over HTTP rather than in Python.
+    #
+    # Both or neither still holds: they are two statements in one
+    # transaction, and the caller's commit is what makes either real.
+    for location, signed, reason, towards in (
+            (out_id, -qty, "transfer_out", f"to {to_branch}"),
+            (in_id, qty, "transfer_in", f"from {from_branch}")):
+        run.execute(
+            "insert into public.stock_movement (org_id, item_id, "
+            "location_id, qty, reason, occurred_at, note, client_ref) "
+            "values (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (org, item_id, location, signed, reason, when or date.today(),
+             note or towards,
+             f"{pair}:{'out' if signed < 0 else 'in'}"))
     return {"sku": sku, "from": from_branch, "to": to_branch, "qty": qty}
 
 
