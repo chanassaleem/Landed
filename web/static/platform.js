@@ -940,7 +940,23 @@
     try { seen = localStorage.getItem(key) === 'seen'; } catch (e) { /**/ }
 
     const d = el('details', 'how');
-    d.open = !seen;
+    /* Open on a first visit, so somebody meeting a screen is told
+       how it is worked -- but not on a phone, where the five steps
+       and the paragraph under them fill the whole first screen and
+       push the figures below the fold twice over. Measured at 430px:
+       about a thousand pixels of explanation before a single row of
+       stock, on each of fourteen modules.
+
+       860px is the breakpoint the stylesheet already uses to stop
+       laying this out beside the content. Somebody on a phone is
+       nearly always checking a figure rather than learning the
+       screen, and the summary line says plainly that the
+       explanation is a tap away. */
+    const narrow = (() => {
+      try { return window.matchMedia('(max-width: 860px)').matches; }
+      catch (e) { return false; }
+    })();
+    d.open = !seen && !narrow;
     const sum = el('summary', '', 'How this screen is worked');
     d.append(sum);
 

@@ -253,3 +253,26 @@ def test_every_figure_groups_its_digits_the_same_way():
             assert bad not in bare, (
                 f"{name} formats a number with {bad} -- it must pass "
                 "GROUPING, or the same figure groups two ways on one screen")
+
+
+def test_the_screen_guide_does_not_fill_a_phone_before_the_figures():
+    """It opens on a first visit so somebody meeting a screen is told
+    how it is worked. At 430px the five steps and the paragraph under
+    them came to about a thousand pixels -- the whole first screen,
+    twice over, before a single row of stock, on each of fourteen
+    modules. Closed there, and one tap away.
+
+    860px because that is where the stylesheet already stops laying
+    this out beside the content."""
+    js = (pathlib.Path(__file__).resolve().parents[1]
+          / "web" / "static" / "platform.js").read_text()
+    i = js.index("function howToWorkIt(mod)")
+    body = js[i:js.index("\n  function ", i + 10)]
+    assert "matchMedia" in body, (
+        "the guide no longer checks the viewport, so it opens over "
+        "the figures on a phone")
+    assert "max-width: 860px" in body, (
+        "the guide uses a breakpoint the stylesheet does not")
+    assert "!seen && !narrow" in body, (
+        "the guide should open on a first visit on a wide screen and "
+        "stay closed on a narrow one")
