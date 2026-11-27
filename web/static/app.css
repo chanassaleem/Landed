@@ -2670,3 +2670,24 @@ td.can-edit input[type='checkbox'] { width: auto; }
    teaches people to ignore the rows that are. */
 .exceptions tbody tr[data-expected='1'] { color: var(--text-3); }
 .exceptions tbody tr[data-expected='1'] td { font-style: normal; }
+
+/* ------------------------------------------------------- form context
+
+   Which line, at which branch, and what is on the shelf there. The
+   drawer said all three and the form replaced the drawer, so from the
+   moment somebody started typing there was nothing on screen naming
+   what they were typing about. */
+.op-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.op-context b { color: var(--text); font-family: var(--mono); }
+.op-context-at {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}

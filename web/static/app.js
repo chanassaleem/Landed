@@ -715,6 +715,40 @@ const OPS = [
         required: true },
       { name: 'note', label: 'Why', type: 'text' },
     ],
+    enrich: (row, fields) => {
+      const was = Number(row.on_hand) || 0;
+      fields.counted.hint.hidden = false;
+      fields.counted.hint.textContent =
+        `The ledger says ${qty(was)}. Type what you actually counted; `
+        + 'the difference is worked out from it.';
+
+      /* A count that moves the figure by a tenth is somebody finding
+         a box. One that halves it is either a theft, a breakage or a
+         mistake in the count, and in three months the note is the
+         only thing that will say which. Asked for at the point the
+         gap appears, not as a rule on every count -- a box found is
+         not an incident. */
+      const material = () => {
+        const now = Number(fields.counted.input.value);
+        if (!fields.counted.input.value || Number.isNaN(now)) {
+          fields.note.input.required = false;
+          fields.note.hint.hidden = true;
+          return;
+        }
+        const gap = Math.abs(now - was);
+        const big = was > 0 ? gap / was >= 0.1 : gap > 0;
+        fields.note.input.required = big;
+        fields.note.hint.hidden = !big;
+        if (big) {
+          fields.note.hint.textContent =
+            `That is ${qty(gap)} away from the ledger. Say what `
+            + 'happened -- in three months this note is the only thing '
+            + 'that will tell anyone whether it was a breakage, a '
+            + 'theft or a miscount.';
+        }
+      };
+      fields.counted.input.addEventListener('input', material);
+    },
     send: (row, v) => ['/api/adjust', {
       sku: row.sku, branch: row.branch, counted: v.counted, note: v.note }],
   },
@@ -729,6 +763,28 @@ const OPS = [
       { name: 'qty', label: 'How many', type: 'number', required: true },
       { name: 'note', label: 'Note', type: 'text' },
     ],
+    /* What can go, said before they type rather than after the server
+       refuses. A refusal that arrives on submit is a refusal somebody
+       has already spent a minute earning. */
+    enrich: (row, fields) => {
+      const can = Number(row.on_hand) || 0;
+      fields.qty.input.max = String(can);
+      fields.qty.hint.hidden = false;
+      fields.qty.hint.textContent = can > 0
+        ? `${qty(can)} on the shelf at ${row.branch}. More than that `
+          + 'cannot be sent, because it is not there to send.'
+        : `Nothing is on the shelf at ${row.branch}, so there is `
+          + 'nothing to send from here yet.';
+      const where = () => {
+        fields.to.hint.hidden = false;
+        fields.to.hint.textContent =
+          `Out of ${row.branch}, into ${fields.to.input.value || '\u2014'}. `
+          + 'Two entries, both or neither; the total across branches '
+          + 'does not change.';
+      };
+      where();
+      fields.to.input.addEventListener('change', where);
+    },
     send: (row, v) => ['/api/transfer', {
       sku: row.sku, from: row.branch, to: v.to, qty: v.qty, note: v.note }],
   },
@@ -739,6 +795,22 @@ function openForm(op, row) {
   body.textContent = '';
   const wrap = el('div', 'detail-block');
   wrap.append(el('h3', null, op.title));
+
+  /* Which line, at which branch, and what is on the shelf there.
+   *
+   * The drawer said all three and the form replaced the drawer, so
+   * from the moment somebody started typing there was nothing on
+   * screen naming what they were typing about. On a stock list of
+   * hundreds that is one mis-click away from receiving a hundred
+   * units of the wrong reagent, and the form that takes a count is
+   * the one that most needs the figure it is reconciling against. */
+  const ctx = el('p', 'op-context');
+  ctx.append(el('b', null, row.sku));
+  ctx.append(el('span', null, ` ${row.description || ''}`));
+  ctx.append(el('span', 'op-context-at',
+    `at ${row.branch} \u00b7 ${qty(row.on_hand)} on the shelf`));
+  wrap.append(ctx);
+
   wrap.append(el('p', 'drop-sub', op.note));
 
   const form = el('form', 'op-form');
@@ -831,6 +903,22 @@ function openForm(op, row) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
+      /* A session that has run out is not a failed write, and it must
+         not read like one.
+         
+         The access token lasts an hour and is renewed from the
+         refresh cookie before it expires; a 401 here means that
+         failed too -- the refresh token has gone, or somebody signed
+         out in another tab. Nothing was recorded, and what they typed
+         is still in the form in front of them. Saying so, and saying
+         it is still there, is the difference between signing in again
+         and retyping a count of forty-three batches. */
+      if (r.status === 401) {
+        throw new Error(
+          'Your session has run out, so nothing was recorded. Sign in '
+          + 'again in another tab and press the button once more \u2014 '
+          + 'what you typed is still here.');
+      }
       const { data } = await readResponse(r, 'That');
       if (!data.ok) throw new Error(data.error || 'It was refused.');
       /* Reload from the server rather than patch the figure here. A
