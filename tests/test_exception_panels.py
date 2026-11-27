@@ -80,10 +80,27 @@ def test_every_dataset_a_check_can_name_has_a_screen_to_fix_it_on():
     datasets = set(re.findall(r'"[a-z_]+", (?:BLOCKS|WARNS), "([a-z_ ]+)"',
                               SANITY))
     assert datasets, "the pattern no longer matches how findings are built"
-    block = PLATFORM[PLATFORM.index("      fixAt: (r) => ({"):]
+    block = PLATFORM[PLATFORM.index("      fixAt: (r) => {"):]
     block = block[:block.index("}[String(r.dataset")]
     routed = set(re.findall(r"^\s+([a-z_]+):", block, re.M))
     assert datasets <= routed, f"nowhere to fix: {sorted(datasets - routed)}"
+
+
+def test_a_finding_routed_by_its_own_code_names_a_check_that_exists():
+    """fixAt special-cases a few findings by code, because the screen
+    where something is fixed is not always the screen its figure is
+    wrong on -- a landed cost resting on an undivided charge is an
+    inventory finding whose missing weight is entered on Landing.
+
+    A code with a typo in it falls through to the dataset silently,
+    which looks like it works."""
+    block = PLATFORM[PLATFORM.index("        const byCode = {"):]
+    block = block[:block.index("}[String(r.code")]
+    special = set(re.findall(r"^\s+([a-z_]+):", block, re.M))
+    assert special, "fixAt no longer routes anything by code"
+    known = set(re.findall(r'_f\(\s*\n?\s*"([a-z_0-9]+)"', SANITY))
+    assert special <= known, (
+        f"fixAt routes codes no check produces: {sorted(special - known)}")
 
 
 def test_the_route_is_taken_when_the_row_has_no_drawer_of_its_own():

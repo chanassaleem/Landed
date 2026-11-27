@@ -6,6 +6,7 @@ The clean sample pack must stay silent, and each specific corruption must
 raise its own specific finding.
 """
 
+from dataclasses import replace
 from datetime import date, timedelta
 
 import pytest
@@ -361,3 +362,64 @@ def test_sanity_never_changes_a_figure(pack):
     before = [x.unit_cost for x in pack["inventory"]]
     sanity.check(items=pack["inventory"], demand=pack["demand"], as_of=AS_OF)
     assert [x.unit_cost for x in pack["inventory"]] == before
+
+
+# ------------------------- data that is present but silently incomplete
+#
+# The two faults found by hand this session, neither of which any
+# check caught. Both share a shape: the record exists, every field
+# on it looks reasonable, and a downstream figure is quietly built
+# on an absence.
+
+def test_a_placement_with_no_reagent_linked_is_a_finding(pack):
+    """The whole Equipment module is blind for that machine: it
+    cannot tell a customer who stopped buying from one nobody has
+    linked a reagent to, and the second reads as the first."""
+    placements = [
+        replace(p, reagent_revenue_to_date=0.0,
+                reagent_revenue_measured=False)
+        for p in pack["machines"]
+    ]
+    assert "placement_unmeasured" in codes(pack, placements=placements)
+
+
+def test_a_placement_with_sales_behind_it_is_not_a_finding(pack):
+    placements = [
+        replace(p, reagent_revenue_to_date=400_000.0,
+                reagent_revenue_measured=True)
+        for p in pack["machines"]
+    ]
+    assert "placement_unmeasured" not in codes(pack, placements=placements)
+
+
+def test_a_stock_line_on_a_provisional_landed_cost_is_a_finding(pack):
+    """Its unit cost will move once a missing weight or volume is
+    entered, and everything priced off it moves with it."""
+    items = [item(pack["inventory"][0], cost_provisional=True,
+                  cost_provisional_of=1, cost_receipts=2)]
+    items += list(pack["inventory"][1:])
+    assert "cost_provisional" in codes(pack, items=items)
+
+
+def test_a_settled_landed_cost_is_not_a_finding(pack):
+    assert "cost_provisional" not in codes(pack)
+
+
+def test_both_findings_say_what_they_do_to_the_numbers(pack):
+    """A finding nobody can act on is a finding read once and never
+    acted on. Every other check in this file carries an effect and a
+    fix; these must too."""
+    placements = [
+        replace(p, reagent_revenue_to_date=0.0,
+                reagent_revenue_measured=False)
+        for p in pack["machines"]
+    ]
+    f = finding(pack, "placement_unmeasured", placements=placements)
+    assert f.effect and f.fix
+    assert "reagent" in f.fix.lower()
+
+    items = [item(pack["inventory"][0], cost_provisional=True,
+                  cost_provisional_of=1, cost_receipts=2)]
+    items += list(pack["inventory"][1:])
+    g = finding(pack, "cost_provisional", items=items)
+    assert g.effect and g.fix

@@ -608,14 +608,29 @@
       /* Where each kind of finding is put right. The engine's own
          dataset names, mapped once here rather than guessed at by a
          person reading a sentence about demand_history.csv. */
-      fixAt: (r) => ({
-        inventory: 'stock',
-        demand: 'm/demand',
-        receivables: 'm/money',
-        commitments: 'm/cash',
-        machines: 'm/equipment',
-        service: 'm/service',
-      }[String(r.dataset || '').toLowerCase()]),
+      /* The screen where this is fixed, which is not always the
+         screen the figure is wrong on. A landed cost resting on an
+         undivided charge is an inventory finding, but the missing
+         weight is entered on Landing -- so the dataset alone sends
+         people to the wrong place and they come back.
+
+         By code first, then by dataset for everything with no
+         special case. */
+      fixAt: (r) => {
+        const byCode = {
+          cost_provisional: 'm/freight',
+          placement_unmeasured: 'm/equipment',
+        }[String(r.code || '')];
+        if (byCode) return byCode;
+        return {
+          inventory: 'm/stock',
+          demand: 'm/demand',
+          receivables: 'm/money',
+          commitments: 'm/cash',
+          machines: 'm/equipment',
+          service: 'm/service',
+        }[String(r.dataset || '').toLowerCase()];
+      },
       views: [
         { id: 'all', label: 'Everything',
           blurb: 'Every check that found something.' },

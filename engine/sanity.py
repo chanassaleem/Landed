@@ -619,6 +619,72 @@ def _coverage(
 # ------------------------------------------------------------------ main
 
 
+def _silently_incomplete(items, placements, out: List[Finding]) -> None:
+    """Records that are present, and complete-looking, and are not.
+
+    Every other check in this file looks for something absent, wrong
+    or contradictory. These two look for a record where every field
+    is reasonable and a downstream figure is quietly built on an
+    absence -- which is the harder failure, because nothing on the
+    screen is visibly wrong.
+
+    Both were found by hand, after the figures they corrupt had been
+    on screen for months.
+    """
+    # A placed machine with no reagent sale behind it. The Equipment
+    # module cannot tell that from a customer who has stopped buying,
+    # and the second reading is the one that sends somebody to a
+    # hospital to retrieve a working analyser.
+    unmeasured = [
+        p.machine_key for p in placements
+        if not getattr(p, "reagent_revenue_measured", False)
+        and not p.reagent_revenue_to_date
+    ]
+    if unmeasured:
+        capital = sum(
+            p.capital_cost for p in placements
+            if p.machine_key in set(unmeasured))
+        out.append(_f(
+            "placement_unmeasured", WARNS, "machines",
+            "Placements with no reagent sale linked to them",
+            f"{len(unmeasured)} of {len(placements)} placements, "
+            f"holding {capital:,.0f} of capital.",
+            "Recovery for these is unknown rather than zero, so the "
+            "fleet percentage is across the rest. A machine nobody "
+            "has linked a reagent to reads the same as one whose "
+            "customer has stopped buying, and those need opposite "
+            "responses.",
+            "Link the reagents each model takes to its placement. The "
+            "recovery then follows from sales already in the ledger; "
+            "nothing has to be re-entered.",
+            unmeasured,
+        ))
+
+    # A landed cost divided by a basis some lines on the shipment
+    # were missing. The figure is the best available and worth
+    # showing, but everything priced off it moves when the missing
+    # weight is entered.
+    provisional = [
+        i.item_key for i in items
+        if getattr(i, "cost_provisional", False)
+    ]
+    if provisional:
+        out.append(_f(
+            "cost_provisional", WARNS, "inventory",
+            "Landed costs resting on a charge that could not be divided",
+            f"{len(set(provisional))} item"
+            f"{'s' if len(set(provisional)) != 1 else ''} across "
+            f"{len(provisional)} line{'s' if len(provisional) != 1 else ''}.",
+            "These unit costs will move once the missing weight or "
+            "volume is entered, and the margin, the price floor, the "
+            "ABC class and the stock valuation move with them.",
+            "Enter the missing weight or volume on the Landing "
+            "screen, which names the shipment and the figure it "
+            "wants.",
+            sorted(set(provisional)),
+        ))
+
+
 def check(
     items: Sequence[ItemSnapshot] = (),
     demand: Sequence[DemandPeriod] = (),
@@ -639,6 +705,7 @@ def check(
     _dates(items, demand, invoices, jobs, placements, as_of, out)
     _duplicates(items, demand, invoices, jobs, placements, out)
     _coverage(items, demand, invoices, jobs, placements, commitments, out)
+    _silently_incomplete(items, placements, out)
 
     out.sort(key=lambda f: (_ORDER[f.severity], -f.count, f.code))
     return tuple(out)
