@@ -243,6 +243,21 @@
         ['awaiting_goods', 'Awaiting goods', 'num'],
         ['unallocated', 'Reached no item', 'money'],
       ],
+      /* Which charge went nowhere, and what to go and do about it.
+         The totals above say how much; this says which, and the
+         action is the sentence somebody can act on. */
+      panels: [{
+        key: 'problems',
+        title: 'Charges that have not reached an item',
+        cols: [
+          ['shipment', 'Shipment', 'text'],
+          ['kind', 'Charge', 'said'],
+          ['billed', 'Billed', 'money'],
+          ['allocate_by', 'Divided by', 'said'],
+          ['blocked_by', 'What is missing', 'text'],
+          ['action', 'What to do', 'text'],
+        ],
+      }],
       notes: ['unallocated_note', 'awaiting_note'],
     },
     demand: {
@@ -507,6 +522,17 @@
       notes: ['caveat', 'reason'],
     },
     quality: {
+      /* Where each kind of finding is put right. The engine's own
+         dataset names, mapped once here rather than guessed at by a
+         person reading a sentence about demand_history.csv. */
+      fixAt: (r) => ({
+        inventory: 'stock',
+        demand: 'm/demand',
+        receivables: 'm/money',
+        commitments: 'm/cash',
+        machines: 'm/equipment',
+        service: 'm/service',
+      }[String(r.dataset || '').toLowerCase()]),
       views: [
         { id: 'all', label: 'Everything',
           blurb: 'Every check that found something.' },
@@ -989,6 +1015,83 @@
     });
     if (any) body.append(tiles);
 
+    /* Exceptions, before the table they are exceptions to.
+     *
+     * A module that finds something wrong has, until now, had two
+     * ways to say so: a total that looks odd, and a sentence in a
+     * note. Neither names the row. "PKR 560,000 reached no item" is a
+     * figure that worries somebody without telling them which of six
+     * charges on which of five shipments, or what to do about it --
+     * and working that out meant knowing that a charge is divided by
+     * a basis and that a basis of zero cannot be divided by.
+     *
+     * Declared like cols and tiles so any module can have one, and
+     * the module's own server code decides what belongs in it. Rows
+     * marked `expected` are shown quietly: a shipment still at sea
+     * has no received lines yet, and flagging that as though somebody
+     * forgot something trains people to ignore the flags. */
+    (spec.panels || []).forEach((pan) => {
+      const found = data[pan.key] || [];
+      if (!found.length) return;
+      const wrap = el('div', 'panel exceptions');
+      const head = el('div', 'section-head');
+      const live = found.filter((r) => !r.expected);
+      head.append(el('h3', null, pan.title));
+      head.append(el('span', 'asof', live.length
+        ? `${live.length} to deal with`
+        : 'nothing needing attention'));
+      wrap.append(head);
+      const t = el('table');
+      const thead = el('thead');
+      const hr = el('tr');
+      pan.cols.forEach(([, label, fmt]) => {
+        hr.append(el('th', fmt === 'money' || fmt === 'num' ? 'num' : '',
+          label));
+      });
+      thead.append(hr);
+      t.append(thead);
+      const tb = el('tbody');
+      live.forEach((r) => {
+        const tr = el('tr');
+        pan.cols.forEach(([k, , fmt]) => {
+          const v = r[k];
+          tr.append(el('td', fmt === 'money' || fmt === 'num' ? 'num' : '',
+            v === null || v === undefined || v === ''
+              ? '\u2014' : (FMT[fmt] || FMT.text)(v)));
+        });
+        tb.append(tr);
+      });
+      t.append(tb);
+      if (live.length) wrap.append(t);
+
+      /* The expected ones in a line, not a row each.
+       *
+       * A shipment at sea with four charges on it produced four
+       * identical rows saying nothing has been booked in against it,
+       * and the one charge that had actually gone astray was fourth
+       * in the list. Eight rows of the same sentence is how a person
+       * learns to skip the whole panel.
+       *
+       * They are still counted and still totalled, because the money
+       * is real and will land somewhere. They are just not eight
+       * separate things to read. */
+      const waiting = found.filter((r) => r.expected);
+      if (waiting.length) {
+        const ships = [...new Set(waiting.map((r) => r.shipment))];
+        const total = waiting.reduce((n, r) => n + (r.billed || 0), 0);
+        wrap.append(note(
+          `${waiting.length} other charge${waiting.length === 1 ? '' : 's'}`
+          + ` (${FMT.money(total)}) sit on ${ships.length} shipment`
+          + `${ships.length === 1 ? '' : 's'} with nothing booked in `
+          + `against ${ships.length === 1 ? 'it' : 'them'} yet: `
+          + `${ships.slice(0, 4).join(', ')}`
+          + `${ships.length > 4 ? ', and others' : ''}. That is the `
+          + 'normal state of a shipment still on its way; the charges '
+          + 'divide across the goods once they are received.', 'quiet'));
+      }
+      body.append(wrap);
+    });
+
     const rows = data[spec.key || 'rows'] || [];
     if (!rows.length) {
       const panel = el('div', 'panel');
@@ -1030,7 +1133,18 @@
         /* Only where the row is a stock line, because the drawer shows
            a line's movements and offers the four operations that write
            to the ledger. A customer or a payroll row has neither. */
-        onOpen: spec.opens ? (row) => L.openDetail(row, null) : null,
+        onOpen: spec.opens
+          ? (row) => L.openDetail(row, null)
+          /* Or, where the module says so, the screen that fixes this
+             row. A check reading "demand history for items that are
+             not in the stock file" leaves somebody to work out which
+             of nineteen screens that means, and a finding nobody can
+             act on in one step is a finding they read once and never
+             act on at all. */
+          : (spec.fixAt ? (row) => {
+            const to = spec.fixAt(row);
+            if (to) location.hash = `#${to}`;
+          } : null),
       }));
     } else {
       const panel = el('div', 'panel');

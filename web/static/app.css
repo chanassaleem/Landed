@@ -2638,3 +2638,35 @@ td.can-edit input[type='checkbox'] { width: auto; }
   color: var(--text-3);
   cursor: not-allowed;
 }
+
+/* ------------------------------------------------------ exception panels
+
+   What a module found wrong, named row by row, above the table it is
+   an exception to. */
+.exceptions { margin-bottom: 16px; }
+
+/* The corrective action is the column that needs the room, and it was
+   the one that got none: the table gave the shipment reference 770px
+   and squeezed "Enter the volume of each received line on this
+   shipment" into sixty, one word a line, eleven lines deep. Seen in a
+   browser.
+
+   The reference and the short labels are all narrow and fixed; what
+   is left goes to the sentence. */
+.exceptions td, .exceptions th { vertical-align: top; }
+.exceptions td:not(:last-child), .exceptions th:not(:last-child) {
+  width: 1%;
+  white-space: nowrap;
+}
+.exceptions td:last-child, .exceptions th:last-child {
+  width: auto;
+  min-width: 30ch;
+  white-space: normal;
+  line-height: 1.45;
+}
+
+/* A shipment still at sea has no received lines yet. That is the
+   normal state of a shipment, not a mistake, and styling it like one
+   teaches people to ignore the rows that are. */
+.exceptions tbody tr[data-expected='1'] { color: var(--text-3); }
+.exceptions tbody tr[data-expected='1'] td { font-style: normal; }
