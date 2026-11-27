@@ -2697,3 +2697,21 @@ td.can-edit input[type='checkbox'] { width: auto; }
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
 }
+
+/* The fix, beside the thing that is wrong. Narrow and last, so the
+   row still reads as a sentence before it offers a button. */
+.exceptions td.act-cell, .exceptions th.act-cell {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+}
+.exceptions td.act-cell .btn { padding: 3px 9px; font-size: 12px; }
+
+/* A field a form fills in for you, because the row it was opened from
+   already knew it. Readable rather than hidden: somebody about to
+   change a historical figure should see which record it belongs to. */
+.fld-locked {
+  background: var(--paper);
+  color: var(--text-2);
+  cursor: default;
+}

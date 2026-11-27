@@ -35,6 +35,55 @@
      -- the server owns those, and a second copy in the browser is a
      second thing to keep in step. */
   const FORMS = {
+    /* The two that put a wrong figure right. Both are opened from the
+       row that is wrong, with the record's identity filled in and
+       locked, because the screen already knows it and retyping it is
+       how a correction ends up filed against the wrong line. */
+    shipment_basis: {
+      title: 'Enter a missing measurement',
+      blurb: 'Weight and volume are what freight is divided by. Until '
+        + 'every line on a shipment has the one its charges use, the '
+        + 'whole charge lands on the lines that do \u2014 so those '
+        + 'are valued too high and the rest too low.',
+      post: '/api/shipment/basis',
+      fields: [
+        ['shipment', 'Shipment', 'text', {}],
+        ['sku', 'Item', 'text', {}],
+        ['batch', 'Batch', 'text', {}],
+        ['weight', 'Weight, kg', 'number',
+          { hint: 'From the packing list or the weighbridge ticket. '
+            + 'Enter 0 if this line really weighs nothing to the '
+            + 'carrier \u2014 a blank is an unanswered question, a '
+            + 'zero is an answer.' }],
+        ['volume', 'Volume, cbm', 'number', {}],
+        ['why', 'Where the figure comes from', 'text',
+          { req: true, hint: 'This moves money between items, so the '
+            + 'note is what explains the old split afterwards.' }],
+      ],
+    },
+    receipt_correction: {
+      title: 'Correct a receipt',
+      blurb: 'The original stays exactly as it was filed. This adds a '
+        + 'correction beside it and reverses the movement the first '
+        + 'one made, so the ledger still only ever grows and anyone '
+        + 'can see what was filed as well as what replaced it.',
+      post: '/api/receipt/correct',
+      fields: [
+        ['grn', 'Receipt', 'text', {}],
+        ['sku', 'Item', 'text', {}],
+        ['batch', 'Batch', 'text', {}],
+        ['qty', 'How many really arrived', 'number',
+          { hint: 'Leave blank to keep the recorded quantity.' }],
+        ['unit_cost', 'Cost each', 'number',
+          { hint: 'In the currency the receipt is in, which is the '
+            + 'order\u2019s where there was one. Blank keeps it.' }],
+        ['expiry', 'Expires', 'date', {}],
+        ['why', 'Why', 'text',
+          { req: true, hint: 'In three months this is the only thing '
+            + 'that will say whether it was a recount, a breakage or a '
+            + 'supplier\u2019s revised invoice.' }],
+      ],
+    },
     item: {
       title: 'Add an item',
       blurb: 'A line you buy and sell. The lead time is what makes its '
@@ -245,6 +294,21 @@
     wrap.append(lab);
 
     let input;
+    if (opt.locked) {
+      // Read-only rather than disabled: a disabled input is left out
+      // of the form's own data, and these are the fields that say
+      // which record is being changed.
+      input = el('input');
+      input.type = 'text';
+      input.readOnly = true;
+      input.id = id;
+      input.name = name;
+      input.value = opt.value === undefined ? '' : String(opt.value);
+      input.classList.add('fld-locked');
+      wrap.append(input);
+      if (opt.hint) wrap.append(el('p', 'fld-hint', opt.hint));
+      return wrap;
+    }
     if (type === 'select') {
       input = el('select');
       (opt.options || []).forEach(([v, text]) => {
@@ -270,11 +334,17 @@
     return wrap;
   }
 
-  function show(key, after) {
+  /* `given` prefills fields and locks the ones that say which record
+     this is about. An exception on a screen already knows the
+     shipment, the SKU and the batch; asking somebody to retype them
+     into a form opened from that very row is how a correction ends up
+     filed against the wrong line. */
+  function show(key, after, given) {
     if (!bind()) return;
     const spec = FORMS[key];
     if (!spec) return;
     close();
+    const fixed = given || {};
 
     const restore = document.activeElement;
     const root = el('div', 'modal');
@@ -305,7 +375,16 @@
     form.append(problems);
 
     const grid = el('div', 'fld-grid');
-    spec.fields.forEach((f) => grid.append(field(f)));
+    spec.fields.forEach((f) => {
+      const [name, label, type, opt = {}] = f;
+      if (!(name in fixed)) { grid.append(field(f)); return; }
+      /* Shown, not hidden. Somebody about to change a figure on a
+         historical record should be able to see which record, and a
+         form that silently carries an identity in a hidden input is
+         one nobody can check before they press the button. */
+      grid.append(field([name, label, type,
+        { ...opt, value: fixed[name], locked: true }]));
+    });
     form.append(grid);
 
     const foot = el('div', 'modal-foot');

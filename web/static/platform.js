@@ -247,6 +247,22 @@
          The totals above say how much; this says which, and the
          action is the sentence somebody can act on. */
       panels: [{
+        key: 'needs_measuring',
+        title: 'Lines with no measurement for the freight to divide by',
+        cols: [
+          ['shipment', 'Shipment', 'text'],
+          ['sku', 'Item', 'text'],
+          ['batch', 'Batch', 'text'],
+          ['qty', 'Quantity', 'qty'],
+          ['missing', 'What is missing', 'text'],
+        ],
+        act: {
+          label: 'Enter it',
+          form: 'shipment_basis',
+          identify: (r) => ({ shipment: r.shipment, sku: r.sku,
+            batch: r.batch || '' }),
+        },
+      }, {
         key: 'problems',
         title: 'Charges that have not reached an item',
         cols: [
@@ -1048,6 +1064,7 @@
         hr.append(el('th', fmt === 'money' || fmt === 'num' ? 'num' : '',
           label));
       });
+      if (pan.act && window.LANDED_RECORDS) hr.append(el('th', 'act-cell'));
       thead.append(hr);
       t.append(thead);
       const tb = el('tbody');
@@ -1059,6 +1076,25 @@
             v === null || v === undefined || v === ''
               ? '\u2014' : (FMT[fmt] || FMT.text)(v)));
         });
+        /* The fix, beside the thing that is wrong.
+         *
+         * The panel could explain what was missing and the person
+         * then had to find the right screen, the right shipment and
+         * the right line to put it in. The form opens from this row
+         * with the record already named and locked, which is also
+         * how a correction stops being filed against the wrong line.
+         */
+        if (pan.act && window.LANDED_RECORDS) {
+          const cell = el('td', 'act-cell');
+          const b = el('button', 'btn', pan.act.label);
+          b.type = 'button';
+          b.addEventListener('click', () => window.LANDED_RECORDS.show(
+            r.act || pan.act.form,
+            () => L.go(location.hash.slice(1)),
+            pan.act.identify(r)));
+          cell.append(b);
+          tr.append(cell);
+        }
         tb.append(tr);
       });
       t.append(tb);

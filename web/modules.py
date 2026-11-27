@@ -313,6 +313,41 @@ def _freight(f) -> dict:
         ).fetchall()
     ]
 
+    # The lines a charge cannot be divided across, one row each.
+    #
+    # The charge-level warning says a measurement is missing on two of
+    # five lines. This says which two, so the fix is a click from the
+    # thing that is wrong rather than a hunt through the shipment.
+    needs = []
+    for r in f.conn.execute(
+        "select distinct s.reference, i.sku, coalesce(gl.batch, ''),"
+        "       gl.qty, sl.weight_kg is null, sl.volume_cbm is null,"
+        "       string_agg(distinct c.allocate_by, ', ')"
+        "  from public.shipment_lines sl"
+        "  join public.grn_lines_live gl on gl.id = sl.grn_line_id"
+        "  join public.shipments s on s.id = sl.shipment_id"
+        "  join public.items i on i.id = gl.item_id"
+        "  join public.shipment_costs c on c.shipment_id = s.id"
+        " where (sl.weight_kg is null and c.allocate_by = 'weight')"
+        "    or (sl.volume_cbm is null and c.allocate_by = 'volume')"
+        " group by s.reference, i.sku, gl.batch, gl.qty,"
+        "          sl.weight_kg, sl.volume_cbm"
+        " order by s.reference, i.sku"
+    ).fetchall():
+        wants = []
+        if r[4] and "weight" in (r[6] or ""):
+            wants.append("weight")
+        if r[5] and "volume" in (r[6] or ""):
+            wants.append("volume")
+        if not wants:
+            continue
+        needs.append({
+            "shipment": r[0], "sku": r[1], "batch": r[2] or None,
+            "qty": round(float(r[3] or 0), 4),
+            "missing": " and ".join(wants),
+            "act": "shipment_basis",
+        })
+
     # What each received line actually ended up costing per unit. This
     # is the number that should be the unit cost everywhere else, and
     # the gap between it and the invoice price is the whole point.
@@ -446,6 +481,7 @@ def _freight(f) -> dict:
         "breakdown": breakdown,
         "lines": lines,
         "problems": problems,
+        "needs_measuring": needs,
         "needs_attention": sum(1 for p in problems if not p["expected"]),
         # Counted apart because the money is not missing -- it all
         # landed. What is wrong is which goods it landed on, and a

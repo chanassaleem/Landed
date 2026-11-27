@@ -484,7 +484,16 @@ function openDetail(given, tr) {
   body.append(log);
   loadHistory(row, logBody);
 
+  redrawActions(row);
+
+  d.hidden = false;
+}
+
+/* Drawn on open, and again once the receipts come back: whether a
+   line has any decides whether there is anything to correct. */
+function redrawActions(row) {
   const acts = $('detail-actions');
+  if (!acts) return;
   acts.textContent = '';
   OPS.forEach((op) => {
     if (op.when && !op.when(row)) return;
@@ -494,9 +503,8 @@ function openDetail(given, tr) {
     b.addEventListener('click', () => openForm(op, row));
     acts.append(b);
   });
-
-  d.hidden = false;
 }
+
 
 async function loadHistory(row, host) {
   try {
@@ -504,6 +512,12 @@ async function loadHistory(row, host) {
       `/api/line/history?sku=${encodeURIComponent(row.sku)}`
       + `&branch=${encodeURIComponent(row.branch)}`);
     const d = await r.json();
+    /* Hung on the row so the operations can see them. The drawer
+       asks for this on open; carrying every line's receipts in the
+       stock payload would be a year of arrivals to render a list
+       somebody opens for one item. */
+    row.receipts = d.receipts || [];
+    if (row.receipts.length) redrawActions(row);
     host.textContent = '';
     if (!d.ok || !d.movements.length) {
       host.append(el('p', 'drop-sub',
@@ -691,6 +705,42 @@ const OPS = [
       weight: v.weight === '' ? null : Number(v.weight),
       volume: v.volume === '' ? null : Number(v.volume),
       note: v.note, client_ref: v.client_ref }],
+  },
+  {
+    /* A receipt that was wrong, put right from the item it is about.
+       The endpoint existed and nothing in the browser called it, so a
+       person could see on the import preview that a receipt
+       disagreed with their file and had no way to do anything about
+       it. */
+    key: 'correct', label: () => 'Correct a receipt',
+    when: (row) => (row.receipts || []).length > 0,
+    title: 'Correct a receipt',
+    note: 'Which arrival was wrong.',
+    fields: [
+      { name: 'line', label: 'Which receipt', type: 'choice',
+        required: true, empty: 'Choose one\u2026',
+        hint: 'The original stays as it was filed; this adds a '
+          + 'correction beside it.' },
+    ],
+    enrich: (row, fields) => {
+      (row.receipts || []).forEach((r) => {
+        const opt = el('option', null,
+          `${r.grn} \u2014 ${qty(r.qty)}`
+          + (r.batch ? ` of ${r.batch}` : '')
+          + (r.received_at ? `, ${r.received_at}` : ''));
+        opt.value = JSON.stringify(
+          { grn: r.grn, sku: row.sku, batch: r.batch || '' });
+        fields.line.input.append(opt);
+      });
+      if ((row.receipts || []).length === 1) {
+        fields.line.input.selectedIndex = 1;
+      }
+    },
+    /* Opens the correction form rather than posting: the figures and
+       the reason belong in a form that names the receipt, not in this
+       one. */
+    opens: (row, v) => (v.line
+      ? ['receipt_correction', JSON.parse(v.line)] : null),
   },
   {
     key: 'sale', label: () => 'Record a sale',
@@ -899,6 +949,15 @@ function openForm(op, row) {
     go.textContent = 'Recording…';
     err.hidden = true;
     try {
+      if (op.opens) {
+        const chosen = op.opens(row, values);
+        if (!chosen) throw new Error('Choose a receipt first.');
+        go.disabled = false;
+        go.textContent = op.title;
+        closeDetail();
+        window.LANDED_RECORDS.show(chosen[0], () => boot(), chosen[1]);
+        return;
+      }
       const [url, payload] = op.send(row, values);
       const r = await fetch(url, {
         method: 'POST',

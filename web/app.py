@@ -1370,8 +1370,31 @@ def line_history(request: Request, sku: str, branch: str,
 
     try:
         with _ops(claims) as conn:
+            # The receipts behind it, so the drawer can offer to
+            # correct one. Live lines only: a line already superseded
+            # by a correction is not the one to correct again, and
+            # the chain stays readable that way.
+            receipts = [
+                {"grn": r[0], "batch": r[1], "qty": float(r[2]),
+                 "unit_price": float(r[3]),
+                 "currency": r[4], "fx_rate": float(r[5]),
+                 "received_at": r[6].isoformat() if r[6] else None,
+                 "corrects": bool(r[7])}
+                for r in conn.execute(
+                    "select g.grn_number, gl.batch, gl.qty, gl.unit_price,"
+                    "       gl.currency, gl.fx_rate, g.received_at,"
+                    "       gl.supersedes is not null"
+                    "  from public.grn_lines_live gl"
+                    "  join public.goods_receipts g on g.id = gl.grn_id"
+                    "  join public.items i on i.id = gl.item_id"
+                    "  join public.locations l on l.id = g.location_id"
+                    " where i.sku = %s and l.code = %s"
+                    " order by g.received_at desc, g.grn_number"
+                    " limit 40", (sku, branch)).fetchall()
+            ]
             return JSONResponse({"ok": True,
-                                 "movements": history(conn, sku, branch)})
+                                 "movements": history(conn, sku, branch),
+                                 "receipts": receipts})
     except Exception as exc:
         return _op_error(exc)
 
