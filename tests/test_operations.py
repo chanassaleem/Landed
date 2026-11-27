@@ -287,7 +287,14 @@ def test_two_sales_at_once_cannot_sell_the_same_stock(shop):
     import psycopg
 
     con, cur = shop
-    dsn = con.info.dsn
+    # The module's own DSN, not con.info.dsn.
+    #
+    # psycopg strips the password out of info.dsn deliberately, so the
+    # side connections below reached a CI server that wants one and
+    # were refused with "fe_sendauth: no password supplied". The test
+    # then never got as far as the two sales it exists to run, and
+    # failed in a way that looked like the lock was broken.
+    dsn = DSN
     # No commit here. The fixture already committed the shop's rows,
     # and its role and claims are transaction-local -- committing
     # would discard them, and the side connections would be told this

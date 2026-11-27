@@ -18,6 +18,7 @@ import uuid
 import pytest
 
 psycopg = pytest.importorskip("psycopg")
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 DSN = os.environ.get("LANDED_TEST_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="LANDED_TEST_DSN not set")
@@ -40,7 +41,18 @@ def blank():
     name = f"mig_{uuid.uuid4().hex[:10]}"
     admin = psycopg.connect(DSN, autocommit=True)
     admin.execute(f'create database "{name}"')
-    dsn = DSN.replace("/landed?", f"/{name}?")
+    # Built from the connection's own parts, not by editing its text.
+    #
+    # This replaced the literal "/landed?" in the DSN, which works on
+    # a local socket URL and does nothing at all on CI's
+    # postgres://postgres:postgres@localhost:5432/landed -- no
+    # question mark, so no match, so every one of these tests ran
+    # against the shared database and collided with the tables
+    # already in it. Eight failures that said nothing about the
+    # migration runner and everything about this line.
+    parts = conninfo_to_dict(DSN)
+    parts["dbname"] = name
+    dsn = make_conninfo(**parts)
     con = psycopg.connect(dsn, autocommit=True)
     con.execute(SHIM.read_text())
     yield dsn, con
