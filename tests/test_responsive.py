@@ -312,3 +312,39 @@ def test_the_filled_tokens_actually_invert():
     # or a "filled" control stops standing out from the page.
     assert _contrast(light["filled"], light["paper"]) >= 4.5
     assert _contrast(dark["filled"], dark["paper"]) >= 4.5
+
+
+def test_a_run_out_session_is_not_reported_as_a_broken_module():
+    """It showed the server's own word, "sign in", as the body of
+    "That module could not be read" -- leaving somebody staring at a
+    broken screen with two words on it and nowhere to go. The forms
+    had said this properly for months; the module path had not caught
+    up."""
+    js = (pathlib.Path(__file__).resolve().parents[1]
+          / "web" / "static" / "platform.js").read_text()
+    i = js.index("if (res.status === 401) {")
+    branch = js[i:i + 900]
+    assert "session has run out" in branch
+    assert "btn primary" in branch, "no way back, only a sentence"
+    assert "next=" in branch, (
+        "signing in should return to the screen they were on")
+
+
+def test_the_return_address_cannot_be_turned_into_a_redirect():
+    """Only our own error card ever sets it, which is exactly the
+    reasoning that gets an open redirect shipped."""
+    js = (pathlib.Path(__file__).resolve().parents[1]
+          / "web" / "static" / "sign-in.js").read_text()
+    # Matched by its shape, not by a regex over a regex: the pattern
+    # being checked contains slashes, so anything of the form
+    # "/\^[^/]+/" stops reading it halfway and finds nothing.
+    line = next((l for l in js.split("\n")
+                 if "location.href =" in l and ".test(next)" in l), None)
+    assert line, "sign-in no longer validates the return address"
+    assert "/^#" in line, (
+        f"the return address is not anchored to a fragment: {line.strip()}")
+    # The shapes that must not get through.
+    for bad in ("https://", "//", "javascript:", "/etc"):
+        assert not re.match(r"^#[\w/?=&.-]*$", bad), bad
+    for good in ("#m/cash", "#m/stock?view=idle", "#today"):
+        assert re.match(r"^#[\w/?=&.-]*$", good), good

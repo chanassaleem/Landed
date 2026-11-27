@@ -81,7 +81,12 @@ $('gate-form').addEventListener('submit', async (e) => {
         'up, then come back and sign in.</p>';
       return;
     }
-    location.href = '/';
+    /* Back where they were, when a screen sent them here because
+       their session had run out. Only a same-page fragment is
+       honoured -- an open redirect is an open redirect even when the
+       only thing that ever sets it is our own error card. */
+    const next = new URLSearchParams(location.search).get('next') || '';
+    location.href = /^#[\w/?=&.-]*$/.test(next) ? `/${next}` : '/';
   } catch (err) {
     fail(err.message);
     go.disabled = false;

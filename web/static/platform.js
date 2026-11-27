@@ -1044,6 +1044,32 @@
       payload = text ? JSON.parse(text) : {};
       if (!res.ok) {
         body.textContent = '';
+        /* A session that has run out is not a module that could not
+           be read, and it must not read like one. The access token
+           lasts an hour and is renewed from the refresh cookie before
+           it expires, so a 401 here means that failed too -- the
+           refresh token has gone, or somebody signed out in another
+           tab.
+
+           It used to show the server's own word, "sign in", as the
+           body of "That module could not be read", which leaves
+           somebody staring at a broken screen with two words on it
+           and nowhere to go. The forms have said this properly for
+           months; this path had not caught up. */
+        if (res.status === 401) {
+          const card = L.empty('Your session has run out',
+            'Nothing is wrong with the figures \u2014 this screen just '
+            + 'cannot ask for them any more. Sign in again and you '
+            + 'will come straight back here.');
+          const back = el('a', 'btn primary', 'Sign in again');
+          /* Carrying where they were, so signing in returns them to
+             this screen rather than to the front page. */
+          back.href = `/sign-in?next=${encodeURIComponent(
+            location.hash || `#m/${mod.id}`)}`;
+          card.append(back);
+          body.append(card);
+          return;
+        }
         body.append(L.empty('That module could not be read',
           payload.detail || payload.error
           || `The server answered ${res.status}.`));
