@@ -21,7 +21,10 @@ matters here, and every state-changing route is a POST for that reason.
 
 from __future__ import annotations
 
+import base64
+import json
 import os
+import time
 from dataclasses import dataclass
 from urllib.parse import quote
 
@@ -245,3 +248,30 @@ def set_session(response, tokens: Tokens) -> None:
 def clear_session(response) -> None:
     for name in (ACCESS, REFRESH):
         response.delete_cookie(name, path="/")
+
+
+def needs_refresh(expires_at: int | None,
+                  now: float | None = None) -> bool:
+    """Whether to renew, given what the verifier made of the token.
+
+    `expires_at` comes from claims that have been checked against the
+    project's signing keys, and None means the token did not verify at
+    all -- expired, malformed, or signed by something else.
+
+    The first version of this read `exp` out of the token itself
+    without verifying it. That was wrong twice over. It put a second,
+    weaker opinion about expiry next to the verifier's, which is how
+    two readings of one fact drift apart; and it treated anything it
+    could not parse as due for renewal, so a session whose access
+    token the verifier was perfectly happy with got a round trip to
+    Supabase on every request, and when that failed, cleared. Ask the
+    thing that already knows.
+
+    A refresh costs a round trip, so not on every request -- only when
+    the token is close enough to expiry that the next one might land
+    after it.
+    """
+    if expires_at is None:
+        return True
+    return expires_at - (now if now is not None else time.time()) \
+        <= REFRESH_WITHIN

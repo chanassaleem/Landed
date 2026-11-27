@@ -111,6 +111,84 @@ app = FastAPI(title="Landed", version=__version__, docs_url=None, redoc_url=None
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
+# Paths that never need a session, so never spend a round trip looking.
+# /health in particular is polled by the platform every few seconds.
+NO_SESSION = ("/health", "/static", "/favicon.ico", "/auth/")
+
+
+@app.middleware("http")
+async def keep_the_session_alive(request: Request, call_next):
+    """Renew the access token before it expires, using the refresh cookie.
+
+    Supabase access tokens last an hour. Auth.refresh and REFRESH_WITHIN
+    were both written and neither was ever called, so an hour into any
+    session every request started failing: the access cookie was there,
+    the verifier rejected it as expired, `who` returned None and
+    `require` raised 401. The refresh cookie sat beside it, valid for
+    thirty days, unused. What a person saw was the application going
+    dead while they were working in it.
+
+    Before the route, not after. By the time a handler has run it has
+    already returned its 401, and refreshing then would fix the request
+    after the one that failed.
+
+    No endless loop: a refresh that Supabase rejects clears both
+    cookies, so the next request arrives as a visitor and gets the
+    sign-in screen. There is nothing left to retry with, which is a
+    better guard than a counter because it cannot be got wrong.
+    """
+    if request.url.path.startswith(NO_SESSION):
+        return await call_next(request)
+
+    refresh = request.cookies.get(session.REFRESH)
+    renewed = None
+    failed = False
+
+    # What the verifier makes of the token it has, which is the only
+    # opinion about expiry worth holding: it is checked against the
+    # project's signing keys. None means there is nothing usable.
+    claims = who(request)
+    if refresh and session.needs_refresh(
+            claims.expires_at if claims else None):
+        try:
+            renewed = auth().refresh(refresh)
+        except Exception:                                # noqa: BLE001
+            # Rejected, expired, or Supabase unreachable. Either way
+            # this session cannot be renewed; clear it rather than
+            # leaving a cookie that will be retried on every request.
+            failed = True
+
+    if renewed:
+        # The route is about to read the cookie header, so it has to see
+        # the new token. Rewritten in the scope rather than handed down
+        # some other way, so every existing reader -- `who`, `require`,
+        # the ones that pass the token to Supabase -- picks it up
+        # without knowing a refresh happened.
+        _swap_access_cookie(request, renewed.access)
+
+    response = await call_next(request)
+
+    if renewed:
+        session.set_session(response, renewed)
+    elif failed:
+        session.clear_session(response)
+    return response
+
+
+def _swap_access_cookie(request: Request, access: str) -> None:
+    """Put the renewed token where the rest of the request will find it."""
+    jar = dict(request.cookies)
+    jar[session.ACCESS] = access
+    cookie = "; ".join(f"{k}={v}" for k, v in jar.items())
+    headers = [(k, v) for k, v in request.scope["headers"]
+               if k != b"cookie"]
+    headers.append((b"cookie", cookie.encode("latin-1")))
+    request.scope["headers"] = headers
+    # Starlette caches the parsed jar on first access, so the cached
+    # copy has to go with it or the route reads the old token.
+    request._cookies = jar
+
+
 @app.get("/health")
 def health() -> dict:
     """Is the process up? Nothing more.
