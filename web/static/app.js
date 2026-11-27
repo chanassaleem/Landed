@@ -575,6 +575,10 @@ const OPS = [
           + 'it genuinely cost nothing \u2014 a blank with no order '
           + 'would let these units take the price of whatever else '
           + 'is on the shelf.' },
+      { name: 'currency', label: 'Priced in', type: 'text',
+        placeholder: 'PKR' },
+      { name: 'fx', label: 'At what rate', type: 'number',
+        placeholder: 'optional' },
       { name: 'batch', label: 'Batch or lot', type: 'text',
         placeholder: 'optional',
         hint: 'Two lots of one item on one arrival are two lines. '
@@ -599,14 +603,69 @@ const OPS = [
       const weigh = [fields.weight, fields.volume];
       let orders = [];
 
+      const base = (S.data && S.data.currency) || 'PKR';
+      const money = [fields.currency, fields.fx];
+
+      /* What currency that cost is in, and at what rate.
+       *
+       * The server has taken both since receiving was rewritten and
+       * the form never offered them, so a manual receipt of goods
+       * invoiced in euro could only be entered as rupees. Typing the
+       * euro figure valued the stock at a three-hundredth of what it
+       * cost -- the same 305x error this project has already paid
+       * for once.
+       *
+       * A rate stated here beats the order's, which is the point of
+       * holding one per receipt: the second container cleared at a
+       * different rate, and that difference is the margin. */
+      const moneyHint = (po) => {
+        if (po) {
+          money[0].input.placeholder = po.currency;
+          money[1].input.placeholder = String(po.fx_rate);
+          money[1].input.required = false;
+          money[0].hint.hidden = false;
+          money[0].hint.textContent =
+            `Blank takes ${po.po_number}\u2019s own: ${po.currency} at `
+            + `${po.fx_rate}. Fill them in only if this consignment `
+            + `cleared at a different rate \u2014 that difference is `
+            + 'yours to keep or lose, so it is worth recording.';
+          money[1].hint.hidden = true;
+          return;
+        }
+        money[0].input.placeholder = base;
+        money[1].input.placeholder = 'optional';
+        const said = money[0].input.value.trim().toUpperCase();
+        const foreign = said && said !== base;
+        money[1].input.required = foreign;
+        money[0].hint.hidden = false;
+        money[0].hint.textContent = foreign
+          ? `A cost in ${said} needs the rate it was bought at. `
+            + `Without one there is no telling ${said} from ${base}.`
+          : `Blank means ${base}. If the invoice is in another `
+            + 'currency, say which and at what rate \u2014 a foreign '
+            + 'figure read as rupees undervalues the stock by the '
+            + 'whole exchange rate.';
+        money[1].hint.hidden = !foreign;
+        if (foreign) {
+          money[1].hint.textContent =
+            'The rate the money actually changed hands at, not '
+            + 'today\u2019s. A rate looked up later is not the one '
+            + 'you paid.';
+        }
+      };
+      fields.currency.input.addEventListener('input',
+        () => moneyHint(orders.find(
+          (o) => o.po_number === fields.po.input.value)));
+
       const costHint = () => {
         const po = orders.find((o) => o.po_number === fields.po.input.value);
+        moneyHint(po);
         if (!po) {
           cost.input.required = true;
-          cost.hint.textContent = `In ${S.data ? S.data.currency : 'PKR'}, `
-            + 'per unit. Enter 0 if it genuinely cost nothing \u2014 a '
-            + 'blank would let these units take the price of whatever '
-            + 'else is on the shelf.';
+          cost.hint.textContent = 'Per unit, in the currency below. '
+            + 'Enter 0 if it genuinely cost nothing \u2014 a blank '
+            + 'would let these units take the price of whatever else '
+            + 'is on the shelf.';
           return;
         }
         /* The order knows the price and the rate, so neither has to
@@ -704,6 +763,7 @@ const OPS = [
       batch: v.batch, expiry: v.expiry,
       weight: v.weight === '' ? null : Number(v.weight),
       volume: v.volume === '' ? null : Number(v.volume),
+      currency: v.currency, fx: v.fx === '' ? null : Number(v.fx),
       note: v.note, client_ref: v.client_ref }],
   },
   {

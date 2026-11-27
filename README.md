@@ -25,7 +25,8 @@ web/         FastAPI app, serving its own UI. One service, one deploy.
 supabase/
   migrations/  the schema and every row-level security policy
   tests/       a shim of Supabase's auth schema, so CI can run the policies
-tests/       589 engine tests + the policy and schema suites
+tests/       the engine, the policies, the schema guards, and one
+             walk of the whole workflow over HTTP
 tools/       the Excel model generator and the model verifier
 Dockerfile   Cloud Run
 ```
@@ -58,17 +59,27 @@ pip install -r requirements-dev.txt
 python -m pytest tests/ -q          # engine + schema guards, no database needed
 ```
 
-The policy tests need a Postgres. Any one will do:
+Most of them need a Postgres. Any one will do:
 
 ```bash
 createdb landed
 psql -d landed -f supabase/tests/00_supabase_shim.sql
-for f in supabase/migrations/*.sql; do psql -d landed -v ON_ERROR_STOP=1 -f "$f"; done
+DATABASE_URL='postgres:///landed' python tools/migrate.py apply
 
-LANDED_TEST_DSN='postgres:///landed' python -m pytest tests/test_rls.py -q
+LANDED_TEST_DSN='postgres:///landed' python -m pytest -q
 ```
 
-CI runs both on every push, against a real Postgres 16.
+CI runs the lot on every push, against a real Postgres 16 reached over
+TCP with a password. That is worth knowing when writing a fixture: two
+of them assumed a local socket URL and passed everywhere except there.
+
+`tests/test_acceptance.py` is the one to read first. It walks the whole
+workflow — two branches, a euro order, a shipment, charges in three
+currencies, a partial delivery in two lots, the landed cost, a
+re-import, sales, a transfer, a correction, and a second importer who
+sees none of it — over the HTTP endpoints the browser uses, checking
+the database figures at each step. Both bugs it has found so far were
+ones that only appear between an endpoint and the operation under it.
 
 ## Security, in three rules
 
@@ -91,6 +102,35 @@ The service role key bypasses all of it. Server-side only, never in a
 browser bundle.
 
 ## Deploying
+
+**Migrate first, then deploy.** New code against an old schema fails on
+the first query that needs the new column; old code against a new one
+almost always works, which is what makes a rollback safe.
+
+```bash
+DATABASE_URL='<session pooler string>' python tools/migrate.py status
+DATABASE_URL='...' python tools/migrate.py apply
+```
+
+A database that was brought up to date by hand is `baseline`d first, so
+the files are recorded as applied without being run again:
+
+```bash
+DATABASE_URL='...' python tools/migrate.py baseline --through 0015
+```
+
+The container runs `migrate.py verify` before uvicorn and refuses to
+start if anything is pending or has been edited since it was applied, so
+a deploy whose migrations have not been applied fails as a deploy rather
+than coming up and returning errors that look like application bugs.
+Migrations are never applied at startup: three workers booting would run
+each of them three times. `supabase/MIGRATIONS.md` has the rest,
+including why there are no down-migrations.
+
+On Supabase, `DATABASE_URL` must be the **session pooler** string
+(Connect → Session pooler, port 5432). The direct connection resolves to
+IPv6 only without the IPv4 add-on, and fails with a name-resolution
+error that looks nothing like its cause.
 
 Cloud Run, because it scales to zero and an idle API then costs nothing:
 
