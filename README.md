@@ -27,8 +27,9 @@ supabase/
   tests/       a shim of Supabase's auth schema, so CI can run the policies
 tests/       the engine, the policies, the schema guards, and one
              walk of the whole workflow over HTTP
-tools/       the Excel model generator and the model verifier
-Dockerfile   Cloud Run
+tools/       the migration runner, the Excel model generator and its
+             verifier, and a dev server that serves the app signed in
+Dockerfile   the image, for Cloud Run or Render
 ```
 
 The engine came over from `sop-insight` unchanged, and its tests pass
@@ -57,6 +58,17 @@ the service role.
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest tests/ -q          # engine + schema guards, no database needed
+```
+
+One file needs a browser as well as a database.
+`tests/test_the_pages_actually_load.py` opens every screen in Chromium
+and fails on any console error, which is the only thing that catches a
+name the code calls and nothing declares — `node --check` proves a file
+parses, not that it runs. It skips itself where Playwright or its
+browser is missing; CI installs both.
+
+```bash
+python -m playwright install --with-deps chromium
 ```
 
 Most of them need a Postgres. Any one will do:
@@ -268,7 +280,19 @@ immediately. Turn it back on before anyone else has an account.
 
 ## Status
 
-Phase 1 of five. The spine is in: tenancy, roles, branch scoping, module
-entitlements, the ledger, goods receipt, and landed cost — all with
-policies that are tested rather than assumed. Next is the importer
-screens on top of it.
+The spine is in and the screens are on top of it: tenancy, roles, branch
+scoping, module entitlements, the ledger, goods receipt, landed cost and
+its corrections — all with policies that are tested rather than assumed.
+Fourteen modules are built and reachable: Stock, Ordering, Landing,
+Forecast, Cash, Owed, Sales, Books, Customers, Payroll, Equipment,
+Service, Checks and Pipeline. The importer takes a workbook, previews
+what it would change, and commits it.
+
+What is worth knowing before trusting a figure on screen: a landed cost
+whose shipment has a charge that could not be divided is marked
+provisional rather than presented as settled, and a placed machine with
+no reagent linked to it reports its recovery as unknown rather than
+zero. Both also appear as findings on Checks, with the screen that
+fixes each. The arithmetic the product exists for is covered; the gaps
+that remain are in breadth of data entry rather than in whether the
+numbers can be believed.
