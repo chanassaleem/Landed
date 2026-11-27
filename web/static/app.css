@@ -86,6 +86,19 @@
 
   --focus:      #1C7A8C;
 
+  /* A filled control that has to stand out from the page: a selected
+     view chip, a primary button. These flip with the theme, which
+     --ink does not -- it is a fixed near-black, so "background:
+     var(--ink); color: var(--surface)" is white-on-black in the
+     light theme and dark-on-dark in the dark one. That is how the
+     selected view chip came to be invisible in dark mode, so nobody
+     could see which view they were on, and how the modal's confirm
+     button and the invite button went the same way. Each had been
+     fixed once, on .btn.primary, with a one-off override; the other
+     three were written later and inherited the trap. */
+  --filled:     #0E1116;   /* the control's own surface */
+  --on-filled:  #FFFFFF;   /* text that reads on it */
+
   --row:        34px;
   --bar:        48px;
   --r:          4px;
@@ -122,6 +135,10 @@
   --idle-bg:      #26224A;
 
   --focus:      #4FB3C4;
+
+  /* Inverted: on ink, a filled control stands out by being light. */
+  --filled:     #EDF0F4;
+  --on-filled:  #0E1116;
 }
 
 * { box-sizing: border-box; }
@@ -703,11 +720,10 @@ td.dim { color: var(--text-2); }
 }
 .btn:hover { background: var(--sunk); border-color: var(--text-3); }
 .btn.primary {
-  background: var(--ink);
-  border-color: var(--ink);
-  color: #fff;
+  background: var(--filled);
+  border-color: var(--filled);
+  color: var(--on-filled);
 }
-[data-theme='dark'] .btn.primary { background: var(--text); color: var(--ink); }
 .btn.primary:hover { filter: brightness(1.25); }
 
 .empty {
@@ -1952,9 +1968,9 @@ tbody tr.flagged td:first-child {
 }
 
 .modal-foot button.primary {
-  color: var(--surface);
-  background: var(--ink);
-  border-color: var(--ink);
+  color: var(--on-filled);
+  background: var(--filled);
+  border-color: var(--filled);
 }
 
 .modal-foot button:disabled { opacity: 0.55; cursor: default; }
@@ -2022,9 +2038,9 @@ tbody tr.flagged td:first-child {
   font: inherit;
   font-size: 12.5px;
   font-weight: 500;
-  color: var(--surface);
-  background: var(--ink);
-  border: 1px solid var(--ink);
+  color: var(--on-filled);
+  background: var(--filled);
+  border: 1px solid var(--filled);
   border-radius: var(--r);
   cursor: pointer;
 }
@@ -2352,9 +2368,9 @@ td.can-edit input[type='checkbox'] { width: auto; }
 .grid-chip:hover { border-color: var(--text-3); color: var(--text); }
 
 .grid-chip[data-on='1'] {
-  color: var(--surface);
-  background: var(--ink);
-  border-color: var(--ink);
+  color: var(--on-filled);
+  background: var(--filled);
+  border-color: var(--filled);
 }
 
 /* ---------------------------------------------------- the way into a row

@@ -276,3 +276,39 @@ def test_the_screen_guide_does_not_fill_a_phone_before_the_figures():
     assert "!seen && !narrow" in body, (
         "the guide should open on a first visit on a wide screen and "
         "stay closed on a narrow one")
+
+
+def test_no_filled_control_is_built_from_ink_and_surface():
+    """--ink is a fixed near-black that does not flip with the theme,
+    so "background: var(--ink); color: var(--surface)" is white on
+    black in the light theme and dark on dark in the dark one.
+
+    That is how the selected view chip became invisible in dark mode
+    -- nobody could see which view they were on -- and the modal's
+    confirm button and the invite button went the same way. .btn
+    .primary had been fixed once with a one-off override; the three
+    written later inherited the trap. --filled and --on-filled flip,
+    so there is nothing left to inherit."""
+    bare = re.sub(r"/\*.*?\*/", "", CSS, flags=re.S)
+    offenders = []
+    for block in re.findall(r"([^{}]+)\{([^}]*)\}", bare):
+        selector, body = block[0].strip(), block[1]
+        if "var(--ink)" in body and "var(--surface)" in body:
+            offenders.append(selector.split("\n")[-1].strip())
+    assert not offenders, (
+        "these rules pair --ink with --surface, which is dark on dark "
+        f"in the dark theme: {offenders}")
+
+
+def test_the_filled_tokens_actually_invert():
+    """A pair that does not flip is the bug with new names on it."""
+    light = _theme_tokens(":root {", "[data-theme=")
+    dark = _theme_tokens("[data-theme='dark'] {", None)
+    for t in ("filled", "on-filled"):
+        assert t in light and t in dark, f"--{t} is missing from a theme"
+    assert _contrast(light["filled"], light["on-filled"]) >= 4.5
+    assert _contrast(dark["filled"], dark["on-filled"]) >= 4.5
+    # And the filled surface must be the opposite side in each theme,
+    # or a "filled" control stops standing out from the page.
+    assert _contrast(light["filled"], light["paper"]) >= 4.5
+    assert _contrast(dark["filled"], dark["paper"]) >= 4.5
