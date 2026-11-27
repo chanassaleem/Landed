@@ -108,6 +108,7 @@
     state.order = state.order || [];
     state.view = state.view || (views[0] ? views[0].id : 'all');
     state.display = state.display || 'comfortable';
+    state.sort = state.sort || null;        // { key, dir } or none
 
     const byKey = {};
     cols.forEach((c) => { byKey[c.key] = c; });
@@ -136,6 +137,37 @@
     const draw = () => {
       panel.textContent = '';
       panel.append(table());
+      const say = sayEditable();
+      if (say) panel.append(say);
+    };
+
+    /* Said once, under the table, because an affordance nobody knows
+       about is not an affordance.
+       
+       Editing worked: the editor opened, Enter saved, the server was
+       called. What was missing was any way to find out it was there.
+       Of the eight columns the stock screen shows by default exactly
+       one accepts typing, it was marked only on hover, and the hover
+       mark was the colour of the table's own hairlines. Someone who
+       did not happen to hover over that column and wait for a tooltip
+       had no reason to think the table could be corrected at all. */
+    const sayEditable = () => {
+      const can = cols.filter((c) => editable.includes(c.key));
+      if (!can.length || !onEdit) return null;
+      const shownNow = ordered().filter((c) => editable.includes(c.key));
+      const note = el('p', 'grid-note');
+      const names = (shownNow.length ? shownNow : can)
+        .map((c) => c.label);
+      const list = names.length > 1
+        ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+        : names[0];
+      note.textContent = shownNow.length
+        ? `Click ${list} to correct ${shownNow.length > 1 ? 'them' : 'it'}`
+          + ' \u2014 the underlined headings are the columns you can type'
+          + ' into.'
+        : `${can.length} more columns can be corrected once you show`
+          + ' them from Columns.';
+      return note;
     };
 
     /* ------------------------------------------------------ the toolbar */
@@ -224,12 +256,86 @@
     });
     bar.append(pick);
 
+    /* ---------------------------------------------------------- sorting
+
+       The grid had none. Every module screen draws its table through
+       here, so for fourteen screens a column heading was something to
+       drag or resize and not something to order by -- which is the
+       first thing anybody does to a table of two hundred rows.
+
+       Nulls sort last whichever way the column is pointing. A missing
+       figure is not a zero and must not travel with the zeros: an item
+       with no demand yet and an item selling nothing are different
+       facts, and this product spends a lot of effort keeping them
+       apart. */
+
+    const NUMERIC_SORT = new Set(['money', 'qty', 'num', 'pct', 'months',
+                                  'hours', 'days']);
+
+    function compare(a, b, c) {
+      const x = a[c.key];
+      const y = b[c.key];
+      const xEmpty = x === null || x === undefined || x === '';
+      const yEmpty = y === null || y === undefined || y === '';
+      if (xEmpty || yEmpty) return xEmpty && yEmpty ? 0 : (xEmpty ? 1 : -1);
+      if (NUMERIC_SORT.has(c.fmt)) return Number(x) - Number(y);
+      if (c.fmt === 'date') {
+        const dx = Date.parse(x);
+        const dy = Date.parse(y);
+        if (!Number.isNaN(dx) && !Number.isNaN(dy)) return dx - dy;
+      }
+      /* localeCompare with numeric: true, so RGT-2 comes before
+         RGT-10. A plain string sort puts it after, and a list of SKUs
+         is the one place that looks most obviously broken. */
+      return String(x).localeCompare(String(y), undefined,
+                                     { numeric: true, sensitivity: 'base' });
+    }
+
+    function sorted(body) {
+      const c = byKey[state.sort.key];
+      const sign = state.sort.dir === 'descending' ? -1 : 1;
+      /* A copy: `rows` is the caller's array, and sorting it in place
+         would reorder what every other view of it sees. */
+      return [...body].sort((a, b) => {
+        const by = compare(a, b, c);
+        // Empties stay last in both directions, so the sign is
+        // applied to the comparison and not to their placement.
+        if (by === 0) return 0;
+        const xEmpty = a[c.key] === null || a[c.key] === undefined
+          || a[c.key] === '';
+        const yEmpty = b[c.key] === null || b[c.key] === undefined
+          || b[c.key] === '';
+        if (xEmpty !== yEmpty) return by;
+        return by * sign;
+      });
+    }
+
+    /* `column`, not `key`. Named `key` it shadowed the grid's own key
+       -- the one every other save in here uses -- so the sort was
+       written to localStorage under the name of the column instead of
+       the name of the grid. It survived the click and vanished on
+       reload, and left a stray `landed.grid.on_hand` entry behind as
+       the only sign. */
+    function sortBy(column) {
+      const was = state.sort && state.sort.key === column
+        ? state.sort.dir : null;
+      // Ascending, then descending, then back to the order the server
+      // sent -- which is usually the one that matters most, so it has
+      // to be reachable again.
+      state.sort = was === 'ascending' ? { key: column, dir: 'descending' }
+        : was === 'descending' ? null
+          : { key: column, dir: 'ascending' };
+      save(key, state);
+      draw();
+    }
+
     /* -------------------------------------------------------- the table */
 
     function table() {
       const shown = ordered();
       const keep = (views.find((v) => v.id === state.view) || {}).keep;
-      const body = keep ? rows.filter(keep) : rows;
+      let body = keep ? rows.filter(keep) : rows;
+      if (state.sort && byKey[state.sort.key]) body = sorted(body);
 
       const t = el('table', 'grid-table');
       const thead = el('thead');
@@ -246,7 +352,42 @@
 
       shown.forEach((c, index) => {
         const th = el('th', numeric.has(c.fmt) ? 'num' : '');
-        th.append(el('span', 'th-label', c.label));
+
+        /* A button inside the heading rather than a click on the
+           heading itself. The th is already draggable for reordering
+           and carries the resize handle, and a plain click handler on
+           it fires at the end of a drag that was meant to move the
+           column. A button also brings the keyboard and the screen
+           reader with it. */
+        const label = el('button', 'th-label');
+        label.type = 'button';
+        label.textContent = c.label;
+        /* Which columns accept typing, said at the heading rather than
+           on every cell.
+           
+           It was marked on the cell and only on hover, with a cue the
+           same colour as the table's own hairlines -- so in the
+           default view of eight columns, exactly one was editable and
+           nothing on screen said so. The reasoning behind that was
+           sound as far as it went: a table where a third of the cells
+           advertise themselves is a table nobody can read. But the
+           thing being advertised is the column, not the cell, and the
+           heading is where a column says what it is. */
+        if (editable.includes(c.key) && onEdit) {
+          th.dataset.editable = '1';
+          label.title = `${c.label} can be corrected here`;
+        }
+        const dir = state.sort && state.sort.key === c.key
+          ? state.sort.dir : null;
+        if (dir) {
+          th.setAttribute('aria-sort', dir);
+          th.dataset.sorted = dir === 'descending' ? 'desc' : 'asc';
+        }
+        label.setAttribute('aria-label', dir
+          ? `${c.label}, sorted ${dir === 'descending' ? 'Z to A' : 'A to Z'}`
+          : `Sort by ${c.label}`);
+        label.addEventListener('click', () => sortBy(c.key));
+        th.append(label);
         const w = state.widths[c.key] || startWidth(c);
         if (w) th.style.width = `${w}px`;
 
@@ -411,6 +552,12 @@
             setTimeout(() => { delete td.dataset.refused; }, 1800);
           } else {
             row[col.key] = next;
+            /* A save that leaves no mark is a save nobody is sure
+               about -- and this one can be triggered by clicking
+               away, which is the easiest kind to miss. Brief, because
+               the value itself is the real confirmation. */
+            td.dataset.saved = '1';
+            setTimeout(() => { delete td.dataset.saved; }, 1400);
           }
         });
       };
