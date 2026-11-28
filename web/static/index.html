@@ -222,6 +222,34 @@
       </div>
     </section>
 
+    <!-- Counting a branch. Like receiving, a view rather than a
+         dialog: a shelf has a hundred lines on it and the work
+         takes a morning, with the page open the whole time. -->
+    <section class="view" id="v-stocktake">
+      <div class="wrap">
+        <div class="section">
+          <div class="section-head">
+            <h2>Stocktake</h2>
+            <p>Count a branch as one piece of work. Nothing reaches
+               the stock figure until you post it, so you can count
+               all morning and stop for lunch.</p>
+          </div>
+
+          <div class="recv-pick">
+            <label for="st-branch">Which branch</label>
+            <input id="st-branch" type="text" autocomplete="off"
+                   placeholder="KHI">
+            <button class="btn" id="st-open" type="button">Start a
+              count</button>
+            <button class="btn" id="st-list" type="button">Counts in
+              progress</button>
+          </div>
+
+          <div id="st-body"></div>
+        </div>
+      </div>
+    </section>
+
     <section class="view" id="v-import">
       <div class="wrap">
         <div class="section">

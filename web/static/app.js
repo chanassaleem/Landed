@@ -255,6 +255,7 @@ const VIEWS = [
   { id: 'today',     label: 'Today' },
   { sep: true },
   { id: 'receiving', label: 'Receiving' },
+  { id: 'stocktake', label: 'Stocktake' },
   { id: 'import',    label: 'Import' },
   { id: 'settings',  label: 'Settings' },
 ];
@@ -332,6 +333,7 @@ function go(view) {
   if (view === 'settings') renderSettings();
   if (view === 'import') renderModel();
   if (view === 'receiving') wireReceiving();
+  if (view === 'stocktake') wireStocktake();
   $('main').scrollTop = 0;
   /* Only when the address does not already say so. go() is called
      both by the router, which is reacting to the address, and by a
@@ -2926,4 +2928,324 @@ function drawDelivery(host, d) {
       save.textContent = 'Record this delivery';
     }
   });
+}
+
+/* ------------------------------------------------------- stocktake
+   Counting a branch as one piece of work.
+
+   The per-line adjustment was always there and is sound. What it
+   could not do is hold a morning's counting: each adjustment
+   reconciles to the ledger as it stands at that instant, so by the
+   time the last aisle is typed in, the first aisle's variance has
+   been overtaken by the day's trading.
+
+   Here the expected figures are captured when the count opens, the
+   counts are held until the whole thing is posted, and the variance
+   is against what the counter was actually working from. */
+
+let stocktakeWired = false;
+let counting = null;        // the reference being worked on
+
+function wireStocktake() {
+  const start = $('st-open');
+  const list = $('st-list');
+  const branch = $('st-branch');
+  if (!start || !list || !branch || stocktakeWired) return;
+  stocktakeWired = true;
+
+  start.addEventListener('click', () => startCount(branch.value.trim()));
+  branch.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); startCount(branch.value.trim()); }
+  });
+  list.addEventListener('click', listCounts);
+  listCounts();
+}
+
+async function askCount(url, body) {
+  const res = await fetch(url, body ? {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  } : undefined);
+  const text = await res.text();
+  const d = text ? JSON.parse(text) : {};
+  if (!res.ok || d.ok === false) {
+    throw new Error(d.error || (d.problems || []).join(' ')
+      || `The server answered ${res.status}.`);
+  }
+  return d;
+}
+
+async function listCounts() {
+  const host = $('st-body');
+  if (!host) return;
+  host.textContent = '';
+  host.append(el('p', 'loading', 'Reading…'));
+  let d;
+  try {
+    d = await askCount('/api/stocktake');
+  } catch (e) {
+    host.textContent = '';
+    host.append(empty('The counts could not be read', e.message));
+    return;
+  }
+  host.textContent = '';
+  const takes = d.stocktakes || [];
+  if (!takes.length) {
+    host.append(empty('No counts yet',
+      'Name a branch above and start one. Nothing reaches the stock '
+      + 'figure until you post it.'));
+    return;
+  }
+  const t = el('table', 'recv-table st-list');
+  const thead = el('thead');
+  const hr = el('tr');
+  ['Count', 'Branch', 'Opened', 'Lines', 'Counted', 'State', '']
+    .forEach((h) => hr.append(el('th', '', h)));
+  thead.append(hr);
+  t.append(thead);
+  const body = el('tbody');
+  takes.forEach((s) => {
+    const tr = el('tr');
+    tr.append(el('td', '', s.reference));
+    tr.append(el('td', '', s.branch));
+    tr.append(el('td', '', (s.opened_at || '').slice(0, 10)));
+    tr.append(el('td', 'num', String(s.lines)));
+    tr.append(el('td', 'num', String(s.counted)));
+    tr.append(el('td', '', said(s.status)));
+    const act = el('td');
+    const open = el('button', 'linkish',
+      s.status === 'open' ? 'Carry on counting' : 'Look at it');
+    open.type = 'button';
+    open.addEventListener('click', () => openCount(s.reference));
+    act.append(open);
+    tr.append(act);
+    body.append(tr);
+  });
+  t.append(body);
+  host.append(t);
+}
+
+async function startCount(branch) {
+  const host = $('st-body');
+  if (!host) return;
+  if (!branch) {
+    host.textContent = '';
+    host.append(empty('Which branch?',
+      'Name it above. The count opens with everything the ledger '
+      + 'says is on that shelf.'));
+    return;
+  }
+  host.textContent = '';
+  host.append(el('p', 'loading', 'Opening the count…'));
+  try {
+    const d = await askCount('/api/stocktake', { branch });
+    counting = d.reference;
+    await openCount(d.reference);
+  } catch (e) {
+    host.textContent = '';
+    host.append(empty('That count could not be started', e.message));
+  }
+}
+
+async function openCount(reference) {
+  const host = $('st-body');
+  if (!host) return;
+  host.textContent = '';
+  host.append(el('p', 'loading', 'Reading the count…'));
+  let d;
+  try {
+    d = await askCount(`/api/stocktake/${encodeURIComponent(reference)}`);
+  } catch (e) {
+    host.textContent = '';
+    host.append(empty('That count could not be read', e.message));
+    return;
+  }
+  counting = d.reference;
+  host.textContent = '';
+  drawCount(host, d);
+}
+
+function drawCount(host, d) {
+  const head = el('div', 'recv-head');
+  head.append(el('strong', '', d.reference));
+  head.append(el('span', 'dim',
+    [d.branch, said(d.status), d.opened_at
+      ? `opened ${d.opened_at.slice(0, 10)}` : ''].filter(Boolean)
+      .join(' · ')));
+  host.append(head);
+
+  const open = d.status === 'open';
+  if (!d.lines.length) {
+    host.append(empty('Nothing on this shelf',
+      'The ledger has never recorded stock at this branch. Count '
+      + 'anything that is actually there and it will be added.'));
+  }
+
+  const form = el('form', 'recv-form');
+  const table = el('table', 'recv-table');
+  const thead = el('thead');
+  const hr = el('tr');
+  [['Item', ''], ['Expected', 'num'], ['Counted', 'num'],
+    ['Difference', 'num'], ['Note', '']]
+    .forEach(([label, cls]) => hr.append(el('th', cls, label)));
+  thead.append(hr);
+  table.append(thead);
+
+  const LABELS = ['Item', 'Expected', 'Counted', 'Difference', 'Note'];
+  const body = el('tbody');
+  d.lines.forEach((line) => {
+    const tr = el('tr');
+    tr.dataset.sku = line.sku;
+
+    const item = el('td');
+    item.append(el('span', 'recv-sku', line.sku));
+    if (line.description) item.append(el('span', 'dim', line.description));
+    tr.append(item);
+    tr.append(el('td', 'num', qty(line.expected)));
+
+    const counted = el('td', 'num');
+    if (open) {
+      const f = el('input');
+      f.type = 'number';
+      f.step = 'any';
+      f.min = '0';
+      f.dataset.count = '1';
+      f.setAttribute('aria-label', `Counted for ${line.sku}`);
+      if (line.counted !== null) f.value = line.counted;
+      counted.append(f);
+    } else {
+      counted.textContent = line.counted === null ? '—'
+        : qty(line.counted);
+    }
+    tr.append(counted);
+
+    /* The difference, worked out as the person types, because the
+       number they want to see is not the one they are entering. */
+    const diff = el('td', 'num');
+    const show = (v) => {
+      if (v === null || v === '' || v === undefined) {
+        diff.textContent = '—';
+        diff.classList.remove('off');
+        return;
+      }
+      const n = Number(v) - line.expected;
+      diff.textContent = (n > 0 ? '+' : '') + qty(n);
+      diff.classList.toggle('off', Math.abs(n) > 0.0001);
+    };
+    show(line.counted);
+    if (open) {
+      counted.querySelector('input').addEventListener('input', (e) => {
+        show(e.target.value === '' ? null : e.target.value);
+      });
+    }
+    tr.append(diff);
+
+    const note = el('td');
+    if (line.moved_since) {
+      /* The count still wins when this is posted -- that is what a
+         stocktake is -- but a variance explained by a sale that
+         went through while the counter was three aisles away is a
+         different conversation from one that is not. */
+      const warn = el('span', 'dim',
+        `Shelf moved to ${qty(line.on_hand_now)} since this was `
+        + 'measured');
+      note.append(warn);
+    }
+    tr.append(note);
+    [...tr.children].forEach((td, n) => { td.dataset.label = LABELS[n]; });
+    body.append(tr);
+  });
+  table.append(body);
+  form.append(table);
+
+  if (open) {
+    const foot = el('div', 'recv-foot');
+    const problems = el('div', 'modal-problems');
+    problems.hidden = true;
+
+    const save = el('button', 'btn', 'Save the counts');
+    save.type = 'button';
+    const post = el('button', 'btn primary', 'Post this count');
+    post.type = 'submit';
+    const drop = el('button', 'linkish', 'Abandon it');
+    drop.type = 'button';
+    foot.append(save);
+    foot.append(drop);
+    foot.append(post);
+    form.append(foot);
+    form.append(problems);
+
+    const gather = () => {
+      const counts = [];
+      body.querySelectorAll('tr').forEach((tr) => {
+        const f = tr.querySelector('[data-count]');
+        if (!f) return;
+        const v = f.value.trim();
+        if (v === '') return;
+        counts.push({ sku: tr.dataset.sku, counted: Number(v) });
+      });
+      return counts;
+    };
+
+    const fail = (m) => {
+      problems.textContent = '';
+      problems.append(el('p', '', m));
+      problems.hidden = false;
+    };
+
+    save.addEventListener('click', async () => {
+      const counts = gather();
+      if (!counts.length) { fail('Nothing has been counted yet.'); return; }
+      save.disabled = true;
+      save.textContent = 'Saving…';
+      try {
+        await askCount(
+          `/api/stocktake/${encodeURIComponent(d.reference)}/count`,
+          { counts });
+        await openCount(d.reference);
+      } catch (e) {
+        fail(e.message);
+        save.disabled = false;
+        save.textContent = 'Save the counts';
+      }
+    });
+
+    drop.addEventListener('click', async () => {
+      try {
+        await askCount(
+          `/api/stocktake/${encodeURIComponent(d.reference)}/abandon`, {});
+        counting = null;
+        await listCounts();
+      } catch (e) { fail(e.message); }
+    });
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      post.disabled = true;
+      post.textContent = 'Posting…';
+      try {
+        /* Saved first, so what is on screen is what is posted. A
+           figure typed and not saved would otherwise be left behind
+           by a button that reads as though it posts what you see. */
+        const counts = gather();
+        if (counts.length) {
+          await askCount(
+            `/api/stocktake/${encodeURIComponent(d.reference)}/count`,
+            { counts });
+        }
+        await askCount(
+          `/api/stocktake/${encodeURIComponent(d.reference)}/post`, {});
+        counting = null;
+        await listCounts();
+        boot();
+      } catch (err) {
+        fail(err.message);
+        post.disabled = false;
+        post.textContent = 'Post this count';
+      }
+    });
+  }
+
+  host.append(form);
 }

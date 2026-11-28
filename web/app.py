@@ -1341,6 +1341,146 @@ async def shipment_basis(request: Request,
     return JSONResponse({"ok": True, **out})
 
 
+@app.get("/api/stocktake")
+def list_stocktakes(claims: Claims = Depends(require)) -> JSONResponse:
+    """Counts in progress, and the recent ones."""
+    try:
+        with _ops(claims) as conn:
+            takes = [
+                {"reference": r[0], "branch": r[1], "status": r[2],
+                 "opened_at": r[3].isoformat() if r[3] else None,
+                 "lines": int(r[4]), "counted": int(r[5])}
+                for r in conn.execute(
+                    "select s.reference, l.code, s.status, s.opened_at,"
+                    "       count(sl.id),"
+                    "       count(sl.id) filter (where sl.counted is not null)"
+                    "  from public.stocktakes s"
+                    "  join public.locations l on l.id = s.location_id"
+                    "  left join public.stocktake_lines sl"
+                    "    on sl.stocktake_id = s.id"
+                    " group by s.reference, l.code, s.status, s.opened_at"
+                    " order by s.status = 'open' desc, s.opened_at desc"
+                    " limit 40").fetchall()
+            ]
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({"ok": True, "stocktakes": takes})
+
+
+@app.post("/api/stocktake")
+async def start_stocktake(request: Request,
+                          claims: Claims = Depends(require)) -> JSONResponse:
+    """Start counting a branch, holding what the ledger says now."""
+    from engine.operations import open_stocktake
+
+    b = await request.json()
+    try:
+        with _ops(claims) as conn:
+            out = open_stocktake(conn, str(b.get("branch", "") or ""),
+                                 reference=str(b.get("reference", "") or ""),
+                                 note=str(b.get("note", "") or ""))
+            out["lines"] = _stocktake_lines(conn, out["reference"])
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({"ok": True, **out})
+
+
+def _stocktake_lines(conn, reference: str) -> list:
+    """The lines of one count, with their variances."""
+    return [
+        {"sku": r[0], "description": r[1] or "",
+         "expected": float(r[2]),
+         "counted": float(r[3]) if r[3] is not None else None,
+         "variance": float(r[4]) if r[4] is not None else None,
+         "on_hand_now": float(r[5]),
+         "moved_since": bool(r[6])}
+        for r in conn.execute(
+            "select sku, description, expected, counted, variance,"
+            "       on_hand_now, moved_since"
+            "  from public.stocktake_variance"
+            " where upper(reference) = %s"
+            " order by sku", (reference.strip().upper(),)).fetchall()
+    ]
+
+
+@app.get("/api/stocktake/{reference}")
+def read_stocktake(reference: str,
+                   claims: Claims = Depends(require)) -> JSONResponse:
+    """One count: its lines, what was expected, what was found."""
+    try:
+        with _ops(claims) as conn:
+            head = conn.execute(
+                "select s.reference, l.code, s.status, s.opened_at"
+                "  from public.stocktakes s"
+                "  join public.locations l on l.id = s.location_id"
+                " where upper(s.reference) = %s",
+                (reference.strip().upper(),)).fetchone()
+            if not head:
+                return JSONResponse(
+                    {"ok": False,
+                     "error": f"There is no count {reference} here."}, 404)
+            lines = _stocktake_lines(conn, reference)
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({
+        "ok": True, "reference": head[0], "branch": head[1],
+        "status": head[2],
+        "opened_at": head[3].isoformat() if head[3] else None,
+        "lines": lines,
+    })
+
+
+@app.post("/api/stocktake/{reference}/count")
+async def write_counts(reference: str, request: Request,
+                       claims: Claims = Depends(require)) -> JSONResponse:
+    """What is on the shelf. Nothing reaches the ledger yet."""
+    from engine.operations import count_lines
+
+    b = await request.json()
+    counts = b.get("counts")
+    if not isinstance(counts, list):
+        counts = []
+    try:
+        with _ops(claims) as conn:
+            out = count_lines(conn, reference,
+                              [x for x in counts if isinstance(x, dict)])
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({"ok": True, **out})
+
+
+@app.post("/api/stocktake/{reference}/post")
+async def post_counts(reference: str, request: Request,
+                      claims: Claims = Depends(require)) -> JSONResponse:
+    """Reconcile the ledger to the count, every line together."""
+    from engine.operations import post_stocktake
+
+    b = await request.json()
+    try:
+        with _ops(claims) as conn:
+            out = post_stocktake(conn, reference,
+                                 note=str(b.get("note", "") or ""))
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({"ok": True, **out})
+
+
+@app.post("/api/stocktake/{reference}/abandon")
+async def drop_counts(reference: str, request: Request,
+                      claims: Claims = Depends(require)) -> JSONResponse:
+    """Throw a count away. The ledger is untouched."""
+    from engine.operations import abandon_stocktake
+
+    b = await request.json()
+    try:
+        with _ops(claims) as conn:
+            out = abandon_stocktake(conn, reference,
+                                    why=str(b.get("why", "") or ""))
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({"ok": True, **out})
+
+
 @app.get("/api/owing")
 def what_a_customer_owes(customer: str = "",
                          claims: Claims = Depends(require)) -> JSONResponse:

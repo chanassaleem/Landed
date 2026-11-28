@@ -1127,3 +1127,223 @@ def take_payment(run, customer: str, amount: float, *,
             "allocated": round(running, 2),
             "on_account": round(total - running, 2),
             "settled": len(checked)}
+
+
+def open_stocktake(run, branch: str, *, reference: str = "",
+                   note: str = "") -> dict:
+    """Start counting a branch, holding what the ledger says now.
+
+    The expected figure is captured here rather than worked out at
+    posting time, and that is the whole reason this exists. A count
+    takes a morning; by the time it is typed in, the afternoon's
+    sales have gone through, and a variance against the figure as it
+    stands then is wrong by a day of trading.
+    """
+    org = _org(run)
+    code = (branch or "").strip().upper()
+    where = run.execute(
+        "select id from public.locations where org_id = %s"
+        "   and upper(code) = %s", (org, code)).fetchone()
+    if not where:
+        raise NotAllowed(f"There is no branch {code} here.")
+
+    already = run.execute(
+        "select reference from public.stocktakes where org_id = %s"
+        "   and location_id = %s and status = 'open'",
+        (org, where[0])).fetchone()
+    if already:
+        raise NotAllowed(
+            f"{code} is already being counted, on {already[0]}. Post "
+            f"that one or abandon it before starting another -- two "
+            f"open counts of one branch is two people writing "
+            f"different numbers against the same shelf.")
+
+    reference = (reference or "").strip().upper()
+    given = bool(reference)
+    if not reference:
+        reference = "ST-" + date.today().isoformat().replace("-", "") \
+                    + "-" + code
+
+    def is_taken(name):
+        return run.execute(
+            "select 1 from public.stocktakes where org_id = %s"
+            "   and upper(reference) = %s", (org, name)).fetchone()
+
+    if is_taken(reference):
+        if given:
+            raise NotAllowed(f"{reference} has been used already.")
+        # A count abandoned this morning and restarted this
+        # afternoon generates the same name. Refusing the second
+        # leaves somebody inventing a reference to get past an error
+        # that is ours, not theirs.
+        for n in range(2, 50):
+            if not is_taken(f"{reference}-{n}"):
+                reference = f"{reference}-{n}"
+                break
+        else:
+            raise NotAllowed(
+                f"{code} has been counted a great many times today. "
+                f"Give this one a reference of its own.")
+
+    take = run.execute(
+        "insert into public.stocktakes (org_id, location_id, reference,"
+        " note) values (%s,%s,%s,%s) returning id",
+        (org, where[0], reference,
+         (note or "").strip() or None)).fetchone()[0]
+
+    # Everything the ledger has ever touched at this branch, at the
+    # figure it stands at now -- including the zeroes, because an
+    # item the system thinks is gone and is actually on the shelf is
+    # exactly what a count is for.
+    run.execute(
+        "insert into public.stocktake_lines (org_id, stocktake_id,"
+        " item_id, expected)"
+        " select %s, %s, m.item_id, sum(m.qty)"
+        "   from public.stock_movement m"
+        "  where m.org_id = %s and m.location_id = %s"
+        "  group by m.item_id", (org, take, org, where[0]))
+
+    return {"stocktake": str(take), "reference": reference,
+            "branch": code}
+
+
+def count_lines(run, reference: str, counts: Sequence[Mapping]) -> dict:
+    """Write down what is on the shelf. Nothing reaches the ledger.
+
+    Held rather than posted because somebody miscounts, recounts and
+    types it again, and because a morning's work should not be
+    half-written into the stock figure everybody else is selling
+    against.
+    """
+    org = _org(run)
+    take = run.execute(
+        "select id, status, location_id from public.stocktakes"
+        " where org_id = %s and upper(reference) = %s",
+        (org, (reference or "").strip().upper())).fetchone()
+    if not take:
+        raise NotAllowed(f"There is no count {reference} here.")
+    if take[1] != "open":
+        raise NotAllowed(
+            f"{reference} has already been {take[1]}, so it cannot be "
+            f"typed into. Start another count.")
+
+    checked, problems = [], []
+    for n, row in enumerate(counts or (), 1):
+        sku = str(row.get("sku", "") or "").strip().upper()
+        item = run.execute(
+            "select id from public.items where org_id = %s"
+            "   and upper(sku) = %s", (org, sku)).fetchone() if sku else None
+        if not item:
+            problems.append(f"Line {n}: there is no item {sku or '(blank)'}.")
+            continue
+        raw = row.get("counted")
+        if raw in (None, ""):
+            problems.append(f"Line {n}: {sku} has no count against it.")
+            continue
+        try:
+            counted = float(raw)
+        except (TypeError, ValueError):
+            problems.append(f"Line {n}: {sku}'s count is not a number.")
+            continue
+        if counted < 0:
+            problems.append(f"Line {n}: {sku} cannot have {counted:g} on "
+                            f"the shelf.")
+            continue
+        checked.append((item[0], counted, str(row.get("note", "") or "")))
+
+    if problems:
+        raise NotAllowed(" ".join(problems))
+
+    for item_id, counted, note in checked:
+        # Stock the system did not know was there is as real a
+        # finding as stock that is missing, so an item off the list
+        # joins it, expected zero.
+        run.execute(
+            "insert into public.stocktake_lines (org_id, stocktake_id,"
+            " item_id, expected, counted, note, counted_at, counted_by)"
+            " values (%s,%s,%s,0,%s,%s,now(),auth.uid())"
+            " on conflict (org_id, stocktake_id, item_id) do update"
+            "    set counted = excluded.counted,"
+            "        note = excluded.note,"
+            "        counted_at = now(),"
+            "        counted_by = auth.uid()",
+            (org, take[0], item_id, counted, note or None))
+
+    return {"reference": reference, "counted": len(checked)}
+
+
+def post_stocktake(run, reference: str, *, note: str = "") -> dict:
+    """Reconcile the ledger to every line that was counted.
+
+    One transaction, so a branch is either counted or it is not. The
+    physical count wins over anything that moved while it was being
+    taken -- that is what a stocktake is -- and the line said so on
+    screen before this was pressed.
+    """
+    org = _org(run)
+    ref = (reference or "").strip().upper()
+    take = run.execute(
+        "select id, status, location_id from public.stocktakes"
+        " where org_id = %s and upper(reference) = %s",
+        (org, ref)).fetchone()
+    if not take:
+        raise NotAllowed(f"There is no count {reference} here.")
+    if take[1] != "open":
+        raise NotAllowed(f"{ref} has already been {take[1]}.")
+
+    branch = run.execute(
+        "select code from public.locations where id = %s",
+        (take[2],)).fetchone()[0]
+
+    lines = run.execute(
+        "select i.sku, sl.counted from public.stocktake_lines sl"
+        "  join public.items i on i.id = sl.item_id"
+        " where sl.stocktake_id = %s and sl.counted is not null"
+        " order by i.sku", (take[0],)).fetchall()
+    if not lines:
+        raise NotAllowed(
+            "Nothing on this count has been counted yet, so there is "
+            "nothing to post. A line left blank is one nobody looked "
+            "at, and posting it as zero would write off stock that is "
+            "probably on the shelf.")
+
+    said = (note or "").strip()
+    moved = 0
+    for sku, counted in lines:
+        out = adjust(run, sku, branch, float(counted),
+                     note=f"Stocktake {ref}" + (f": {said}" if said else ""))
+        if out.get("recorded", True):
+            moved += 1
+
+    run.execute(
+        "update public.stocktakes set status = 'posted',"
+        " closed_at = now(), closed_by = auth.uid() where id = %s",
+        (take[0],))
+
+    return {"reference": ref, "branch": branch,
+            "adjusted": len(lines), "moved": moved}
+
+
+def abandon_stocktake(run, reference: str, *, why: str = "") -> dict:
+    """Throw a count away without touching the ledger.
+
+    Kept rather than deleted. A count somebody walked away from is
+    worth being able to find afterwards -- usually because the
+    person who abandoned it is the person being asked why the shelf
+    does not match.
+    """
+    org = _org(run)
+    ref = (reference or "").strip().upper()
+    take = run.execute(
+        "select id, status from public.stocktakes where org_id = %s"
+        "   and upper(reference) = %s", (org, ref)).fetchone()
+    if not take:
+        raise NotAllowed(f"There is no count {reference} here.")
+    if take[1] != "open":
+        raise NotAllowed(f"{ref} has already been {take[1]}.")
+    run.execute(
+        "update public.stocktakes set status = 'abandoned',"
+        " closed_at = now(), closed_by = auth.uid(),"
+        " note = coalesce(nullif(%s, ''), note) where id = %s",
+        ((why or "").strip(), take[0]))
+    return {"reference": ref, "status": "abandoned"}

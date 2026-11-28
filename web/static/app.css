@@ -3135,3 +3135,12 @@ td.unsure.can-edit:hover {
   text-transform: uppercase;
   color: var(--text-3);
 }
+
+/* A variance that is not zero. --attention, the decide-this-week
+   value, because that is what a difference between the shelf and
+   the ledger is: something to look into, not an emergency and not
+   nothing. */
+.recv-table td.num.off { color: var(--attention); }
+
+/* The list of counts is the same table with fewer inputs in it. */
+.st-list td { vertical-align: middle; }

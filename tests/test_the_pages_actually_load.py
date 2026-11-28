@@ -125,7 +125,7 @@ def page(served):
 
 # Everything in the rail, plus the screens that are not modules.
 SCREENS = [
-    "today", "home", "import", "settings", "receiving",
+    "today", "home", "import", "settings", "receiving", "stocktake",
     "m/stock", "m/buy", "m/freight", "m/cash", "m/owed", "m/equipment",
     "m/quality", "m/people",
 ]
