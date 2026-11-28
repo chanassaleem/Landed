@@ -1341,6 +1341,92 @@ async def shipment_basis(request: Request,
     return JSONResponse({"ok": True, **out})
 
 
+@app.get("/api/owing")
+def what_a_customer_owes(customer: str = "",
+                         claims: Claims = Depends(require)) -> JSONResponse:
+    """This customer's open invoices, oldest first.
+
+    So a payment can be recorded without anybody knowing an invoice
+    number by heart. The Owed screen lists customers, not invoices,
+    which is right for deciding who to ring and leaves the person
+    taking the call with nothing to allocate against.
+    """
+    code = (customer or "").strip().upper()
+    if not code:
+        return JSONResponse({"ok": False, "error": "Which customer?"}, 400)
+    try:
+        with _ops(claims) as conn:
+            who = conn.execute(
+                "select id, name from public.customers"
+                " where upper(code) = %s", (code,)).fetchone()
+            if not who:
+                return JSONResponse(
+                    {"ok": False,
+                     "error": f"There is no customer {code} here."}, 404)
+            invoices = [
+                {"invoice_no": r[0], "due": r[1].isoformat() if r[1] else None,
+                 "amount": float(r[2]), "paid": float(r[3]),
+                 "outstanding": float(r[4])}
+                for r in conn.execute(
+                    "select invoice_no, due_date, amount, paid, outstanding"
+                    "  from public.invoice_settlement"
+                    " where customer_id = %s and outstanding > 0"
+                    # Oldest first, because that is the order money is
+                    # applied in unless somebody says otherwise.
+                    " order by due_date nulls last, invoice_no",
+                    (who[0],)).fetchall()
+            ]
+            account = conn.execute(
+                "select unallocated from public.customer_account"
+                " where customer_id = %s", (who[0],)).fetchone()
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({
+        "ok": True, "customer": code, "name": who[1],
+        "on_account": float(account[0]) if account else 0.0,
+        "invoices": invoices,
+    })
+
+
+@app.post("/api/payment")
+async def take_a_payment(request: Request,
+                         claims: Claims = Depends(require)) -> JSONResponse:
+    """Money in, against the invoices it settles."""
+    from engine.operations import take_payment
+
+    b = await request.json()
+
+    def num(key):
+        raw = b.get(key)
+        if raw in (None, ""):
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    allocate = b.get("allocate")
+    if not isinstance(allocate, list):
+        allocate = []
+    try:
+        with _ops(claims) as conn:
+            out = take_payment(
+                conn, str(b.get("customer", "") or ""),
+                b.get("amount"),
+                received_on=str(b.get("received_on", "") or "") or None,
+                currency=str(b.get("currency", "") or ""),
+                fx=num("fx_rate"),
+                method=str(b.get("method", "") or ""),
+                reference=str(b.get("reference", "") or ""),
+                note=str(b.get("note", "") or ""),
+                allocate=[x for x in allocate if isinstance(x, dict)],
+                client_ref=str(b.get("client_ref", "") or "")
+                .strip()[:200] or None)
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({"ok": True, **out})
+
+
 @app.get("/api/history")
 def recent_history(limit: int = 60,
                    claims: Claims = Depends(require)) -> JSONResponse:

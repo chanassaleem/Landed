@@ -226,13 +226,21 @@ def read(conn, as_of: date, currency: str = "PKR") -> Snapshot:
 # between them and none of them knows where a row came from, which is
 # why a Postgres schema can feed the same arithmetic a spreadsheet did.
 
+# public.invoice_settlement, not public.invoices.
+#
+# amount_paid on the invoice is the position the book was imported
+# with -- the receivable equivalent of an 'opening' stock movement.
+# The settlement view adds every payment allocated since, so a
+# payment taken on the phone reaches the Owed screen, the collection
+# forecast and the cash weeks on the next refresh rather than at the
+# next import. See 0027.
 INVOICES_SQL = """
-select i.invoice_no, c.code, c.name, i.invoice_date, i.due_date,
-       i.amount, i.amount_paid, c.is_public_sector, c.is_intercompany,
+select s.invoice_no, c.code, c.name, s.invoice_date, s.due_date,
+       s.amount, s.paid, c.is_public_sector, c.is_intercompany,
        coalesce(l.code, 'default')
-  from public.invoices i
-  join public.customers c on c.id = i.customer_id
-  left join public.locations l on l.id = i.location_id
+  from public.invoice_settlement s
+  join public.customers c on c.id = s.customer_id
+  left join public.locations l on l.id = s.location_id
 """
 
 MACHINES_SQL = """

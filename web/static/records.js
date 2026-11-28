@@ -213,6 +213,110 @@
       title: 'Receive a delivery',
       goes: '#receiving',
     },
+    payment: {
+      title: 'Record a payment',
+      blurb: 'Money in, and which invoices it settles. What is left '
+        + 'over sits on the customer\u2019s account \u2014 a cheque '
+        + 'for a round number against three invoices is ordinary, '
+        + 'and a book that cannot hold the difference loses it.',
+      post: '/api/payment',
+      fields: [
+        ['customer', 'Customer code', 'text', { req: true }],
+        ['amount', 'How much came in', 'number', { req: true }],
+        ['received_on', 'Received', 'date', { req: true }],
+        ['method', 'How', 'select', {
+          options: [['', ''], ['transfer', 'Bank transfer'],
+            ['cheque', 'Cheque'], ['cash', 'Cash'], ['card', 'Card'],
+            ['other', 'Something else']],
+        }],
+        ['reference', 'Reference', 'text',
+          { hint: 'The cheque number or the transfer reference, so a '
+            + 'collections call can be answered from this screen.' }],
+        ['note', 'Note', 'text', {}],
+        ['allocate', 'Against which invoices', 'lines', {
+          hint: 'Leave it empty to put the whole payment on account '
+            + 'and allocate it later. An invoice cannot take more '
+            + 'than it is owed.',
+          columns: [['invoice', 'Invoice', 'text'],
+            ['amount', 'Amount', 'number']],
+        }],
+      ],
+      /* Fill the lines in from what the customer actually owes, as
+         soon as their code is typed. Oldest invoice first, which is
+         the order money is applied in unless somebody says
+         otherwise, and each line pre-filled with what is still due
+         so the common case -- a cheque that clears the oldest two
+         invoices -- is a matter of deleting a line rather than
+         looking three numbers up. */
+      wire: (form) => {
+        const code = form.querySelector('[name="customer"]');
+        const host = form.querySelector('[data-lines="allocate"]');
+        const hint = host && host.querySelector('.fld-hint');
+        if (!code || !host) return;
+        const said = (text) => { if (hint) hint.textContent = text; };
+        const base = hint ? hint.textContent : '';
+
+        let last = '';
+        const look = async () => {
+          const want = code.value.trim().toUpperCase();
+          if (!want || want === last) return;
+          last = want;
+          let d;
+          try {
+            const r = await fetch('/api/owing?customer='
+              + encodeURIComponent(want));
+            d = await r.json();
+          } catch (e) { return; }
+          if (!d || d.ok === false) {
+            said(d && d.error ? d.error : base);
+            return;
+          }
+          const open = d.invoices || [];
+          if (!open.length) {
+            said(`${d.name || want} has nothing outstanding. A payment `
+              + 'now sits on their account until an invoice is raised.');
+            return;
+          }
+          const tbody = host.querySelector('tbody');
+          if (!tbody) return;
+          tbody.textContent = '';
+          open.forEach((inv) => {
+            const tr = el('tr');
+            tbody.append(tr);
+            [['invoice', inv.invoice_no], ['amount', inv.outstanding]]
+              .forEach(([key, value]) => {
+                const td = el('td');
+                const f = el('input');
+                f.type = key === 'amount' ? 'number' : 'text';
+                if (key === 'amount') f.step = 'any';
+                f.dataset.line = key;
+                f.value = value;
+                f.setAttribute('aria-label', key);
+                td.append(f);
+                tr.append(td);
+              });
+            const td = el('td', 'line-drop');
+            const drop = el('button', 'linkish', 'Remove');
+            drop.type = 'button';
+            drop.addEventListener('click', () => {
+              if (tbody.children.length > 1) tr.remove();
+              else tr.querySelectorAll('input')
+                .forEach((x) => { x.value = ''; });
+            });
+            td.append(drop);
+            tr.append(td);
+          });
+          const owed = open.reduce((n, i) => n + i.outstanding, 0);
+          said(`${d.name || want} owes ${open.length} invoice`
+            + `${open.length === 1 ? '' : 's'}, ${Math.round(owed)
+              .toLocaleString(L.GROUPING)} in all. Remove the lines `
+            + 'this payment is not against; what is left over sits on '
+            + 'their account.');
+        };
+        code.addEventListener('change', look);
+        code.addEventListener('blur', look);
+      },
+    },
     customer: {
       title: 'Add a customer',
       blurb: 'Who you sell to, their terms, and the limit you want to be '
@@ -369,6 +473,9 @@
        same invoice as the shipment it belongs to. */
     freight: ['shipment', 'shipment_cost', 'receiving'],
     cash: ['commitment', 'cash_balance'],
+    /* Owed is where somebody is looking at what has not come in,
+       so it is where they record it arriving. */
+    money: ['payment'],
     customers: ['customer', 'supplier', 'interaction'],
     people: ['employee'],
     intelligence: ['opportunity'],
@@ -576,6 +683,14 @@
     foot.append(cancel);
     foot.append(save);
     form.append(foot);
+
+    /* A form that needs to go and ask the server something as it is
+       filled in. Only the payment form does so far: it fetches the
+       customer's open invoices when their code is typed, so nobody
+       has to know an invoice number by heart to allocate against
+       it. Kept as a hook rather than special-cased in here, because
+       the next one of these will not be a payment. */
+    if (spec.wire) spec.wire(form, fixed);
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();

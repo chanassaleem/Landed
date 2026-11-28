@@ -999,3 +999,131 @@ def raise_order(run, po_number: str, *, branch: str, supplier: str = "",
     return {"po": po_number, "lines": len(checked),
             "value": round(sum(q * p for _i, q, p in checked), 2),
             "currency": currency, "fx_rate": rate}
+
+
+def take_payment(run, customer: str, amount: float, *,
+                 received_on: str | None = None, currency: str = "",
+                 fx: float | None = None, method: str = "",
+                 reference: str = "", note: str = "",
+                 allocate: Sequence[Mapping] = (),
+                 client_ref: str | None = None) -> dict:
+    """Money in, against the invoices it settles.
+
+    Before this, the only record of a payment was the stored
+    `amount_paid` on an invoice, moved by an import. So a collections
+    call could not be answered from the system: when did they pay,
+    how much, against what, and is the 400,000 that arrived on
+    Tuesday the one they are asking about.
+
+    Allocation is separate from the payment because a customer pays
+    a round number against three invoices. What is left over sits on
+    account, which is ordinary -- the cheque was for 500,000 and the
+    invoices came to 400,000 -- and a book that cannot hold it
+    either loses the 100,000 or puts it somewhere wrong.
+
+    All of it or none. A payment that landed with half its
+    allocations is a payment that will be recorded again by somebody
+    who cannot tell.
+    """
+    org = _org(run)
+    code = (customer or "").strip().upper()
+    if not code:
+        raise NotAllowed("Say which customer paid.")
+    try:
+        total = float(amount)
+    except (TypeError, ValueError):
+        raise NotAllowed("The amount has to be a number.") from None
+    if total <= 0:
+        raise NotAllowed(
+            "A payment is money coming in. A refund is its own "
+            "record, not a payment with a minus in front of it.")
+
+    who = run.execute(
+        "select id from public.customers where org_id = %s"
+        "   and upper(code) = %s", (org, code)).fetchone()
+    if not who:
+        raise NotAllowed(f"There is no customer {code} here.")
+
+    if client_ref:
+        seen = run.execute(
+            "select id from public.payments where org_id = %s"
+            "   and client_ref = %s", (org, client_ref)).fetchone()
+        if seen:
+            # Already recorded. Answering as though it had just
+            # worked is the point: the caller cannot tell, and a
+            # refusal would send somebody looking for a payment that
+            # is already there.
+            return {"payment": str(seen[0]), "amount": total,
+                    "allocated": 0.0, "on_account": 0.0,
+                    "already": True}
+
+    base = run.execute(
+        "select currency from public.organisations where id = %s",
+        (org,)).fetchone()[0]
+    currency = (currency or "").strip().upper() or base
+    if currency != base and fx is None:
+        raise NotAllowed(
+            f"This payment is in {currency}, so it needs the rate it "
+            f"was converted at.")
+    rate = float(fx) if fx is not None else 1.0
+
+    # Every allocation checked before anything is written, so one
+    # answer names everything the person has to fix rather than the
+    # first thing only.
+    checked, problems, running = [], [], 0.0
+    for n, line in enumerate(allocate or (), 1):
+        no = str(line.get("invoice", "") or "").strip().upper()
+        try:
+            part = float(line.get("amount"))
+        except (TypeError, ValueError):
+            problems.append(f"Line {n}: the amount has to be a number.")
+            continue
+        if part <= 0:
+            problems.append(f"Line {n}: an allocation of nothing is not "
+                            f"an allocation.")
+            continue
+        inv = run.execute(
+            "select s.id, s.outstanding from public.invoice_settlement s"
+            " where s.org_id = %s and upper(s.invoice_no) = %s"
+            "   and s.customer_id = %s", (org, no, who[0])).fetchone()
+        if not inv:
+            problems.append(
+                f"Line {n}: {code} has no invoice {no or '(blank)'}.")
+            continue
+        owing = float(inv[1])
+        if part > owing + 1e-9:
+            problems.append(
+                f"Line {n}: {no} has {owing:,.0f} outstanding, so "
+                f"{part:,.0f} cannot go against it. Overpaying one "
+                f"invoice hides the credit owed back.")
+            continue
+        running += part
+        checked.append((inv[0], part))
+
+    if running > total + 1e-9:
+        problems.append(
+            f"That allocates {running:,.0f} of a {total:,.0f} payment, "
+            f"which is more than came in.")
+    if problems:
+        raise NotAllowed(" ".join(problems))
+
+    pay = run.execute(
+        "insert into public.payments (org_id, customer_id, received_on,"
+        " amount, currency, fx_rate, method, reference, note, client_ref)"
+        " values (%s,%s,coalesce(%s, current_date),%s,%s,%s,%s,%s,%s,%s)"
+        " returning id",
+        (org, who[0], received_on or None, total, currency, rate,
+         (method or "").strip().lower() or None,
+         (reference or "").strip() or None,
+         (note or "").strip() or None, client_ref)).fetchone()[0]
+
+    for invoice_id, part in checked:
+        run.execute(
+            "insert into public.payment_allocations (org_id, payment_id,"
+            " invoice_id, amount) values (%s,%s,%s,%s)",
+            (org, pay, invoice_id, part))
+
+    return {"payment": str(pay), "amount": total,
+            "allocated": round(running, 2),
+            "on_account": round(total - running, 2),
+            "settled": len(checked)}
