@@ -3123,3 +3123,15 @@ td.unsure.can-edit:hover {
   .recv-table td:first-child::before { content: none; }
   .recv-foot .btn.primary { margin-left: 0; width: 100%; }
 }
+
+/* A heading inside the drawer's history, separating what the stock
+   did from what somebody typed over. They answer different
+   questions, and one list reads as though an edit were a kind of
+   movement. */
+.fact-head {
+  margin: 12px 0 4px;
+  font: 500 11px/1.4 var(--sans);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}

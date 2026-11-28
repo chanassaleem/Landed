@@ -1341,6 +1341,34 @@ async def shipment_basis(request: Request,
     return JSONResponse({"ok": True, **out})
 
 
+@app.get("/api/history")
+def recent_history(limit: int = 60,
+                   claims: Claims = Depends(require)) -> JSONResponse:
+    """What has been typed over lately, across the business.
+
+    One screen answering "who changed that?", which until now had no
+    answer at all for anything but a shipment's weight. Newest
+    first, because the question is nearly always about something
+    that moved recently.
+    """
+    try:
+        with _ops(claims) as conn:
+            rows = [
+                {"at": r[0].isoformat(), "record": r[1] or "",
+                 "kind": r[2], "field": r[3], "was": r[4],
+                 "became": r[5], "who": r[6]}
+                for r in conn.execute(
+                    "select changed_at, record_label, table_name, field,"
+                    "       was, became, changed_by_email"
+                    "  from public.record_history"
+                    " order by changed_at desc limit %s",
+                    (max(1, min(int(limit or 60), 500)),)).fetchall()
+            ]
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({"ok": True, "rows": rows})
+
+
 @app.get("/api/receiving/plan")
 def receiving_plan(shipment: str = "",
                    claims: Claims = Depends(require)) -> JSONResponse:
@@ -1585,9 +1613,27 @@ def line_history(request: Request, sku: str, branch: str,
                     " order by g.received_at desc, g.grn_number"
                     " limit 40", (sku, branch)).fetchall()
             ]
+            # And what somebody typed over on the item itself. A
+            # movement says the stock moved; this says the lead time
+            # went from 120 to 12, which is why the reorder point
+            # moved without any stock moving at all.
+            edits = [
+                {"at": r[0].isoformat(), "field": r[1], "was": r[2],
+                 "became": r[3], "who": r[4]}
+                for r in conn.execute(
+                    "select h.changed_at, h.field, h.was, h.became,"
+                    "       h.changed_by_email"
+                    "  from public.record_history h"
+                    "  join public.items i on i.sku = %s"
+                    " where h.table_name = 'items'"
+                    "   and h.record_label = i.sku"
+                    " order by h.changed_at desc limit 20",
+                    (sku,)).fetchall()
+            ]
             return JSONResponse({"ok": True,
                                  "movements": history(conn, sku, branch),
-                                 "receipts": receipts})
+                                 "receipts": receipts,
+                                 "edits": edits})
     except Exception as exc:
         return _op_error(exc)
 

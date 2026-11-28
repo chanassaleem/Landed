@@ -153,6 +153,39 @@ const SAID = {
      machine is fine; the link between it and its reagents has not
      been made. */
   unmeasured: 'nothing linked yet',
+  /* Column names as a person says them. said() turns an underscored
+     name into words, which gets "lead time days" and "is clinical
+     critical" -- readable, and not what anybody calls them. */
+  lead_time_days: 'lead time',
+  lead_time_days_std: 'lead time variability',
+  is_clinical_critical: 'clinically critical',
+  is_generic: 'generic',
+  is_active: 'in use',
+  is_warehouse: 'warehouse',
+  is_public_sector: 'public sector',
+  is_intercompany: 'inter-company',
+  list_price: 'list price',
+  credit_limit: 'credit limit',
+  payment_terms_days: 'payment terms',
+  expected_monthly_tests: 'expected tests a month',
+  revenue_per_test: 'revenue per test',
+  reagent_margin_pct: 'reagent margin',
+  capital_cost: 'capital cost',
+  contract_months: 'contract length',
+  basic_monthly: 'basic pay',
+  allowances_monthly: 'allowances',
+  medical_monthly: 'medical allowance',
+  employer_pf_rate: 'provident, employer',
+  employee_pf_rate: 'provident, employee',
+  po_number: 'order number',
+  allocate_by: 'divided by',
+  fx_rate: 'rate',
+  supplier_id: 'supplier',
+  location_id: 'branch',
+  customer_id: 'customer',
+  left_on: 'left on',
+  etd: 'left on',
+  eta: 'due',
   unrecoverable: 'will not repay', stalled: 'nothing coming back',
   /* The five stock states in the words the rest of the product uses.
      The engine's enum is REORDER and EXCESS because that is what the
@@ -564,6 +597,21 @@ function redrawActions(row) {
 }
 
 
+/* A stored value, as a person would read it back.
+   The audit keeps what the column held, scale and all, because an
+   audit records the value rather than a rendering of it. "120.00"
+   days is still an odd thing to show somebody. */
+function plainly(v) {
+  if (v === null || v === undefined || v === '') return '\u2014';
+  if (v === 'true') return 'yes';
+  if (v === 'false') return 'no';
+  const n = Number(v);
+  if (v !== '' && Number.isFinite(n) && /^-?\d+(\.\d+)?$/.test(v)) {
+    return String(Number(n.toFixed(4)));
+  }
+  return v;
+}
+
 async function loadHistory(row, host) {
   try {
     const r = await fetch(
@@ -577,7 +625,8 @@ async function loadHistory(row, host) {
     row.receipts = d.receipts || [];
     if (row.receipts.length) redrawActions(row);
     host.textContent = '';
-    if (!d.ok || !d.movements.length) {
+    const edits = d.edits || [];
+    if (!d.ok || (!d.movements.length && !edits.length)) {
       host.append(el('p', 'drop-sub',
         d.ok ? 'Nothing recorded against this line yet.'
              : 'The ledger could not be read.'));
@@ -592,6 +641,27 @@ async function loadHistory(row, host) {
       f.append(what); f.append(n);
       host.append(f);
     });
+
+    /* And what somebody typed over on the item itself. A movement
+       says the stock moved; this says the lead time went from 120 to
+       12, which is why the reorder point moved while no stock did.
+       Kept under the movements rather than mixed into them: they
+       answer different questions and a single list reads as though
+       an edit were a kind of movement. */
+    if (edits.length) {
+      host.append(el('p', 'fact-head', 'Typed over'));
+      edits.forEach((e) => {
+        const f = el('div', 'fact said');
+        f.append(el('span', null,
+          `${e.at.slice(0, 10)}  ${said(e.field)}`));
+        const to = el('span', null,
+          `${plainly(e.was)} \u2192 ${plainly(e.became)}`);
+        to.style.fontFamily = 'var(--mono)';
+        f.append(to);
+        f.title = `Changed by ${e.who}`;
+        host.append(f);
+      });
+    }
   } catch (e) {
     host.textContent = '';
     host.append(el('p', 'drop-sub', 'The ledger could not be read.'));
