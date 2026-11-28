@@ -1341,6 +1341,145 @@ async def shipment_basis(request: Request,
     return JSONResponse({"ok": True, **out})
 
 
+@app.get("/api/receiving/plan")
+def receiving_plan(shipment: str = "",
+                   claims: Claims = Depends(require)) -> JSONResponse:
+    """What a shipment could be carrying, and how much is still due.
+
+    The one-line form asks the same question for one item at one
+    branch. This asks it for a whole container, so the receiving page
+    opens with the lines already on it and the only thing typed is
+    what actually turned up.
+
+    Scoped the way the one-line form is scoped: an order whose
+    supplier is not this shipment's supplier is not offered, because
+    receiving one supplier's goods onto another's shipment allocates
+    the wrong freight to the wrong inventory and says nothing.
+    """
+    reference = (shipment or "").strip().upper()
+    if not reference:
+        return JSONResponse(
+            {"ok": False, "error": "Say which shipment arrived."}, 400)
+    try:
+        with _ops(claims) as conn:
+            head = conn.execute(
+                "select s.reference, s.status, s.mode, s.eta,"
+                "       coalesce(sup.name, '')"
+                "  from public.shipments s"
+                "  left join public.suppliers sup on sup.id = s.supplier_id"
+                " where upper(s.reference) = %s", (reference,)).fetchone()
+            if not head:
+                return JSONResponse(
+                    {"ok": False,
+                     "error": f"There is no shipment {reference} here."},
+                    404)
+            lines = [
+                {"sku": r[0], "description": r[1] or "", "branch": r[2],
+                 "po_number": r[3], "ordered": float(r[4]),
+                 "received": float(r[5]), "outstanding": float(r[6]),
+                 "unit_price": float(r[7]), "currency": r[8],
+                 "fx_rate": float(r[9])}
+                for r in conn.execute(
+                    "select i.sku, i.description, l.code, o.po_number,"
+                    "       o.ordered, o.received, o.outstanding,"
+                    "       pl.unit_price, o.currency, o.fx_rate"
+                    "  from public.po_outstanding o"
+                    "  join public.po_lines pl on pl.id = o.po_line_id"
+                    "  join public.items i on i.id = o.item_id"
+                    "  join public.locations l on l.id = o.location_id"
+                    # Only the orders this shipment may carry, which is
+                    # the view that already knows the supplier rule.
+                    "  join public.shipment_for_order sf"
+                    "    on sf.po_number = o.po_number"
+                    "   and upper(sf.reference) = %s"
+                    " where o.outstanding > 0"
+                    "   and o.status not in ('cancelled', 'closed')"
+                    " order by i.sku", (reference,)).fetchall()
+            ]
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({
+        "ok": True,
+        "shipment": {"reference": head[0], "status": head[1],
+                     "mode": head[2],
+                     "eta": head[3].isoformat() if head[3] else None,
+                     "supplier": head[4]},
+        "lines": lines,
+    })
+
+
+@app.post("/api/receive/many")
+async def receive_many(request: Request,
+                       claims: Claims = Depends(require)) -> JSONResponse:
+    """A whole delivery, as one document. All of it or none of it.
+
+    Half a container recorded is worse than none: the stock is wrong
+    in a way that looks right, and nothing on any screen says which
+    half is missing. One connection, one transaction, so a refusal on
+    line six takes lines one to five with it.
+    """
+    from engine.operations import NotAllowed, receive
+
+    b = await request.json()
+    lines = b.get("lines")
+    if not isinstance(lines, list):
+        lines = []
+    lines = [x for x in lines if isinstance(x, dict)]
+    if not lines:
+        return JSONResponse(
+            {"ok": False,
+             "error": "There are no lines on this delivery."}, 400)
+
+    shipment = str(b.get("shipment", "") or "")
+    grn = str(b.get("grn", "") or "")
+    when = str(b.get("when", "") or "") or None
+    ref = str(b.get("client_ref", "") or "").strip()[:180] or None
+
+    def num(row, key):
+        raw = row.get(key)
+        if raw in (None, ""):
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    try:
+        with _ops(claims) as conn:
+            out = []
+            for n, row in enumerate(lines, 1):
+                try:
+                    out.append(receive(
+                        conn, str(row.get("sku", "") or ""),
+                        str(row.get("branch", "") or ""),
+                        row.get("qty"),
+                        num(row, "unit_cost"),
+                        po=str(row.get("po", "") or ""),
+                        shipment=str(row.get("shipment") or shipment),
+                        batch=str(row.get("batch", "") or ""),
+                        expiry=str(row.get("expiry", "") or "") or None,
+                        when=when,
+                        weight=num(row, "weight"),
+                        volume=num(row, "volume"),
+                        currency=str(row.get("currency", "") or ""),
+                        fx=num(row, "fx_rate"),
+                        grn=grn,
+                        note=str(row.get("note", "") or ""),
+                        # Per line, so a repeated submission of the
+                        # whole delivery lands nothing twice -- and a
+                        # line added between the two attempts still
+                        # lands once.
+                        client_ref=f"{ref}:{n}" if ref else None))
+                except NotAllowed as exc:
+                    # Named by its place in the form. "There is no item
+                    # NOPE-9" in a list of eight rows leaves somebody
+                    # counting down it to find which one.
+                    raise NotAllowed(f"Line {n}: {exc}") from None
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({"ok": True, "lines": len(out), "received": out})
+
+
 @app.post("/api/order")
 async def raise_purchase_order(
         request: Request,

@@ -125,7 +125,7 @@ def page(served):
 
 # Everything in the rail, plus the screens that are not modules.
 SCREENS = [
-    "today", "home", "import", "settings",
+    "today", "home", "import", "settings", "receiving",
     "m/stock", "m/buy", "m/freight", "m/cash", "m/owed", "m/equipment",
     "m/quality", "m/people",
 ]
@@ -219,3 +219,43 @@ def test_the_money_band_opens_the_screen_that_holds_each_segment(page):
     pg.wait_for_timeout(1200)
     assert pg.evaluate("location.hash").startswith("#m/"), (
         "clicking the band went nowhere")
+
+
+def test_landing_offers_the_receiving_page(page):
+    """Somebody working a shipment should find it beside the two
+    buttons that book the shipment and charge it, not by knowing an
+    address."""
+    pg, base = page
+    pg.goto(f"{base}/#m/freight", wait_until="networkidle")
+    pg.wait_for_timeout(1600)
+    btn = pg.locator(".actions button", has_text="Receive a delivery")
+    assert btn.count(), (
+        "no way from Landing to Receiving: "
+        f"{pg.locator('.actions button').all_inner_texts()}")
+    btn.first.click()
+    pg.wait_for_timeout(1200)
+    assert pg.evaluate("location.hash") == "#receiving"
+    assert "Receiving" in pg.evaluate(
+        "document.querySelector('.view.on h2')?.textContent || ''")
+
+
+def test_the_receiving_page_says_what_it_wants_before_anything_is_typed(page):
+    """An empty screen with a text box on it is a screen somebody
+    stares at."""
+    pg, base = page
+    pg.goto(f"{base}/#receiving", wait_until="networkidle")
+    pg.wait_for_timeout(1200)
+    pg.locator("#recv-look").click()
+    pg.wait_for_timeout(600)
+    said = pg.locator("#recv-body").inner_text().lower()
+    assert "which shipment" in said
+
+
+def test_an_unknown_shipment_is_named_rather_than_blanked(page):
+    pg, base = page
+    pg.goto(f"{base}/#receiving", wait_until="networkidle")
+    pg.wait_for_timeout(1200)
+    pg.locator("#recv-ref").fill("SHP-NOT-HERE")
+    pg.locator("#recv-look").click()
+    pg.wait_for_timeout(1400)
+    assert "SHP-NOT-HERE" in pg.locator("#recv-body").inner_text()

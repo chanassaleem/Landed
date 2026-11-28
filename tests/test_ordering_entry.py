@@ -419,7 +419,7 @@ def test_the_three_records_can_be_added_from_a_screen():
     i = FORMS.index("const ON_MODULE = {")
     block = FORMS[i:FORMS.index("};", i)]
     assert "buy: ['order']" in block
-    assert "freight: ['shipment', 'shipment_cost']" in block
+    assert "freight: ['shipment', 'shipment_cost'" in block
 
 
 def test_an_order_form_can_hold_more_than_one_line():

@@ -194,6 +194,34 @@
       </div>
     </section>
 
+    <!-- Receiving a whole delivery.
+         A view of its own rather than a dialog: a container has
+         eight lines on it, and eight lines of six fields each is
+         not something to scroll inside a modal while holding a
+         packing list. -->
+    <section class="view" id="v-receiving">
+      <div class="wrap">
+        <div class="section">
+          <div class="section-head">
+            <h2>Receiving</h2>
+            <p>A whole delivery at once. Name the shipment and it
+               says what should be on it; type what actually
+               arrived.</p>
+          </div>
+
+          <div class="recv-pick">
+            <label for="recv-ref">Which shipment arrived</label>
+            <input id="recv-ref" type="text" autocomplete="off"
+                   placeholder="SHP-2026-41">
+            <button class="btn" id="recv-look" type="button">Look
+              it up</button>
+          </div>
+
+          <div id="recv-body"></div>
+        </div>
+      </div>
+    </section>
+
     <section class="view" id="v-import">
       <div class="wrap">
         <div class="section">

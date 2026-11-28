@@ -204,6 +204,15 @@
         ['note', 'Note', 'text', {}],
       ],
     },
+    /* Not a dialog: a link to the Receiving page, sitting in the same
+       row of actions so somebody working a shipment finds it where
+       the other two are. A container has eight lines and six fields
+       each, which is not something to scroll inside a modal while
+       holding a packing list. */
+    receiving: {
+      title: 'Receive a delivery',
+      goes: '#receiving',
+    },
     customer: {
       title: 'Add a customer',
       blurb: 'Who you sell to, their terms, and the limit you want to be '
@@ -358,7 +367,7 @@
     /* Landing owns the shipment and what the carrier charges for it.
        Both here rather than split, because a charge arrives on the
        same invoice as the shipment it belongs to. */
-    freight: ['shipment', 'shipment_cost'],
+    freight: ['shipment', 'shipment_cost', 'receiving'],
     cash: ['commitment', 'cash_balance'],
     customers: ['customer', 'supplier', 'interaction'],
     people: ['employee'],
@@ -678,7 +687,11 @@
     keys.forEach((k) => {
       const b = el('button', '', FORMS[k].title);
       b.type = 'button';
-      b.addEventListener('click', () => show(k, after));
+      const to = FORMS[k].goes;
+      b.addEventListener('click', () => {
+        if (to) { location.hash = to; return; }
+        show(k, after);
+      });
       bar.append(b);
     });
     return bar;

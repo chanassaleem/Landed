@@ -720,6 +720,14 @@ td.dim { color: var(--text-2); }
 }
 .btn:hover { background: var(--sunk); border-color: var(--text-3); }
 .btn.primary {
+  /* width: auto, because a bare .primary is the product's full-width
+     action bar -- the gate's "Create it", a modal's "Save" -- and an
+     element carrying both classes matches it. So ".btn primary" read
+     as a button and rendered as a 1,194px bar across the receiving
+     page, and did the same to the "Sign in again" link on the
+     session-expired card. .btn is the inline size; saying so here
+     stops the two meanings of "primary" fighting. */
+  width: auto;
   background: var(--filled);
   border-color: var(--filled);
   color: var(--on-filled);
@@ -2925,4 +2933,193 @@ td.unsure.can-edit:hover {
   .line-table td { padding: 0 0 6px; }
   .line-table td:nth-child(2) input,
   .line-table td:nth-child(3) input { text-align: left; }
+}
+
+/* ------------------------------------------------- the receiving page
+   Nine columns of a container's worth of lines. A table, and a wide
+   one, because the whole value of this screen is seeing the delivery
+   as one thing: what was due against what arrived, down the page. */
+.recv-pick {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.recv-pick label {
+  display: block;
+  margin: 0 0 4px;
+  font: 500 11px/1.4 var(--sans);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.recv-pick input {
+  padding: 7px 10px;
+  min-width: 220px;
+  font: inherit;
+  font-size: 13px;
+  font-family: var(--mono);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+}
+
+.recv-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.recv-head strong { font-family: var(--mono); font-size: 14px; }
+
+.recv-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0 0;
+  /* Fixed, so the table reads the same with one line on it as with
+     eight. Left to size itself, the five input columns took all the
+     slack and the four identity columns -- which are the ones
+     somebody reads down -- were squeezed against each other. */
+  table-layout: fixed;
+}
+
+/* Item carries two lines of text; the rest of the identity columns
+   are a code, a branch and a number. */
+.recv-table th:nth-child(1), .recv-table td:nth-child(1) { width: 17%; }
+.recv-table th:nth-child(2), .recv-table td:nth-child(2) { width: 7%; }
+.recv-table th:nth-child(3), .recv-table td:nth-child(3) { width: 10%; }
+.recv-table th:nth-child(4), .recv-table td:nth-child(4) { width: 7%; }
+/* The five that are typed into, equal, because no one of them is
+   more important than another when a delivery is being checked in. */
+.recv-table th:nth-child(n+5), .recv-table td:nth-child(n+5) {
+  width: 11.8%;
+}
+
+.recv-table th {
+  padding: 8px 8px 6px 0;
+  font: 500 11px/1.4 var(--sans);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  text-align: left;
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+}
+
+.recv-table th.num { text-align: right; }
+.recv-table td {
+  padding: 6px 8px 6px 0;
+  border-bottom: 1px solid var(--rule-2);
+  vertical-align: middle;
+}
+.recv-table td.num { text-align: right; font-family: var(--mono); }
+
+.recv-sku { display: block; font-family: var(--mono); }
+.recv-table .dim { display: block; font-size: 11.5px; color: var(--text-3); }
+
+.recv-table input {
+  width: 100%;
+  min-width: 84px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+}
+
+.recv-table td.num input { font-family: var(--mono); text-align: right; }
+
+.recv-table input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.recv-foot {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0 0;
+}
+
+.recv-grn {
+  display: block;
+  font: 500 11px/1.4 var(--sans);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.recv-foot input {
+  padding: 7px 10px;
+  min-width: 180px;
+  font: inherit;
+  font-size: 13px;
+  font-family: var(--mono);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+}
+
+.recv-foot .btn.primary { margin-left: auto; padding: 9px 16px; }
+
+/* Below the breakpoint each line becomes a labelled block. Nine
+   columns across a phone is nine columns nobody can read, and this
+   is a screen somebody uses standing next to the goods. */
+@media (max-width: 860px) {
+  .recv-table, .recv-table tbody, .recv-table tr {
+    display: block;
+    width: auto;
+  }
+  /* Width only. The desktop column widths are set with
+     pseudo-classes and have to be named again to be overridden --
+     but putting display: block in here too turned every cell back
+     into a block and undid the label grid below, so the column name
+     sat flush against its value: "BRANCHKHI". */
+  .recv-table td:nth-child(1), .recv-table td:nth-child(2),
+  .recv-table td:nth-child(3), .recv-table td:nth-child(4),
+  .recv-table td:nth-child(n+5) { width: auto; }
+  .recv-table thead { display: none; }
+  .recv-table tr {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .recv-table td {
+    display: grid;
+    /* minmax(0, 1fr), not 1fr: a grid track sized 1fr will not go
+       below its content's own minimum, and an input carrying
+       min-width keeps that minimum -- so the row grew past the
+       screen instead of the input shrinking. */
+    grid-template-columns: 8em minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    border: 0;
+    text-align: left;
+  }
+  /* width: auto, not 100%. As a grid item the input is sized by its
+     track; a width of 100% resolves against the cell instead and
+     puts the input 50px past the edge of its own parent. */
+  .recv-table input { min-width: 0; width: auto; }
+  .recv-table td.num { text-align: left; }
+  /* The label the header row was carrying, back on the cell. */
+  .recv-table td::before {
+    content: attr(data-label);
+    font: 500 11px/1.4 var(--sans);
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--text-3);
+  }
+  .recv-table td:first-child { grid-template-columns: 1fr; }
+  .recv-table td:first-child::before { content: none; }
+  .recv-foot .btn.primary { margin-left: 0; width: 100%; }
 }

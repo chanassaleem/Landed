@@ -221,6 +221,7 @@ const VIEWS = [
   { id: 'home',      label: 'Home' },
   { id: 'today',     label: 'Today' },
   { sep: true },
+  { id: 'receiving', label: 'Receiving' },
   { id: 'import',    label: 'Import' },
   { id: 'settings',  label: 'Settings' },
 ];
@@ -297,6 +298,7 @@ function go(view) {
   if (view === 'home' && S.data) renderHome();
   if (view === 'settings') renderSettings();
   if (view === 'import') renderModel();
+  if (view === 'receiving') wireReceiving();
   $('main').scrollTop = 0;
   /* Only when the address does not already say so. go() is called
      both by the router, which is reacting to the address, and by a
@@ -2620,3 +2622,238 @@ function wireImport() {
 }
 
 boot();
+
+/* ------------------------------------------------------- receiving
+   A whole delivery, rather than one line eight times.
+
+   Receiving used to live in the stock drawer, one item at a time,
+   with the purchase order and the shipment re-selected for every
+   line. For a container with eight lines on it that is eight passes
+   through the same form with the same two answers typed into each --
+   so in practice people record two lines and mean to come back,
+   which leaves the stock figure drifting from the shelf and the
+   freight divided across half the goods.
+
+   The page asks one question, the shipment, and fills the rest in
+   from the order. Everything typed here is what actually turned up:
+   the quantity, the batch, the expiry, and the weight the freight
+   will be divided by. */
+
+let receivingWired = false;
+
+function wireReceiving() {
+  const look = $('recv-look');
+  const ref = $('recv-ref');
+  if (!look || !ref || receivingWired) return;
+  receivingWired = true;
+
+  const run = () => loadDelivery(ref.value.trim());
+  look.addEventListener('click', run);
+  ref.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); run(); }
+  });
+}
+
+async function loadDelivery(reference) {
+  const host = $('recv-body');
+  if (!host) return;
+  host.textContent = '';
+  if (!reference) {
+    host.append(empty('Which shipment arrived?',
+      'Type its reference above. Everything else comes from the '
+      + 'order it was placed against.'));
+    return;
+  }
+  host.append(el('p', 'loading', 'Looking it up…'));
+
+  let d;
+  try {
+    const r = await fetch('/api/receiving/plan?shipment='
+      + encodeURIComponent(reference));
+    const text = await r.text();
+    d = text ? JSON.parse(text) : {};
+    if (!r.ok || d.ok === false) {
+      host.textContent = '';
+      host.append(empty('That shipment could not be read',
+        d.error || `The server answered ${r.status}.`));
+      return;
+    }
+  } catch (e) {
+    host.textContent = '';
+    host.append(empty('That shipment could not be read',
+      'The server did not answer. Nothing was recorded.'));
+    return;
+  }
+
+  host.textContent = '';
+  drawDelivery(host, d);
+}
+
+function drawDelivery(host, d) {
+  const s = d.shipment || {};
+  const head = el('div', 'recv-head');
+  head.append(el('strong', '', s.reference || ''));
+  const facts = [s.supplier, said(s.status || ''), s.mode,
+    s.eta ? `due ${s.eta}` : ''].filter(Boolean);
+  head.append(el('span', 'dim', facts.join(' · ')));
+  host.append(head);
+
+  if (!(d.lines || []).length) {
+    host.append(empty('Nothing is outstanding against this shipment',
+      'Either it has all been received already, or the orders it is '
+      + 'carrying were placed with another supplier. Raise the order '
+      + 'first and it will appear here.'));
+    return;
+  }
+
+  const form = el('form', 'recv-form');
+  const table = el('table', 'recv-table');
+  const thead = el('thead');
+  const hr = el('tr');
+  [['Item', ''], ['Branch', ''], ['Order', ''], ['Due', 'num'],
+    ['Arrived', 'num'], ['Batch', ''], ['Expires', ''],
+    ['Weight, kg', 'num'], ['Volume, cbm', 'num']]
+    .forEach(([label, cls]) => hr.append(el('th', cls, label)));
+  thead.append(hr);
+  table.append(thead);
+
+  /* Carried onto every cell, so the stylesheet can put the column
+     name back beside the value when the table stops being a table
+     below the breakpoint. */
+  const LABELS = ['Item', 'Branch', 'Order', 'Due', 'Arrived', 'Batch',
+    'Expires', 'Weight, kg', 'Volume, cbm'];
+
+  const body = el('tbody');
+  d.lines.forEach((line) => {
+    const tr = el('tr');
+    tr.dataset.sku = line.sku;
+    tr.dataset.branch = line.branch;
+    tr.dataset.po = line.po_number;
+
+    const item = el('td');
+    item.append(el('span', 'recv-sku', line.sku));
+    if (line.description) item.append(el('span', 'dim', line.description));
+    tr.append(item);
+    tr.append(el('td', '', line.branch));
+    tr.append(el('td', '', line.po_number));
+    tr.append(el('td', 'num', qty(line.outstanding)));
+
+    /* Pre-filled with what is still due, because the common case by
+       far is that the whole outstanding quantity turned up. A figure
+       to correct is quicker than a figure to type, and it is also
+       the one somebody checks rather than copies. */
+    const cell = (name, type, value) => {
+      const td = el('td', type === 'number' ? 'num' : '');
+      const f = el('input');
+      f.type = type;
+      if (type === 'number') f.step = 'any';
+      f.dataset.f = name;
+      f.setAttribute('aria-label', `${name} for ${line.sku}`);
+      if (value !== undefined) f.value = value;
+      td.append(f);
+      tr.append(td);
+      return f;
+    };
+    cell('qty', 'number', line.outstanding);
+    cell('batch', 'text');
+    cell('expiry', 'date');
+    cell('weight', 'number');
+    cell('volume', 'number');
+    [...tr.children].forEach((td, n) => {
+      td.dataset.label = LABELS[n] || '';
+    });
+    body.append(tr);
+  });
+  table.append(body);
+  form.append(table);
+
+  const foot = el('div', 'recv-foot');
+  const grnWrap = el('label', 'recv-grn', 'Goods receipt number');
+  const grn = el('input');
+  grn.type = 'text';
+  grn.id = 'recv-grn';
+  grn.autocomplete = 'off';
+  grnWrap.htmlFor = 'recv-grn';
+  foot.append(grnWrap);
+  foot.append(grn);
+
+  const problems = el('div', 'modal-problems');
+  problems.hidden = true;
+  const save = el('button', 'btn primary', 'Record this delivery');
+  save.type = 'submit';
+  foot.append(save);
+  form.append(foot);
+  form.append(problems);
+  host.append(form);
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    problems.hidden = true;
+    problems.textContent = '';
+    save.disabled = true;
+    save.textContent = 'Recording…';
+
+    const lines = [];
+    body.querySelectorAll('tr').forEach((tr) => {
+      const row = { sku: tr.dataset.sku, branch: tr.dataset.branch,
+        po: tr.dataset.po };
+      let any = false;
+      tr.querySelectorAll('[data-f]').forEach((f) => {
+        const v = f.value.trim();
+        if (v === '') return;
+        row[f.dataset.f] = f.type === 'number' ? Number(v) : v;
+        if (f.dataset.f === 'qty') any = Number(v) !== 0;
+      });
+      /* A line left at zero, or cleared, is a line that did not turn
+         up on this delivery -- not an error, and not a receipt of
+         nothing. Those stay outstanding and are received when they
+         arrive. */
+      if (any) lines.push(row);
+    });
+
+    if (!lines.length) {
+      problems.append(el('p', '', 'Nothing has a quantity against it, '
+        + 'so there is nothing to record. Leave a line at zero only '
+        + 'when it did not arrive.'));
+      problems.hidden = false;
+      save.disabled = false;
+      save.textContent = 'Record this delivery';
+      return;
+    }
+
+    try {
+      const r = await fetch('/api/receive/many', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shipment: (d.shipment || {}).reference,
+          grn: grn.value.trim(),
+          lines,
+        }),
+      });
+      const text = await r.text();
+      const out = text ? JSON.parse(text) : {};
+      if (!r.ok || out.ok === false) {
+        problems.append(el('p', '', out.error
+          || (out.problems || []).join(' ')
+          || `The server answered ${r.status}.`));
+        problems.hidden = false;
+        save.disabled = false;
+        save.textContent = 'Record this delivery';
+        return;
+      }
+      /* Reloaded from the server rather than ticked off here: the
+         outstanding quantities have all moved, and a screen that
+         works out its own new figures is a screen that can disagree
+         with the database. */
+      await loadDelivery((d.shipment || {}).reference);
+      boot();
+    } catch (err) {
+      problems.append(el('p', '', 'The server did not answer. Nothing '
+        + 'was recorded — what you typed is still here.'));
+      problems.hidden = false;
+      save.disabled = false;
+      save.textContent = 'Record this delivery';
+    }
+  });
+}
