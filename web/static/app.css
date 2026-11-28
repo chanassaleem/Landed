@@ -1882,6 +1882,11 @@ tbody tr.flagged td:first-child {
    unreadable for no gain. */
 .fld-textarea, .fld-check { grid-column: 1 / -1; }
 
+/* And a set of lines, which is a table and not a field. In half a
+   row the item code column was narrow enough to clip a six-character
+   SKU and the Remove link sat on top of the price. */
+.fld-lines { grid-column: 1 / -1; }
+
 .fld label {
   display: block;
   margin-bottom: 4px;
@@ -2840,4 +2845,84 @@ td.unsure {
    and a person needs both. */
 td.unsure.can-edit:hover {
   box-shadow: inset 0 0 0 1px var(--focus);
+}
+
+/* ------------------------------------------ a header and its lines
+   An order is the first record in the product that is not one row.
+   The rows are a table rather than a stack of repeated field groups:
+   three short values per line read as a column of quantities and a
+   column of prices, which is how somebody checks an order against
+   the quotation in their other hand. */
+.fld-lines { margin-top: 4px; }
+
+.line-table {
+  width: 100%;
+  margin: 6px 0 8px;
+  border-collapse: collapse;
+}
+
+.line-table th {
+  padding: 0 0 4px;
+  font: 500 11px/1.4 var(--sans);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  text-align: left;
+}
+
+.line-table td { padding: 0 6px 6px 0; vertical-align: top; }
+/* The remove link needs room of its own: butted against the last
+   input it reads as part of it. */
+.line-table td:last-child { padding-right: 0; width: 1%; padding-left: 4px; }
+/* The code is the widest thing on the line and the one that must not
+   clip; the two numbers need far less. */
+.line-table td:first-child { width: 45%; }
+.line-table td:nth-child(2),
+.line-table td:nth-child(3) { width: 22%; }
+
+.line-table input {
+  width: 100%;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+}
+
+.line-table input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+/* Quantities and prices line up for comparison; a code does not. */
+.line-table td:nth-child(2) input,
+.line-table td:nth-child(3) input {
+  font-family: var(--mono);
+  text-align: right;
+}
+
+.line-drop .linkish { white-space: nowrap; }
+
+/* Below the breakpoint the table stops being a table: three inputs
+   across a 430px screen leaves each of them too narrow to read a
+   price in. Each line becomes its own small block instead. */
+@media (max-width: 560px) {
+  .line-table, .line-table tbody, .line-table tr, .line-table td,
+  .line-table td:first-child, .line-table td:nth-child(2),
+  .line-table td:nth-child(3), .line-table td:last-child {
+    /* Each selector repeated, because the column widths above are
+       set with pseudo-classes and out-specify a bare `td` here. */
+    display: block;
+    width: auto;
+  }
+  .line-table thead { display: none; }
+  .line-table tr {
+    padding: 8px 0 4px;
+    border-bottom: 1px solid var(--rule-2);
+  }
+  .line-table td { padding: 0 0 6px; }
+  .line-table td:nth-child(2) input,
+  .line-table td:nth-child(3) input { text-align: left; }
 }

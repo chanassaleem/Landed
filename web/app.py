@@ -1341,6 +1341,44 @@ async def shipment_basis(request: Request,
     return JSONResponse({"ok": True, **out})
 
 
+@app.post("/api/order")
+async def raise_purchase_order(
+        request: Request,
+        claims: Claims = Depends(require)) -> JSONResponse:
+    """Place an order and its lines together, or place neither."""
+    from engine.operations import raise_order
+
+    b = await request.json()
+
+    def num(key):
+        raw = b.get(key)
+        if raw in (None, ""):
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    lines = b.get("lines")
+    if not isinstance(lines, list):
+        lines = []
+    try:
+        with _ops(claims) as conn:
+            out = raise_order(
+                conn, str(b.get("po_number", "") or ""),
+                branch=str(b.get("branch", "") or ""),
+                supplier=str(b.get("supplier", "") or ""),
+                currency=str(b.get("currency", "") or ""),
+                fx=num("fx_rate"),
+                expected=str(b.get("expected_at", "") or "") or None,
+                ordered=str(b.get("ordered_at", "") or "") or None,
+                note=str(b.get("note", "") or ""),
+                lines=[x for x in lines if isinstance(x, dict)])
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({"ok": True, **out})
+
+
 @app.post("/api/adjust")
 async def adjust_count(request: Request,
                        claims: Claims = Depends(require)) -> JSONResponse:
@@ -2308,6 +2346,57 @@ RECORDS: dict[str, dict] = {
         },
         "unique": "code",
     },
+    # A shipment and a charge on it. Single rows, so the generic
+    # handler takes them; an order is the one of the three that
+    # cannot come through here, because a header and its lines have
+    # to land together or not at all. See /api/order.
+    "shipment": {
+        "table": "public.shipments",
+        "cols": {
+            "reference": ("Reference", _upper, True),
+            # Air, sea, road and courier are what the allocator and
+            # the freight screen know how to talk about. A fifth word
+            # would read through to a screen that has no column for it.
+            "mode": ("Mode", _one_of("air", "sea", "road", "courier"),
+                     False),
+            "status": ("Status", _one_of("draft", "in_transit", "arrived",
+                                         "cleared", "closed"), False),
+            "etd": ("Left on", _day, False),
+            "eta": ("Due", _day, False),
+        },
+        "lookup": {
+            # Optional on purpose: a consolidation carries several
+            # suppliers' goods and belongs to none of them, which is
+            # also what makes it valid for any order's receipt.
+            "supplier_code": ("supplier_id", "public.suppliers", "code"),
+        },
+        "unique": "reference",
+    },
+    "shipment_cost": {
+        "table": "public.shipment_costs",
+        "cols": {
+            "kind": ("Kind", _one_of("freight", "duty", "clearing",
+                                     "inland", "bank", "insurance",
+                                     "other"), True),
+            # The four bases the allocator can actually divide by.
+            # "per pallet" is a reasonable thing for an invoice to say
+            # and nothing in the ledger counts pallets, so a charge on
+            # that basis would land nowhere while the screen reported
+            # it as allocated.
+            "allocate_by": ("Divided by",
+                            _one_of("value", "weight", "volume", "qty"),
+                            True),
+            "amount": ("Amount", _number, True),
+            "currency": ("Currency", _upper, True),
+            "fx_rate": ("Rate", _number, True),
+            "note": ("Note", _txt, False),
+        },
+        "lookup": {
+            "shipment_reference": ("shipment_id", "public.shipments",
+                                   "reference"),
+        },
+        "requires": ("shipment_id",),
+    },
     "commitment": {
         "table": "public.commitments",
         "cols": {
@@ -2445,6 +2534,20 @@ async def add_record(kind: str, request: Request,
                          "problems": [f"No record here has the code "
                                       f"{raw}."]}, 400)
                 values[col] = found[0]
+
+            # A lookup can be optional -- a consolidation has no
+            # supplier -- or the whole point of the record. A charge
+            # with no shipment behind it is not a charge on anything.
+            for col in spec.get("requires", ()):
+                if col not in values:
+                    field = next(
+                        (f for f, (c, _t, _k)
+                         in (spec.get("lookup") or {}).items() if c == col),
+                        col)
+                    return JSONResponse(
+                        {"ok": False,
+                         "problems": [f"{field.replace('_', ' ')} "
+                                      f"is needed."]}, 400)
 
             if spec.get("author"):
                 values[spec["author"]] = claims.user_id

@@ -111,6 +111,99 @@
           { hint: 'Raises the service target. Never lowers it.' }],
       ],
     },
+    /* The three that put committed money on the books: what you have
+       ordered, what is carrying it, and what the carrier is charging
+       for it. Each used to arrive only as a row in the import
+       workbook, which is a workflow for the first load of history
+       and not for a buyer who has just put the phone down. */
+    order: {
+      title: 'Raise a purchase order',
+      blurb: 'What you have committed to buy. Ordering reads this to '
+        + 'work out what is still outstanding, so an order that is '
+        + 'not recorded is stock the system thinks you still need.',
+      post: '/api/order',
+      fields: [
+        ['po_number', 'Order number', 'text',
+          { req: true, hint: 'Yours, not the supplier\u2019s. It has '
+            + 'to be unique here, and it is what a receipt is filed '
+            + 'against.' }],
+        ['supplier', 'Supplier code', 'text',
+          { hint: 'Leave blank for a local cash purchase with no '
+            + 'supplier record.' }],
+        ['branch', 'For which branch', 'text', { req: true }],
+        ['currency', 'Priced in', 'text',
+          { hint: 'Blank means your own currency.' }],
+        ['fx_rate', 'At what rate', 'number',
+          { hint: 'The rate this order was bought at. Needed whenever '
+            + 'the currency is not your own \u2014 without it there is '
+            + 'no way to tell one currency from another further down.' }],
+        ['expected_at', 'Expected', 'date', {}],
+        ['note', 'Note', 'text', {}],
+        ['lines', 'What you are ordering', 'lines', {
+          req: true,
+          hint: 'One line per item. An item can appear once on an '
+            + 'order; two prices for the same item means two orders.',
+          columns: [['sku', 'Item code', 'text'],
+            ['qty', 'Quantity', 'number'],
+            ['unit_price', 'Price each', 'number']],
+        }],
+      ],
+    },
+    shipment: {
+      title: 'Book a shipment',
+      blurb: 'What is carrying the goods. Receipts hang off it, and '
+        + 'so do the charges that become their landed cost.',
+      post: '/api/record/shipment',
+      fields: [
+        ['reference', 'Reference', 'text', { req: true }],
+        ['supplier_code', 'Supplier code', 'text',
+          { hint: 'Leave blank for a consolidation carrying several '
+            + 'suppliers\u2019 goods \u2014 which is also what makes '
+            + 'it valid for any order\u2019s receipt.' }],
+        ['mode', 'How', 'select', {
+          options: [['sea', 'Sea'], ['air', 'Air'], ['road', 'Road'],
+            ['courier', 'Courier']],
+        }],
+        ['status', 'Where it is', 'select', {
+          options: [['draft', 'Not shipped yet'],
+            ['in_transit', 'In transit'], ['arrived', 'Arrived'],
+            ['cleared', 'Cleared'], ['closed', 'Closed']],
+        }],
+        ['etd', 'Left on', 'date', {}],
+        ['eta', 'Due', 'date', {}],
+      ],
+    },
+    shipment_cost: {
+      title: 'Add a charge to a shipment',
+      blurb: 'Freight, duty, clearing and the rest. Each is divided '
+        + 'across the goods on its own basis, and together they are '
+        + 'the difference between a supplier\u2019s price and what '
+        + 'the stock actually cost you.',
+      post: '/api/record/shipment_cost',
+      fields: [
+        ['shipment_reference', 'Shipment', 'text', { req: true }],
+        ['kind', 'What for', 'select', {
+          req: true,
+          options: [['freight', 'Freight'], ['duty', 'Duty'],
+            ['clearing', 'Clearing'], ['inland', 'Inland transport'],
+            ['bank', 'Bank charges'], ['insurance', 'Insurance'],
+            ['other', 'Something else']],
+        }],
+        ['allocate_by', 'Divided by', 'select', {
+          req: true,
+          options: [['value', 'Value of the goods'],
+            ['weight', 'Weight'], ['volume', 'Volume'],
+            ['qty', 'Quantity']],
+          hint: 'How this charge is split across the lines on the '
+            + 'shipment. Duty usually goes by value, freight by '
+            + 'weight or volume, clearing by quantity.',
+        }],
+        ['amount', 'Amount', 'number', { req: true }],
+        ['currency', 'In what currency', 'text', { req: true, value: 'PKR' }],
+        ['fx_rate', 'At what rate', 'number', { req: true, value: 1 }],
+        ['note', 'Note', 'text', {}],
+      ],
+    },
     customer: {
       title: 'Add a customer',
       blurb: 'Who you sell to, their terms, and the limit you want to be '
@@ -259,6 +352,13 @@
      time -- a forecast is computed, not entered. */
   const ON_MODULE = {
     stock: ['item', 'location'],
+    /* Ordering is where somebody looks at what policy says to buy,
+       so it is where they raise the order for it. */
+    buy: ['order'],
+    /* Landing owns the shipment and what the carrier charges for it.
+       Both here rather than split, because a charge arrives on the
+       same invoice as the shipment it belongs to. */
+    freight: ['shipment', 'shipment_cost'],
     cash: ['commitment', 'cash_balance'],
     customers: ['customer', 'supplier', 'interaction'],
     people: ['employee'],
@@ -293,6 +393,70 @@
       row.append(el('span', '', label));
       wrap.append(row);
       if (opt.hint) wrap.append(el('p', 'fld-hint', opt.hint));
+      return wrap;
+    }
+
+    /* A repeating set of rows, for a record that is a header and its
+       lines. An order is the only one so far, and it is the reason
+       an order could not go through this builder before: a purchase
+       order with no lines is not an order, and nothing here could
+       collect more than one value for a field.
+
+       Starts with one empty row, because a form that opens with
+       nothing to type into reads as a form that is not ready. */
+    if (type === 'lines') {
+      wrap.classList.add('fld-lines');
+      wrap.append(el('label', '', label + (opt.req ? ' *' : '')));
+      if (opt.hint) wrap.append(el('p', 'fld-hint', opt.hint));
+
+      const table = el('table', 'line-table');
+      const head = el('tr');
+      (opt.columns || []).forEach(([, text]) => head.append(el('th', '', text)));
+      head.append(el('th', '', ''));
+      /* Node.append returns undefined, so this cannot be chained. */
+      const thead = el('thead');
+      thead.append(head);
+      table.append(thead);
+      const tbody = el('tbody');
+      table.append(tbody);
+
+      const addRow = () => {
+        const tr = el('tr');
+        (opt.columns || []).forEach(([key, text, kind]) => {
+          const td = el('td');
+          const f = el('input');
+          f.type = kind === 'number' ? 'number' : 'text';
+          if (kind === 'number') f.step = 'any';
+          f.dataset.line = key;
+          f.setAttribute('aria-label', text);
+          f.placeholder = text;
+          td.append(f);
+          tr.append(td);
+        });
+        const td = el('td', 'line-drop');
+        const drop = el('button', 'linkish', 'Remove');
+        drop.type = 'button';
+        drop.addEventListener('click', () => {
+          /* Never the last one: an order with no rows cannot be
+             typed into, and the server would refuse it anyway. */
+          if (tbody.children.length > 1) tr.remove();
+          else tr.querySelectorAll('input').forEach((x) => { x.value = ''; });
+        });
+        td.append(drop);
+        tr.append(td);
+        tbody.append(tr);
+        return tr;
+      };
+      addRow();
+
+      wrap.append(table);
+      const more = el('button', 'btn', 'Add another line');
+      more.type = 'button';
+      more.addEventListener('click', () => {
+        addRow().querySelector('input').focus();
+      });
+      wrap.append(more);
+      wrap.dataset.lines = name;
       return wrap;
     }
 
@@ -412,7 +576,27 @@
       save.textContent = 'Saving…';
 
       const body = {};
-      spec.fields.forEach(([name, , type]) => {
+      spec.fields.forEach(([name, , type, opt]) => {
+        if (type === 'lines') {
+          const host = form.querySelector(`[data-lines="${name}"]`);
+          if (!host) return;
+          /* A row where nothing was typed is somebody who pressed
+             "add another line" and changed their mind, not an order
+             for nothing. Dropped here rather than sent for the
+             server to refuse. */
+          body[name] = [...host.querySelectorAll('tbody tr')]
+            .map((tr) => {
+              const row = {};
+              (opt.columns || []).forEach(([key, , kind]) => {
+                const f = tr.querySelector(`[data-line="${key}"]`);
+                const v = (f && f.value.trim()) || '';
+                if (v !== '') row[key] = kind === 'number' ? Number(v) : v;
+              });
+              return row;
+            })
+            .filter((row) => Object.keys(row).length);
+          return;
+        }
         const input = form.querySelector(`[name="${name}"]`);
         if (!input) return;
         if (type === 'check') { body[name] = input.checked; return; }

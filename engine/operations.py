@@ -14,6 +14,7 @@ place to notice.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -856,3 +857,145 @@ def history(run, sku: str, branch: str, limit: int = 25) -> list[dict]:
          "note": r[4] or ""}
         for r in rows
     ]
+
+
+def raise_order(run, po_number: str, *, branch: str, supplier: str = "",
+                currency: str = "", fx: float | None = None,
+                expected: str | None = None, ordered: str | None = None,
+                note: str = "", lines: Sequence[Mapping] = ()) -> dict:
+    """Place a purchase order, with its lines, in one transaction.
+
+    Until this existed an order arrived one way: a row in the import
+    workbook. That is fine for the first load of history and wrong
+    for everything after it. A buyer who has just placed an order on
+    the phone is not going to open Excel, add a row to "On order" and
+    re-import the file -- so the order goes unrecorded, and the
+    outstanding quantity that the whole Ordering screen is built on
+    drifts away from what the business has actually committed to.
+
+    Header and lines together or neither, which is why this is an
+    operation and not two calls to the generic record handler. A
+    header that survived a rejected line is the worst of the two
+    outcomes: it reads as a placed order against quantities nobody
+    agreed, and po_outstanding counts it as fully received because
+    there is nothing under it to be outstanding.
+
+    The currency rule is the receipt's rule, for the receipt's
+    reason: 56 of something is not a price until it says 56 of what,
+    at what. An order in the base currency needs no rate and gets 1.
+    """
+    org = _org(run)
+    po_number = (po_number or "").strip().upper()
+    if not po_number:
+        raise NotAllowed("Give the order a number.")
+
+    base = run.execute(
+        "select currency from public.organisations where id = %s",
+        (org,)).fetchone()[0]
+    currency = (currency or "").strip().upper() or base
+    if currency != base and fx is None:
+        raise NotAllowed(
+            f"This order is priced in {currency}, so it needs the rate "
+            f"it was bought at. Without one there is no way to tell "
+            f"{currency} from {base} further down.")
+    rate = float(fx) if fx is not None else 1.0
+    if rate <= 0:
+        raise NotAllowed("A rate has to be more than nothing.")
+
+    where = run.execute(
+        "select id from public.locations where org_id = %s and upper(code)"
+        " = %s", (org, (branch or "").strip().upper())).fetchone()
+    if not where:
+        raise NotAllowed(f"There is no branch {branch} here.")
+
+    supplier_id = None
+    supplier = (supplier or "").strip().upper()
+    if supplier:
+        found = run.execute(
+            "select id from public.suppliers where org_id = %s"
+            "   and upper(code) = %s", (org, supplier)).fetchone()
+        if not found:
+            raise NotAllowed(f"There is no supplier {supplier} here.")
+        supplier_id = found[0]
+
+    # Every line checked before anything is written. Walking them as
+    # we insert would leave the first few in the database behind a
+    # rejection of the fourth -- and this runs inside one transaction,
+    # so it would roll back, but the error would name only the line
+    # that failed and not the others the person also has to fix.
+    if not lines:
+        raise NotAllowed(
+            "An order needs at least one line. A header with nothing "
+            "under it reads as an order that has been fully received.")
+
+    checked, problems = [], []
+    for n, line in enumerate(lines, 1):
+        sku = str(line.get("sku", "") or "").strip().upper()
+        item = run.execute(
+            "select id from public.items where org_id = %s"
+            "   and upper(sku) = %s", (org, sku)).fetchone() if sku else None
+        if not item:
+            problems.append(f"Line {n}: there is no item {sku or '(blank)'}.")
+            continue
+        try:
+            qty = float(line.get("qty"))
+            price = float(line.get("unit_price"))
+        except (TypeError, ValueError):
+            problems.append(f"Line {n}: the quantity and the price have "
+                            f"to be numbers.")
+            continue
+        if qty <= 0:
+            problems.append(f"Line {n}: a quantity of {qty:g} is not an "
+                            f"order for anything.")
+            continue
+        if price < 0:
+            problems.append(f"Line {n}: a price cannot be negative.")
+            continue
+        if any(prior == item[0] for prior, _q, _p in checked):
+            # The schema allows one line per item per order, and
+            # 0010 says plainly that this index is what has to change
+            # first if that ever stops being true. This is not that
+            # moment: the import's idempotency rests on that natural
+            # key, and repeatable re-import is worth more than two
+            # prices for one item on one order -- which can be
+            # expressed as two orders, or as one blended price.
+            problems.append(
+                f"Line {n}: {sku} is already on this order. Combine "
+                f"the two lines, or raise a second order -- one item "
+                f"can appear once per order.")
+            continue
+        checked.append((item[0], qty, price))
+
+    if problems:
+        raise NotAllowed(" ".join(problems))
+
+    taken = run.execute(
+        "select 1 from public.purchase_orders where org_id = %s"
+        "   and upper(po_number) = %s", (org, po_number)).fetchone()
+    if taken:
+        raise NotAllowed(f"{po_number} is already an order here.")
+
+    po = run.execute(
+        "insert into public.purchase_orders (org_id, location_id,"
+        " supplier_id, po_number, currency, fx_rate, status, ordered_at,"
+        " expected_at, note, created_by)"
+        # auth.uid(), not a value passed in: it is the signed-in user
+        # on this connection, so it is right without being supplied
+        # and cannot be supplied as somebody else. grn_lines and
+        # shipment_orders default to the same expression; this column
+        # has no default, so it is said here.
+        " values (%s,%s,%s,%s,%s,%s,'placed',coalesce(%s, current_date),"
+        "         %s,%s,auth.uid()) returning id",
+        (org, where[0], supplier_id, po_number, currency, rate,
+         ordered or None, expected or None,
+         (note or "").strip() or None)).fetchone()[0]
+
+    for item_id, qty, price in checked:
+        run.execute(
+            "insert into public.po_lines (org_id, po_id, item_id, qty,"
+            " unit_price) values (%s,%s,%s,%s,%s)",
+            (org, po, item_id, qty, price))
+
+    return {"po": po_number, "lines": len(checked),
+            "value": round(sum(q * p for _i, q, p in checked), 2),
+            "currency": currency, "fx_rate": rate}
