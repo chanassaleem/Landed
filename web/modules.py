@@ -837,6 +837,55 @@ def _unmeasured_note(rows, unmeasured_capital, thresholds):
     )
 
 
+def _with_dispositions(f, rows: list) -> list:
+    """Who is on each finding, or why it has been accepted.
+
+    Acceptance is checked against the rows it covered, not against
+    the code alone. Accepting "items with no unit cost" and then
+    adding a new item with no cost must not hide the new one; that
+    is how an accepted finding becomes a blindfold.
+    """
+    try:
+        held = {
+            r[0]: {"state": r[1], "assigned_to": str(r[2]) if r[2] else None,
+                   "assigned_to_email": r[3], "note": r[4],
+                   "accepted_rows": set(r[5] or ())}
+            for r in f.conn.execute(
+                "select d.code, d.state, d.assigned_to, m.email, d.why,"
+                "       d.accepted_rows"
+                "  from public.check_dispositions d"
+                "  left join public.memberships m"
+                "    on m.user_id = d.assigned_to and m.org_id = d.org_id"
+            ).fetchall()
+        }
+    except Exception:
+        # A module that cannot read a disposition still has findings
+        # worth showing, and they are the point of the screen.
+        held = {}
+
+    for row in rows:
+        got = held.get(row.get("code"))
+        row["state"] = "open"
+        row["assigned_to"] = None
+        row["assigned_to_email"] = None
+        row["disposition_note"] = None
+        row["unaccepted_rows"] = []
+        if not got:
+            continue
+        row["assigned_to"] = got["assigned_to"]
+        row["assigned_to_email"] = got["assigned_to_email"]
+        row["disposition_note"] = got["note"]
+        if got["state"] == "assigned":
+            row["state"] = "assigned"
+            continue
+        # Accepted. Still accepted only while it names nothing new.
+        fresh = [r for r in (row.get("rows") or [])
+                 if r not in got["accepted_rows"]]
+        row["unaccepted_rows"] = fresh
+        row["state"] = "open" if fresh else "accepted"
+    return rows
+
+
 def _service(f) -> dict:
     r = f.service
     return {
@@ -906,9 +955,19 @@ def _quality(f) -> dict:
     from engine import sanity
 
     findings = f.findings
+    rows = _with_dispositions(f, jsonable(findings))
+    totals = sanity.summary(findings)
+    totals["accepted"] = sum(1 for r in rows if r["state"] == "accepted")
+    totals["assigned"] = sum(1 for r in rows if r["state"] == "assigned")
+    # What is left for somebody to pick up. The count people actually
+    # want, and the one the tile should show: a list of twelve that
+    # includes four nobody has to do anything about reads as twelve
+    # jobs.
+    totals["needing_action"] = sum(
+        1 for r in rows if r["state"] != "accepted")
     return {
-        "rows": jsonable(findings),
-        "totals": sanity.summary(findings),
+        "rows": rows,
+        "totals": totals,
         # Said rather than left to be read off three counts. "Nothing
         # known wrong" is deliberately not "right": these checks find
         # what they look for, and silence is not proof.

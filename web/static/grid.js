@@ -105,6 +105,12 @@
          number is the best available and worth showing, but a price
          set off it should be set knowingly. */
       mark,
+      /* rowActions: [{ label(row), title, run(row) }] -- a small set
+         of verbs that belong to one row. The Open button opens a
+         row; these do something to it without leaving the list,
+         which is what a list of findings needs to become a list of
+         work. Null from label() leaves that action off that row. */
+      rowActions = [],
       editable = [],  // column keys the server says may be typed into
       onEdit,         // (row, key, value) -> Promise
       onOpen,         // (row) -> void: the row's own screen
@@ -356,6 +362,11 @@
       /* Matches the action cell on every body row. Without it every
          column sits one place left of its heading, which looks like a
          data bug and is a markup bug. */
+      if (rowActions.length) {
+        const th = el('th', 'grid-open-cell');
+        th.style.width = `${44 * rowActions.length + 24}px`;
+        hr.append(th);
+      }
       if (onOpen) {
         const th = el('th', 'grid-open-cell');
         th.style.width = '64px';
@@ -475,6 +486,23 @@
            starts an edit -- and because somebody looking for where to
            enter a receipt should be able to see it rather than
            discover it. */
+        if (rowActions.length) {
+          const td = el('td', 'grid-open-cell grid-acts');
+          rowActions.forEach((a) => {
+            const label = typeof a.label === 'function'
+              ? a.label(r) : a.label;
+            if (!label) return;
+            const b = el('button', 'grid-open', label);
+            b.type = 'button';
+            if (a.title) b.title = a.title;
+            b.addEventListener('click', (e) => {
+              e.stopPropagation();
+              a.run(r);
+            });
+            td.append(b);
+          });
+          tr.append(td);
+        }
         if (onOpen) {
           const td = el('td', 'grid-open-cell');
           const b = el('button', 'grid-open', 'Open');
@@ -499,12 +527,12 @@
                figure will move, which colour alone cannot carry to
                somebody reading a printout or not seeing the hue.
 
-               Except where there is no figure. The tilde means
-               approximate, and "~—" reads as approximately nothing,
-               which is not what an absent value means. The dash
-               carries it there, in the same colour, with the same
-               explanation on hover. */
-            if (td.textContent !== '—') {
+               Except where there is no figure, and except on text.
+               The tilde means approximate: "~—" reads as
+               approximately nothing, and "~Items with no unit cost"
+               reads as a typo. In both the colour and the tooltip
+               carry it on their own. */
+            if (td.textContent !== '—' && numeric.has(c.fmt)) {
               const flag = el('span', 'unsure-mark', '~');
               flag.setAttribute('aria-hidden', 'true');
               td.prepend(flag);

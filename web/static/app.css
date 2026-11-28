@@ -2399,6 +2399,18 @@ td.can-edit input[type='checkbox'] { width: auto; }
   text-align: left;
 }
 
+/* More than one verb for a row. The width is set per column by the
+   grid, which knows how many there are; this is only the spacing
+   between them. Without display:flex the buttons were laid out as
+   inline boxes inside a fixed-width cell and had no room, so the
+   cell itself took every click. */
+.grid-table td.grid-acts {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  width: auto;
+}
+
 .grid-open {
   font: 500 11px/1 var(--sans);
   letter-spacing: 0.02em;

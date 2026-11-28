@@ -646,16 +646,48 @@
         ['severity', 'How bad', 'state'],
         ['dataset', 'Where', 'said'],
         ['title', 'What', 'text'],
+        ['state', 'Who has it', 'said'],
+        ['assigned_to_email', 'With', 'text'],
         ['effect', 'What it does to the numbers', 'text'],
         ['fix', 'How to fix it', 'text'],
         ['count', 'Rows', 'num'],
       ],
       tiles: [
+        /* Needing action first, because it is the one anybody acts
+           on. A list of twelve that includes four nobody has to do
+           anything about reads as twelve jobs. */
+        ['needing_action', 'Left to pick up', 'num'],
         ['blocks', 'Makes a figure wrong', 'num'],
         ['warns', 'Worth looking at', 'num'],
-        ['notes', 'Worth knowing', 'num'],
+        ['assigned', 'Somebody is on', 'num'],
+        ['accepted', 'Accepted as is', 'num'],
         ['total', 'In all', 'num'],
       ],
+      /* A list of findings becomes a list of work here. Two verbs,
+         because they say different things: somebody is on it, or
+         the business has looked and this is how things are. */
+      rowActions: [
+        { label: (r) => (r.state === 'assigned' ? 'Hand back' : 'Take'),
+          title: 'Who is on this',
+          run: (r) => settleCheck(r, r.state === 'assigned'
+            ? 'handback' : 'take') },
+        { label: (r) => (r.state === 'accepted' ? 'Reopen' : 'Accept'),
+          title: 'This is how things are',
+          run: (r) => settleCheck(r, r.state === 'accepted'
+            ? 'reopen' : 'accept') },
+      ],
+      /* An accepted finding is still listed -- hiding it is how it
+         is forgotten -- but it is marked, so the eye skips it the
+         way it should. */
+      mark: (row, col) => {
+        if (row.state === 'accepted' && col.key === 'title') {
+          return `Accepted as how things are${
+            row.disposition_note ? `: ${row.disposition_note}` : ''}. `
+            + 'It comes back on its own if the check ever names a row '
+            + 'this acceptance did not cover.';
+        }
+        return null;
+      },
       notes: ['verdict'],
       /* A blocking fault means a number on another screen is wrong,
          not merely unwelcome, so it is marked the way an overdrawn
@@ -745,6 +777,72 @@
     t.append(el('div', 'tile-v num', value));
     t.append(el('div', 'tile-k', label));
     return t;
+  }
+
+  /* Assign, hand back, accept or reopen one finding.
+   *
+   * Taking it is a click: it is yours, and nothing else needs
+   * saying. Accepting asks why, because "we know" with no reason is
+   * a finding somebody silences and nobody can audit afterwards --
+   * and the reason is the only thing that tells the next person
+   * whether the acceptance still holds.
+   */
+  async function settleCheck(row, what) {
+    let body = { code: row.code };
+    let url = '/api/check/assign';
+    if (what === 'take') {
+      const me = await whoAmI();
+      if (!me) return;
+      body.to = me;
+    } else if (what === 'handback') {
+      body.to = '';
+    } else if (what === 'reopen') {
+      url = '/api/check/reopen';
+    } else {
+      const why = window.prompt(
+        'Why is this how things are? Whoever reads this next has '
+        + 'only your answer to go on.');
+      if (!why || !why.trim()) return;
+      url = '/api/check/accept';
+      body.why = why.trim();
+    }
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const text = await res.text();
+      const d = text ? JSON.parse(text) : {};
+      if (!res.ok || d.ok === false) {
+        window.alert(d.error || `The server answered ${res.status}.`);
+        return;
+      }
+    } catch (e) {
+      window.alert('The server did not answer. Nothing was changed.');
+      return;
+    }
+    /* Redrawn from the server rather than patched here: accepting a
+       finding changes three tiles and may leave it open anyway, if
+       it names a row the acceptance did not cover. */
+    const mod = (window.LANDED_MODULES || {}).modules
+      ? (window.LANDED_MODULES.modules || [])
+        .find((m) => m.id === 'quality')
+      : null;
+    if (mod) open(mod);
+  }
+
+  let me_ = null;
+
+  async function whoAmI() {
+    if (me_) return me_;
+    try {
+      const r = await fetch('/api/me');
+      const d = await r.json();
+      me_ = d.user_id || null;
+    } catch (e) { me_ = null; }
+    if (!me_) window.alert('Could not tell who you are signed in as.');
+    return me_;
   }
 
   function note(text, kind) {
@@ -1298,6 +1396,7 @@
         editable: data.editable || [],
         flag: spec.flag,
         mark: spec.mark,
+        rowActions: spec.rowActions || [],
         onEdit: (row, field, value) => saveItem(row, field, value),
         /* Only where the row is a stock line, because the drawer shows
            a line's movements and offers the four operations that write

@@ -450,7 +450,11 @@ def me(request: Request) -> JSONResponse:
         return JSONResponse(
             {"signed_in": True, "email": claims.email, "organisations": None,
              "detail": "the database is unreachable"})
+    # The id as well as the email. The screen needs it to say "this
+    # one is mine" without the browser having to guess which
+    # membership row is the signed-in person's.
     return JSONResponse({"signed_in": True, "email": claims.email,
+                         "user_id": claims.user_id,
                          "organisations": orgs})
 
 
@@ -1339,6 +1343,135 @@ async def shipment_basis(request: Request,
     except Exception as exc:
         return _op_error(exc)
     return JSONResponse({"ok": True, **out})
+
+
+def _known_check_codes() -> set:
+    """Every code engine/sanity.py can produce.
+
+    A disposition against a code no check emits would sit in the
+    table for ever, matching nothing and explaining nothing -- and
+    a typo is exactly how that happens.
+    """
+    import re
+    from engine import sanity as _s
+
+    src = pathlib.Path(_s.__file__).read_text()
+    return set(re.findall(r'_f\(\s*\n?\s*"([a-z_0-9]+)"', src))
+
+
+def _settle_check(claims, code: str, state: str | None, *,
+                  to: str = "", why: str = "",
+                  rows: bool = False) -> JSONResponse:
+    """Assign, accept or hand back one finding."""
+    code = (code or "").strip()
+    if code not in _known_check_codes():
+        return JSONResponse(
+            {"ok": False,
+             "error": f"No check produces {code or '(blank)'}."}, 400)
+
+    try:
+        with _ops(claims) as conn:
+            org = conn.execute(
+                "select id from public.organisations"
+                " order by created_at limit 1").fetchone()
+            if not org:
+                return JSONResponse(
+                    {"ok": False, "error": "Name your business first."},
+                    409)
+
+            if state is None:
+                conn.execute(
+                    "delete from public.check_dispositions"
+                    " where org_id = %s and code = %s", (org[0], code))
+                return JSONResponse({"ok": True, "code": code,
+                                     "state": "open"})
+
+            who = None
+            if to:
+                found = conn.execute(
+                    "select user_id from public.memberships"
+                    " where org_id = %s and user_id = %s",
+                    (org[0], to)).fetchone()
+                if not found:
+                    return JSONResponse(
+                        {"ok": False,
+                         "error": "That person is not in this business."},
+                        400)
+                who = found[0]
+
+            covered = []
+            if rows:
+                # The rows this acceptance covers, taken from the
+                # check as it stands now. Anything that appears
+                # afterwards is outside it and brings the finding
+                # back.
+                from web.facts import Facts
+
+                _role, _licensed, settings = _standing(conn, claims)
+                facts = Facts(
+                    conn,
+                    thresholds=thresholds_for(settings),
+                    currency=str(settings.get("currency") or "PKR"),
+                    branch=None,
+                )
+                for finding in facts.findings:
+                    if finding.code == code:
+                        covered = list(finding.rows)
+                        break
+
+            conn.execute(
+                "insert into public.check_dispositions"
+                " (org_id, code, state, assigned_to, why, accepted_rows,"
+                "  decided_at, decided_by)"
+                " values (%s,%s,%s,%s,%s,%s,now(),auth.uid())"
+                " on conflict (org_id, code) do update"
+                "    set state = excluded.state,"
+                "        assigned_to = excluded.assigned_to,"
+                "        why = excluded.why,"
+                "        accepted_rows = excluded.accepted_rows,"
+                "        decided_at = now(),"
+                "        decided_by = auth.uid()",
+                (org[0], code, state, who, (why or "").strip() or None,
+                 covered))
+    except Exception as exc:
+        return _op_error(exc)
+    return JSONResponse({"ok": True, "code": code, "state": state})
+
+
+@app.post("/api/check/assign")
+async def assign_check(request: Request,
+                       claims: Claims = Depends(require)) -> JSONResponse:
+    """Say who is on a finding, or hand it back."""
+    b = await request.json()
+    to = str(b.get("to", "") or "").strip()
+    if not to:
+        return _settle_check(claims, str(b.get("code", "")), None)
+    return _settle_check(claims, str(b.get("code", "")), "assigned",
+                         to=to, why=str(b.get("note", "") or ""))
+
+
+@app.post("/api/check/accept")
+async def accept_check(request: Request,
+                       claims: Claims = Depends(require)) -> JSONResponse:
+    """Say this is how things are, and why."""
+    b = await request.json()
+    why = str(b.get("why", "") or "").strip()
+    if not why:
+        return JSONResponse(
+            {"ok": False,
+             "error": "Say why this is how things are. \"We know\" with "
+                      "no reason is a finding somebody silences and "
+                      "nobody can audit."}, 400)
+    return _settle_check(claims, str(b.get("code", "")), "accepted",
+                         why=why, rows=True)
+
+
+@app.post("/api/check/reopen")
+async def reopen_check(request: Request,
+                       claims: Claims = Depends(require)) -> JSONResponse:
+    """Take an acceptance back."""
+    b = await request.json()
+    return _settle_check(claims, str(b.get("code", "")), None)
 
 
 @app.get("/api/stocktake")
